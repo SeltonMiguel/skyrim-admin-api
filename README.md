@@ -1,114 +1,151 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# Skyrim Admin API
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+Backend administrativo do Skyrim Brasil / SkyMP. A Etapa 00 contém somente
+infraestrutura; autenticação, permissões e domínios do jogo ficam para etapas futuras.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+## Desenvolvimento local
 
-## Description
-
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
-
-## Project setup
+Requisitos: Node.js 22 ou superior (validado com Node 24), npm e Docker com Compose v2.
 
 ```bash
-$ npm install
+cp .env.example .env
+docker compose up -d
+npm install
+npm run migration:run
+npm run start:dev
 ```
 
-## Compile and run the project
+O Compose inicia PostgreSQL 16 na porta 5432, com as configurações de `.env.example`:
+banco `skyrim_admin`, usuário `skyrim` e senha `skyrim`. As credenciais são lidas de
+`.env`; não versione esse arquivo. A porta fica vinculada ao loopback local.
+A API roda localmente, fora do Docker. Aguarde o banco ficar saudável em
+`docker compose ps` antes de iniciar a API.
+
+- Swagger: http://localhost:3000/docs
+- OpenAPI JSON: http://localhost:3000/docs-json
+- Health: http://localhost:3000/api/v1/health
 
 ```bash
-# development
-$ npm run start
-
-# watch mode
-$ npm run start:dev
-
-# production mode
-$ npm run start:prod
+curl -i -H 'x-request-id: local-check' http://localhost:3000/api/v1/health
 ```
 
-## Run tests
+O health executa `SELECT 1` no PostgreSQL: retorna HTTP 200 com
+`{"status":"ok","database":"up"}` ou HTTP 503 padronizado quando a consulta falha.
+O bootstrap exige banco acessível; a aplicação não sobe com conexão inválida.
+O pool limita conexão e consulta a 5 segundos, com até 3 tentativas no bootstrap.
+
+`docker compose down` preserva os dados no volume. Alterar usuário, senha ou nome
+do banco em `.env` não reconfigura um volume PostgreSQL já inicializado.
+No WSL, habilite a integração da distribuição no Docker Desktop se o comando
+`docker` não estiver disponível.
+
+## Configuração e infraestrutura
+
+`ConfigModule` é global e valida as variáveis com Joi antes de conectar. API e CLI
+compartilham a validação e as opções de conexão. Variáveis exportadas no processo
+prevalecem sobre `.env`. Host, usuário, senha e banco são obrigatórios; portas devem
+ser inteiros de 1 a 65535. `NODE_ENV` aceita development, test ou production.
+`DB_LOGGING=true/false` sobrescreve o padrão: ligado em development, desligado nos
+outros ambientes. Não há acesso a `process.env` fora da camada de configuração
+no código da aplicação.
+
+O TypeORM usa `synchronize: false` e `migrationsRun: false`. O carregamento de
+entidades e migrations usa apenas JavaScript compilado em `dist`, tanto na API
+quanto no CLI. A aplicação mantém ESM e os imports locais com extensão `.js`.
+
+A API usa prefixo `/api` e versionamento URI oficial do Nest (`v1`). `setupApp`
+aplica a mesma configuração HTTP no bootstrap e nos testes. O `AppExpressAdapter`
+registra o fallback 404 na raiz: no Nest 12 ele seria limitado ao prefixo, enquanto
+este servidor hospeda uma única aplicação e precisa padronizar todas as URLs.
+
+O `ValidationPipe` global usa somente `whitelist: true`,
+`forbidNonWhitelisted: true` e `transform: true`. DTOs futuros devem declarar
+validadores e conversões explícitas; conversão implícita ampla não está habilitada.
+
+Cada resposta recebe `x-request-id`. Um valor recebido é preservado se tiver de
+1 a 128 caracteres ASCII alfanuméricos ou `._:-`; valores ausentes, duplicados ou
+inválidos são substituídos por UUID. Essa restrição evita headers e identificadores
+de log inválidos ou excessivos. Injete `RequestContext` para ler `requestId`;
+`AsyncLocalStorage` mantém o isolamento entre requisições concorrentes. Fora de uma
+requisição o valor é `undefined`. O middleware precede até o parser JSON e o Swagger.
+
+Erros preservam status/mensagens de `HttpException`, inclusive arrays de validação.
+Falhas inesperadas são registradas internamente com request ID e retornam mensagem
+genérica, sem stack trace, em todos os ambientes:
+
+```json
+{
+  "statusCode": 503,
+  "error": "Service Unavailable",
+  "message": "Database unavailable",
+  "path": "/api/v1/health",
+  "requestId": "local-check",
+  "timestamp": "2026-09-09T00:00:00.000Z"
+}
+```
+
+## Migrations
 
 ```bash
-# unit tests
-$ npm run test
-
-# e2e tests
-$ npm run test:e2e
-
-# test coverage
-$ npm run test:cov
+npm run migration:create -- src/database/migrations/NomeDaMigration
+npm run migration:generate -- src/database/migrations/NomeDaMigration
+npm run migration:run
+npm run migration:revert
 ```
 
-## Deployment
+`create` cria um arquivo TypeScript para edição manual e não precisa do banco.
+`generate`, `run` e `revert` compilam antes de usar `dist/database/data-source.js`.
+`generate` compara entidades com o banco; sem diferenças encerra com código 1,
+comportamento esperado na Etapa 00. `revert` desfaz a última migration executada.
+Não há migration artificial nem entidades de domínio nesta etapa.
+`run` pode criar somente a tabela de controle `migrations` do TypeORM.
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+## Verificação
 
 ```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
+npm run lint
+npm run build
+npm test
+npm run test:e2e
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+Oxlint foi mantido do projeto inicial. Os testes usam Jest com ts-jest e suporte
+ESM (`--experimental-vm-modules`, que pode emitir um aviso do Node).
+Os unitários cobrem configuração, opções críticas do banco e isolamento de contexto.
+Os e2e HTTP inicializam os módulos reais, substituindo somente a fronteira
+`DataSource`; cobrem health, erros, validação, concorrência, request ID e Swagger.
+Não precisam de PostgreSQL, mas precisam poder abrir uma porta HTTP local.
 
-## Observability
+Para incluir a suíte com PostgreSQL real, após o setup:
 
-In production applications, observability is essential for understanding how your system behaves, detecting issues early, and maintaining reliable performance.
+```bash
+TEST_DATABASE_INTEGRATION=true npm run test:e2e
+```
 
-[NestJS Observe](https://observe.nestjs.com) automatically instruments your NestJS application, giving you deep visibility into your system with minimal setup:
+Essa suíte valida conexão, opções e health contra o banco configurado, sem alterar
+o schema. Sem a flag, ela é explicitamente ignorada. `npm run test:cov` gera cobertura.
 
-- **Distributed tracing:** Follow requests across services and understand how they flow through your system.
-- **Waterfall analysis:** Visualize request execution and identify slow operations, bottlenecks, and unexpected delays.
-- **Performance analysis:** Analyze application performance in real time and quickly pinpoint areas that need optimization.
-- **Metrics:** Track key application and infrastructure metrics to understand system health and performance trends.
-- **Logging:** Centralize and correlate logs with traces and other telemetry to make debugging easier.
-- **Error tracking:** Detect errors quickly and investigate their root causes with the surrounding context.
-- **SLA monitoring:** Track service-level objectives and identify when your application is approaching or exceeding defined thresholds.
-- **Alarms and alerts:** Set up alerts for critical errors, performance degradation, SLA violations, and other anomalies so your team can react quickly.
+Para executar o build: `npm run build && npm run start:prod`.
 
-## Resources
+## Estrutura
 
-Check out a few resources that may come in handy when working with NestJS:
+```text
+src/
+  common/
+    filters/          # Contrato e filtro global de erros
+    http/             # Adaptador HTTP e fallback 404
+    middleware/       # Request ID
+    request-context/  # Contexto assíncrono por requisição
+  config/             # ConfigModule e validação compartilhada
+  database/           # Conexão Nest e DataSource do CLI
+    migrations/
+  health/             # Consulta real de disponibilidade
+  app.module.ts
+  main.ts
+  setup-app.ts
+test/                 # Suítes HTTP e PostgreSQL real
+```
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Auto-instrument your application with [NestJS Observer](https://observer.nestjs.com). Distributed tracing, metrics, and logging made easy. Error tracking and performance monitoring for your NestJS applications.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
-
-## Support
-
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+O repositório inicial já rastreava `node_modules`. O `.gitignore` impede novos
+artefatos, mas não remove arquivos já rastreados; instalações podem aparecer no
+`git status`. A Etapa 00 não altera o índice nem o histórico Git.
