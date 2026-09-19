@@ -1,3 +1,5 @@
+import { AuditService } from '../src/audit/audit.service.js';
+import { RequestContext } from '../src/common/request-context/request-context.service.js';
 import type { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
@@ -6,7 +8,7 @@ import { decodeJwt } from 'jose';
 import type { ApplicationConfig } from '../src/config/environment.js';
 import { DataSource } from 'typeorm';
 import { randomUUID } from 'node:crypto';
-import { fileURLToPath } from 'node:url';
+import { compiledDatabaseArtifacts } from './compiled-database.js';
 import request from 'supertest';
 import type { App } from 'supertest/types.js';
 import { setupApp } from '../src/setup-app.js';
@@ -66,19 +68,13 @@ describeDatabase('Auth + RBAC with real PostgreSQL', () => {
       ...options,
       type: 'postgres',
       schema,
-      entities: [
-        fileURLToPath(new URL('../dist/**/*.entity.js', import.meta.url)),
-      ],
-      migrations: [
-        fileURLToPath(
-          new URL('../dist/database/migrations/*.js', import.meta.url),
-        ),
-      ],
+      ...(await compiledDatabaseArtifacts()),
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
     // Exercise migration, rollback, reproducibility and no-op rerun in an isolated schema.
-    expect(await database.runMigrations()).toHaveLength(1);
+    expect(await database.runMigrations()).toHaveLength(2);
+    await database.undoLastMigration();
     await database.undoLastMigration();
     expect(
       await database.query(
@@ -86,11 +82,12 @@ describeDatabase('Auth + RBAC with real PostgreSQL', () => {
         [schema],
       ),
     ).toHaveLength(0);
-    expect(await database.runMigrations()).toHaveLength(1);
+    expect(await database.runMigrations()).toHaveLength(2);
     expect(await database.runMigrations()).toHaveLength(0);
     const bootstrap = new BootstrapCoordinatorService(
       database,
       new PasswordService(),
+      new AuditService(database, new RequestContext()),
     );
     await expect(
       bootstrap.run({ ...credentials, password: 'short' }),
@@ -132,7 +129,7 @@ describeDatabase('Auth + RBAC with real PostgreSQL', () => {
         `SELECT tablename FROM pg_tables WHERE schemaname = $1`,
         [schema],
       ),
-    ).toHaveLength(6);
+    ).toHaveLength(7);
   });
   it('seeds the six roles and complete permission catalog', async () => {
     const roles: { name: string }[] = await database.query(
@@ -528,9 +525,12 @@ describeDatabase('Auth + RBAC with real PostgreSQL', () => {
   it('serializes concurrent changes so the last active coordinator survives', async () => {
     const created = await create(RoleName.COORDINATOR).expect(201);
     const service = app.get(StaffService);
+    const actor = await database
+      .getRepository<StaffUser>('StaffUser')
+      .findOneByOrFail({ id: coordinator.id });
     const results = await Promise.allSettled([
-      service.updateRole(coordinator.id, RoleName.SUPPORT),
-      service.updateRole(created.body.id, RoleName.SUPPORT),
+      service.updateRole(coordinator.id, RoleName.SUPPORT, actor),
+      service.updateRole(created.body.id, RoleName.SUPPORT, actor),
     ]);
     expect(
       results.filter((result) => result.status === 'fulfilled'),
@@ -544,8 +544,8 @@ describeDatabase('Auth + RBAC with real PostgreSQL', () => {
         status: 'ACTIVE' as StaffUser['status'],
       }),
     ).toBe(1);
-    await service.updateRole(coordinator.id, RoleName.COORDINATOR);
-    await service.updateRole(created.body.id, RoleName.SUPPORT);
+    await service.updateRole(coordinator.id, RoleName.COORDINATOR, actor);
+    await service.updateRole(created.body.id, RoleName.SUPPORT, actor);
   });
   it('validates UUIDs, role/status values and rejects mass assignment and weak passwords', async () => {
     await http()

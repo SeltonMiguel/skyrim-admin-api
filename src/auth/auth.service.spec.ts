@@ -1,3 +1,5 @@
+import { AuditService } from '../audit/audit.service.js';
+import { RequestContext } from '../common/request-context/request-context.service.js';
 import { jest } from '@jest/globals';
 import { DataSource } from 'typeorm';
 import { AuthService } from './auth.service.js';
@@ -57,18 +59,21 @@ function fixture() {
   };
   const manager = {
     getRepository: (name: string) =>
-      name === 'StaffUser'
-        ? users
-        : name === 'StaffSession'
-          ? sessions
-          : {
-              findBy: async () => [
-                { permissionName: 'PLAYER_TELEPORT_TO_STAFF' },
-              ],
-            },
+      name === 'AuditLog'
+        ? { insert: jest.fn<() => Promise<void>>().mockResolvedValue() }
+        : name === 'StaffUser'
+          ? users
+          : name === 'StaffSession'
+            ? sessions
+            : {
+                findBy: async () => [
+                  { permissionName: 'PLAYER_TELEPORT_TO_STAFF' },
+                ],
+              },
   };
   const database = {
     ...manager,
+    manager,
     transaction: async (
       callback: (value: typeof manager) => Promise<unknown>,
     ) => callback(manager),
@@ -95,6 +100,7 @@ function fixture() {
     database,
     passwords as unknown as PasswordService,
     tokens as unknown as TokenService,
+    new AuditService(database, new RequestContext()),
   );
   return {
     auth,
