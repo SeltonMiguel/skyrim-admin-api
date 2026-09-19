@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { parse } from 'dotenv';
 import { validateEnvironment } from '../config/environment.js';
@@ -5,7 +6,11 @@ import { createDatabaseOptions } from './database.options.js';
 
 describe('Database options shared by Nest and CLI', () => {
   it('uses validated configuration without automatic schema changes', () => {
-    const config = validateEnvironment(parse(readFileSync('.env.example')));
+    const config = validateEnvironment({
+      ...parse(readFileSync('.env.example')),
+      JWT_ACCESS_SECRET: randomBytes(48).toString('hex'),
+      JWT_REFRESH_SECRET: randomBytes(48).toString('hex'),
+    });
     const options = createDatabaseOptions(config);
     expect(options).toMatchObject({
       ...config.database,
