@@ -1,7 +1,7 @@
 # Skyrim Admin API
 
-Backend administrativo do Skyrim Brasil / SkyMP. A Etapa 00 contém somente
-infraestrutura; autenticação, permissões e domínios do jogo ficam para etapas futuras.
+Backend administrativo do Skyrim Brasil / SkyMP. Foundation (Etapa 00) e
+autenticação/RBAC (Etapa 01). Funcionalidades do jogo ficam para etapas futuras.
 
 ## Desenvolvimento local
 
@@ -9,6 +9,7 @@ Requisitos: Node.js 22 ou superior (validado com Node 24), npm e Docker com Comp
 
 ```bash
 cp .env.example .env
+# Configure JWT_ACCESS_SECRET e JWT_REFRESH_SECRET antes de continuar (veja abaixo).
 docker compose up -d
 npm install
 npm run migration:run
@@ -70,8 +71,9 @@ de log inválidos ou excessivos. Injete `RequestContext` para ler `requestId`;
 requisição o valor é `undefined`. O middleware precede até o parser JSON e o Swagger.
 
 Erros preservam status/mensagens de `HttpException`, inclusive arrays de validação.
-Falhas inesperadas são registradas internamente com request ID e retornam mensagem
-genérica, sem stack trace, em todos os ambientes:
+Falhas inesperadas registram apenas classe do erro e request ID e retornam mensagem
+genérica, sem stack trace, em todos os ambientes. O logger do banco omite SQL,
+parâmetros e mensagens do driver para não registrar credenciais ou hashes:
 
 ```json
 {
@@ -96,9 +98,87 @@ npm run migration:revert
 `create` cria um arquivo TypeScript para edição manual e não precisa do banco.
 `generate`, `run` e `revert` compilam antes de usar `dist/database/data-source.js`.
 `generate` compara entidades com o banco; sem diferenças encerra com código 1,
-comportamento esperado na Etapa 00. `revert` desfaz a última migration executada.
-Não há migration artificial nem entidades de domínio nesta etapa.
-`run` pode criar somente a tabela de controle `migrations` do TypeORM.
+comportamento esperado quando o schema está atualizado. `revert` desfaz a última migration executada.
+A migration `1789810000000-AuthRbac` cria `roles`, `permissions`, `role_permissions`,
+`staff_users` e `staff_sessions`, e cadastra seis roles, 29 permissions e 71 grants.
+O seed está congelado na migration, com `ON CONFLICT DO NOTHING`; repetir `run`
+não duplica dados. Alterações futuras da matriz exigem nova migration.
+O rollback remove essas cinco tabelas e seus dados, em ordem de dependência.
+Use rollback somente quando a perda desses dados for intencional.
+
+## Autenticação e bootstrap inicial
+
+Configure duas chaves aleatórias **diferentes**, cada uma com pelo menos 32 caracteres
+e sem espaços, em `JWT_ACCESS_SECRET` e `JWT_REFRESH_SECRET`. Gere cada chave com
+`node -e "console.log(require('node:crypto').randomBytes(48).toString('base64url'))"`
+e guarde no `.env` local ou secret manager. Não versione as chaves.
+Elas são obrigatórias em development/production; somente testes podem usar chaves
+aleatórias efêmeras por processo. Nunca há segredo ou senha padrão.
+
+`JWT_ACCESS_TTL=15m` e `JWT_REFRESH_TTL=7d` aceitam inteiros positivos com `s`, `m`,
+`h` ou `d`. Access tem limite de uma hora; refresh deve durar mais que access e no
+máximo 90 dias. A configuração é validada também no CLI de migrations.
+
+Após `npm run migration:run`, execute explicitamente o bootstrap. Exemplo em Bash,
+sem colocar a senha no histórico (também é possível usar variáveis temporárias no `.env`):
+
+```bash
+read -r -p 'Username: ' BOOTSTRAP_COORDINATOR_USERNAME
+read -r -p 'Nome: ' BOOTSTRAP_COORDINATOR_DISPLAY_NAME
+read -r -s -p 'Senha (12–128 caracteres): ' BOOTSTRAP_COORDINATOR_PASSWORD
+export BOOTSTRAP_COORDINATOR_USERNAME BOOTSTRAP_COORDINATOR_DISPLAY_NAME BOOTSTRAP_COORDINATOR_PASSWORD
+npm run staff:bootstrap
+unset BOOTSTRAP_COORDINATOR_USERNAME BOOTSTRAP_COORDINATOR_DISPLAY_NAME BOOTSTRAP_COORDINATOR_PASSWORD
+```
+
+O comando normaliza o username, valida as credenciais, usa Argon2id e cria somente
+o primeiro Coordinator. Execuções concorrentes são serializadas. Se já existir
+qualquer Coordinator (inclusive desativado), informa que nada foi alterado;
+não troca senha, não reativa e não cria duplicatas. Sem credenciais válidas, falha
+sem criar staff. Não há bootstrap automático nem endpoint público correspondente.
+Remova também as variáveis temporárias do `.env`, se usadas.
+
+| Método | Endpoint | Entrada / acesso |
+| --- | --- | --- |
+| POST | `/api/v1/auth/login` | `username`, `password`; retorna tokens e staff público |
+| POST | `/api/v1/auth/refresh` | `refreshToken`; retorna novo par de tokens |
+| POST | `/api/v1/auth/logout` | Bearer access; revoga sessão atual; HTTP 204 |
+| GET | `/api/v1/auth/me` | Bearer access; staff e permissões atuais |
+| GET | `/api/v1/staff` e `/api/v1/staff/:id` | `STAFF_READ` |
+| POST | `/api/v1/staff` | `STAFF_WRITE`; `username`, `displayName`, `password`, `role` |
+| PATCH | `/api/v1/staff/:id` | `STAFF_WRITE`; `username` e/ou `displayName` |
+| PATCH | `/api/v1/staff/:id/role` | `STAFF_WRITE`; `role` |
+| PATCH | `/api/v1/staff/:id/status` | `STAFF_WRITE`; `status`: `ACTIVE` ou `DISABLED` |
+
+No Swagger, execute login e cole apenas o `accessToken` em **Authorize → bearer**.
+As respostas nunca incluem hashes. Username aceita 3–64 caracteres ASCII
+alfanuméricos, ponto, hífen e underscore; é convertido para minúsculas e sem espaços
+nas extremidades. Senhas têm 12–128 caracteres e não podem conter apenas espaços.
+
+JWTs usam HS256, chaves e audiences separados, `sub`, `sid` e `jti` aleatório.
+Cada request protegida consulta sessão, status e permissões atuais no banco.
+Logout e desativação invalidam imediatamente access e refresh em requests futuras;
+requests já autorizadas em andamento podem concluir. Desativação revoga todas as
+sessões; reativação exige novo login. A última conta Coordinator ativa não pode ser
+desativada ou rebaixada, inclusive em alterações concorrentes.
+
+Refresh é armazenado somente como SHA-256 (o token tem assinatura e identificador
+aleatórios); senhas usam Argon2id, 64 MiB, três iterações e paralelismo 1. Refresh
+rotaciona atomicamente: apenas uma tentativa concorrente pode consumir o token.
+Reuso recebe 401 sem revogar o sucessor válido. A expiração absoluta da sessão é
+definida no login usando `JWT_REFRESH_TTL` e nunca é renovada pelo refresh.
+A rotação atualiza somente o hash e `lastUsedAt`; o `exp` do refresh JWT nunca
+ultrapassa `StaffSession.expiresAt` (arredondado para baixo em segundos).
+Access tokens anteriores continuam válidos até seu TTL enquanto a sessão estiver
+ativa. Ao atingir `expiresAt`, access e refresh são rejeitados com 401; um novo
+login cria outra sessão com nova expiração. Credenciais inválidas recebem a mesma
+mensagem de 401; autenticação válida sem as permissions necessárias recebe 403.
+
+A matriz explícita está em `src/rbac/role-permissions.ts` e seu snapshot versionado
+na migration. COORDINATOR possui todas as permissions; DEV somente `SERVER_START`,
+`SERVER_PAUSE` e `SERVER_RESTART`. Apenas COORDINATOR recebe `STAFF_READ`,
+`STAFF_WRITE` e `VIP_STORE_WRITE`. Controllers usam `@RequirePermissions` e guards,
+sem comparar níveis de cargo. Nenhuma funcionalidade do jogo é executada nesta etapa.
 
 ## Verificação
 
@@ -122,8 +202,13 @@ Para incluir a suíte com PostgreSQL real, após o setup:
 TEST_DATABASE_INTEGRATION=true npm run test:e2e
 ```
 
-Essa suíte valida conexão, opções e health contra o banco configurado, sem alterar
-o schema. Sem a flag, ela é explicitamente ignorada. `npm run test:cov` gera cobertura.
+A suíte Foundation continua validando conexão, opções e health sem alterar tabelas.
+A suíte Auth/RBAC cria um schema temporário exclusivo no mesmo PostgreSQL, executa
+migration/rollback/reaplicação, bootstrap e fluxos HTTP e remove o schema ao terminar.
+O usuário de teste precisa de permissão para criar schemas. Dados de staff do schema
+normal não são alterados. Sem a flag, ambas as suítes de banco são explicitamente
+ignoradas. `test:e2e` compila primeiro para carregar entidades/migrations de `dist`.
+`npm run test:cov` gera cobertura.
 
 Para executar o build: `npm run build && npm run start:prod`.
 
@@ -131,6 +216,9 @@ Para executar o build: `npm run build && npm run start:prod`.
 
 ```text
 src/
+  auth/               # Login, JWT, sessões e guards
+  rbac/               # Roles, permissions e grants explícitos
+  staff/              # Gestão de staff e CLI de bootstrap
   common/
     filters/          # Contrato e filtro global de erros
     http/             # Adaptador HTTP e fallback 404
@@ -146,6 +234,4 @@ src/
 test/                 # Suítes HTTP e PostgreSQL real
 ```
 
-O repositório inicial já rastreava `node_modules`. O `.gitignore` impede novos
-artefatos, mas não remove arquivos já rastreados; instalações podem aparecer no
-`git status`. A Etapa 00 não altera o índice nem o histórico Git.
+Dependências e artefatos (`node_modules`, `dist`, coverage e `.env`) ficam fora do Git.
