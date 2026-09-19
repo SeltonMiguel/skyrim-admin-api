@@ -1,3 +1,6 @@
+import { AuditService } from '../audit/audit.service.js';
+import { AuditAction, AuditResource } from '../audit/audit.types.js';
+import type { AuditActor } from '../audit/audit.types.js';
 import {
   BadRequestException,
   ConflictException,
@@ -34,6 +37,7 @@ export class StaffService {
   constructor(
     private readonly database: DataSource,
     private readonly passwords: PasswordService,
+    private readonly audit: AuditService,
   ) {}
 
   async list() {
@@ -47,88 +51,145 @@ export class StaffService {
     return publicStaff(await this.find(this.database.manager, id));
   }
 
-  async create(dto: CreateStaffDto) {
-    const role = await this.database
-      .getRepository<Role>('Role')
-      .findOneBy({ name: dto.role });
-    if (!role)
-      throw new BadRequestException('Role unavailable; run migrations');
-    const passwordHash = await this.passwords.hash(dto.password);
-    try {
-      const repository = this.database.getRepository<StaffUser>('StaffUser');
-      const user = await repository.save(
-        repository.create({
-          username: dto.username,
-          displayName: dto.displayName,
-          passwordHash,
-          roleName: dto.role,
-          status: StaffStatus.ACTIVE,
-          lastLoginAt: null,
-        }),
-      );
-      return publicStaff(user);
-    } catch (error) {
-      staffConflict(error);
-    }
-  }
-
-  async update(id: string, dto: UpdateStaffDto) {
-    try {
-      return await this.database.transaction(async (manager) => {
-        const user = await this.find(manager, id, true);
-        if (dto.username !== undefined) user.username = dto.username;
-        if (dto.displayName !== undefined) user.displayName = dto.displayName;
-        return publicStaff(
-          await manager.getRepository<StaffUser>('StaffUser').save(user),
-        );
-      });
-    } catch (error) {
-      staffConflict(error);
-    }
-  }
-
-  async updateRole(id: string, role: RoleName) {
-    return this.database.transaction(async (manager) => {
-      await lockCoordinatorChanges(manager);
-      const user = await this.find(manager, id, true);
-      if (!(await manager.getRepository<Role>('Role').existsBy({ name: role })))
-        throw new BadRequestException('Role unavailable');
-      if (role !== RoleName.COORDINATOR)
-        await this.protectLastCoordinator(manager, user);
-      user.roleName = role;
-      return publicStaff(
-        await manager.getRepository<StaffUser>('StaffUser').save(user),
-      );
-    });
-  }
-
-  async updateStatus(id: string, status: StaffStatus) {
-    return this.database.transaction(async (manager) => {
-      await lockCoordinatorChanges(manager);
-      const user = await this.find(manager, id, true);
-      if (status === StaffStatus.DISABLED) {
-        await this.protectLastCoordinator(manager, user);
-        await manager
-          .getRepository<StaffSession>('StaffSession')
-          .update(
-            { staffUserId: id, revokedAt: IsNull() },
-            { revokedAt: new Date() },
+  async create(dto: CreateStaffDto, actor: AuditActor) {
+    return this.audit.execute(
+      {
+        actor,
+        action: AuditAction.STAFF_CREATE,
+        resourceType: AuditResource.STAFF_USER,
+        statusCode: 201,
+      },
+      async (manager) => {
+        try {
+          const role = await manager
+            .getRepository<Role>('Role')
+            .findOneBy({ name: dto.role });
+          if (!role)
+            throw new BadRequestException('Role unavailable; run migrations');
+          const passwordHash = await this.passwords.hash(dto.password);
+          const repository = manager.getRepository<StaffUser>('StaffUser');
+          const user = await repository.save(
+            repository.create({
+              username: dto.username,
+              displayName: dto.displayName,
+              passwordHash,
+              roleName: dto.role,
+              status: StaffStatus.ACTIVE,
+              lastLoginAt: null,
+            }),
           );
-      }
-      user.status = status;
-      return publicStaff(
-        await manager.getRepository<StaffUser>('StaffUser').save(user),
-      );
-    });
+          return { value: publicStaff(user), resourceId: user.id };
+        } catch (error) {
+          staffConflict(error);
+        }
+      },
+    );
+  }
+
+  async update(id: string, dto: UpdateStaffDto, actor: AuditActor) {
+    return this.audit.execute(
+      {
+        actor,
+        action: AuditAction.STAFF_UPDATE,
+        resourceType: AuditResource.STAFF_USER,
+        resourceId: id,
+        statusCode: 200,
+      },
+      async (manager) => {
+        try {
+          const user = await this.find(manager, id, true);
+          const changedFields: string[] = [];
+          if (dto.username !== undefined) {
+            user.username = dto.username;
+            changedFields.push('username');
+          }
+          if (dto.displayName !== undefined) {
+            user.displayName = dto.displayName;
+            changedFields.push('displayName');
+          }
+          return {
+            value: publicStaff(
+              await manager.getRepository<StaffUser>('StaffUser').save(user),
+            ),
+            metadata: { changedFields },
+          };
+        } catch (error) {
+          staffConflict(error);
+        }
+      },
+    );
+  }
+
+  async updateRole(id: string, role: RoleName, actor: AuditActor) {
+    return this.audit.execute(
+      {
+        actor,
+        action: AuditAction.STAFF_ROLE_CHANGE,
+        resourceType: AuditResource.STAFF_USER,
+        resourceId: id,
+        statusCode: 200,
+        metadata: { newRole: role },
+      },
+      async (manager) => {
+        await lockCoordinatorChanges(manager);
+        const user = await this.find(manager, id, true);
+        if (
+          !(await manager.getRepository<Role>('Role').existsBy({ name: role }))
+        )
+          throw new BadRequestException('Role unavailable');
+        if (role !== RoleName.COORDINATOR)
+          await this.protectLastCoordinator(manager, user);
+        const previousRole = user.roleName;
+        user.roleName = role;
+        return {
+          value: publicStaff(
+            await manager.getRepository<StaffUser>('StaffUser').save(user),
+          ),
+          metadata: { previousRole, newRole: role },
+        };
+      },
+    );
+  }
+
+  async updateStatus(id: string, status: StaffStatus, actor: AuditActor) {
+    return this.audit.execute(
+      {
+        actor,
+        action: AuditAction.STAFF_STATUS_CHANGE,
+        resourceType: AuditResource.STAFF_USER,
+        resourceId: id,
+        statusCode: 200,
+        metadata: { newStatus: status },
+      },
+      async (manager) => {
+        await lockCoordinatorChanges(manager);
+        const user = await this.find(manager, id, true);
+        if (status === StaffStatus.DISABLED) {
+          await this.protectLastCoordinator(manager, user);
+          await manager
+            .getRepository<StaffSession>('StaffSession')
+            .update(
+              { staffUserId: id, revokedAt: IsNull() },
+              { revokedAt: new Date() },
+            );
+        }
+        const previousStatus = user.status;
+        user.status = status;
+        return {
+          value: publicStaff(
+            await manager.getRepository<StaffUser>('StaffUser').save(user),
+          ),
+          metadata: { previousStatus, newStatus: status },
+        };
+      },
+    );
   }
 
   private async find(manager: EntityManager, id: string, lock = false) {
-    const user = await manager
-      .getRepository<StaffUser>('StaffUser')
-      .findOne({
-        where: { id },
-        ...(lock ? { lock: { mode: 'pessimistic_write' as const } } : {}),
-      });
+    const user = await manager.getRepository<StaffUser>('StaffUser').findOne({
+      where: { id },
+      ...(lock ? { lock: { mode: 'pessimistic_write' as const } } : {}),
+    });
     if (!user) throw new NotFoundException('Staff user not found');
     return user;
   }

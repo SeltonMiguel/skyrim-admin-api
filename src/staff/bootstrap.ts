@@ -1,3 +1,5 @@
+import { AuditService } from '../audit/audit.service.js';
+import { RequestContext } from '../common/request-context/request-context.service.js';
 import 'reflect-metadata';
 import { HttpException } from '@nestjs/common';
 import { DataSource } from 'typeorm';
@@ -15,6 +17,7 @@ async function bootstrap(): Promise<void> {
     const result = await new BootstrapCoordinatorService(
       database,
       new PasswordService(),
+      new AuditService(database, new RequestContext()),
     ).run(config.bootstrap);
     console.log(
       result === 'created'

@@ -1,3 +1,10 @@
+import { AuditService } from '../audit/audit.service.js';
+import {
+  AuditAction,
+  AuditOutcome,
+  AuditResource,
+} from '../audit/audit.types.js';
+import { randomUUID } from 'node:crypto';
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 import { plainToInstance } from 'class-transformer';
@@ -15,6 +22,7 @@ export class BootstrapCoordinatorService {
   constructor(
     private readonly database: DataSource,
     private readonly passwords: PasswordService,
+    private readonly audit: AuditService,
   ) {}
   async run(
     credentials: ApplicationConfig['bootstrap'],
@@ -42,13 +50,24 @@ export class BootstrapCoordinatorService {
           throw new BadRequestException(
             'Run migrations before staff:bootstrap',
           );
+        const id = randomUUID();
         await repository.insert({
+          id,
           username: dto.username,
           displayName: dto.displayName,
           passwordHash: await this.passwords.hash(dto.password),
           roleName: RoleName.COORDINATOR,
           status: StaffStatus.ACTIVE,
         });
+        await this.audit.record(
+          {
+            action: AuditAction.COORDINATOR_BOOTSTRAP,
+            outcome: AuditOutcome.SUCCESS,
+            resourceType: AuditResource.STAFF_USER,
+            resourceId: id,
+          },
+          manager,
+        );
         return 'created';
       });
     } catch (error) {
