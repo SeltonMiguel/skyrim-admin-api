@@ -47,7 +47,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
     if (!known) {
       this.logger.error(
         `Unhandled exception [requestId=${this.context.requestId ?? 'unknown'}]`,
-        exception instanceof Error ? exception.stack : 'Unknown error',
+        exception instanceof Error ? exception.name : 'Unknown error',
       );
     }
 

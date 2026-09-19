@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { parse } from 'dotenv';
@@ -6,6 +7,13 @@ import Joi from 'joi';
 export interface ApplicationConfig {
   nodeEnv: 'development' | 'test' | 'production';
   port: number;
+  jwt: {
+    accessSecret: string;
+    refreshSecret: string;
+    accessTtl: number;
+    refreshTtl: number;
+  };
+  bootstrap: { username?: string; displayName?: string; password?: string };
   database: {
     host: string;
     port: number;
@@ -25,6 +33,21 @@ interface Environment {
   DB_PASSWORD: string;
   DB_DATABASE: string;
   DB_LOGGING?: boolean;
+  JWT_ACCESS_SECRET?: string;
+  JWT_REFRESH_SECRET?: string;
+  JWT_ACCESS_TTL: string;
+  JWT_REFRESH_TTL: string;
+  BOOTSTRAP_COORDINATOR_USERNAME?: string;
+  BOOTSTRAP_COORDINATOR_DISPLAY_NAME?: string;
+  BOOTSTRAP_COORDINATOR_PASSWORD?: string;
+}
+
+// Ephemeral per-process secrets are allowed only by the test schema.
+const testAccessSecret = randomBytes(48).toString('base64url');
+const testRefreshSecret = randomBytes(48).toString('base64url');
+function ttlSeconds(ttl: string): number {
+  const units: Record<string, number> = { s: 1, m: 60, h: 3600, d: 86400 };
+  return Number(ttl.slice(0, -1)) * units[ttl.slice(-1)];
 }
 
 const schema = Joi.object<Environment>({
@@ -38,6 +61,36 @@ const schema = Joi.object<Environment>({
   DB_PASSWORD: Joi.string().required(),
   DB_DATABASE: Joi.string().trim().required(),
   DB_LOGGING: Joi.boolean(),
+  JWT_ACCESS_SECRET: Joi.string()
+    .min(32)
+    .pattern(/^\S+$/)
+    .when('NODE_ENV', {
+      is: 'test',
+      // Joi's conditional schema key, not a Promise method.
+      // oxlint-disable-next-line unicorn/no-thenable
+      then: Joi.optional().empty(''),
+      otherwise: Joi.required(),
+    }),
+  JWT_REFRESH_SECRET: Joi.string()
+    .min(32)
+    .pattern(/^\S+$/)
+    .invalid(Joi.ref('JWT_ACCESS_SECRET'))
+    .when('NODE_ENV', {
+      is: 'test',
+      // Joi's conditional schema key, not a Promise method.
+      // oxlint-disable-next-line unicorn/no-thenable
+      then: Joi.optional().empty(''),
+      otherwise: Joi.required(),
+    }),
+  JWT_ACCESS_TTL: Joi.string()
+    .pattern(/^[1-9][0-9]*(s|m|h|d)$/)
+    .default('15m'),
+  JWT_REFRESH_TTL: Joi.string()
+    .pattern(/^[1-9][0-9]*(s|m|h|d)$/)
+    .default('7d'),
+  BOOTSTRAP_COORDINATOR_USERNAME: Joi.string().allow(''),
+  BOOTSTRAP_COORDINATOR_DISPLAY_NAME: Joi.string().allow(''),
+  BOOTSTRAP_COORDINATOR_PASSWORD: Joi.string().allow(''),
 });
 
 export function validateEnvironment(
@@ -53,7 +106,25 @@ export function validateEnvironment(
     throw new Error(`Invalid environment variables: ${fields.join(', ')}`);
   }
 
+  const accessTtl = ttlSeconds(value.JWT_ACCESS_TTL);
+  const refreshTtl = ttlSeconds(value.JWT_REFRESH_TTL);
+  if (accessTtl > 3600 || refreshTtl > 90 * 86400 || refreshTtl <= accessTtl) {
+    throw new Error(
+      'Invalid environment variables: JWT_ACCESS_TTL, JWT_REFRESH_TTL',
+    );
+  }
   return {
+    jwt: {
+      accessSecret: value.JWT_ACCESS_SECRET || testAccessSecret,
+      refreshSecret: value.JWT_REFRESH_SECRET || testRefreshSecret,
+      accessTtl,
+      refreshTtl,
+    },
+    bootstrap: {
+      username: value.BOOTSTRAP_COORDINATOR_USERNAME,
+      displayName: value.BOOTSTRAP_COORDINATOR_DISPLAY_NAME,
+      password: value.BOOTSTRAP_COORDINATOR_PASSWORD,
+    },
     nodeEnv: value.NODE_ENV,
     port: value.PORT,
     database: {

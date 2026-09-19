@@ -25,6 +25,7 @@ export function setupApp(app: INestApplication): void {
     .setTitle('Skyrim Admin API')
     .setDescription('Administrative API for Skyrim Brasil / SkyMP')
     .setVersion('0.1.0')
+    .addBearerAuth()
     .build();
   SwaggerModule.setup('docs', app, SwaggerModule.createDocument(app, config));
 }

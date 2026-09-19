@@ -1,3 +1,4 @@
+import { SafeDatabaseLogger } from './logging/safe-database.logger.js';
 import { fileURLToPath } from 'node:url';
 import type { DataSourceOptions } from 'typeorm';
 import type { ApplicationConfig } from '../config/environment.js';
@@ -8,6 +9,7 @@ export function createDatabaseOptions(
   return {
     type: 'postgres',
     ...config.database,
+    logger: new SafeDatabaseLogger(config.database.logging),
     synchronize: false,
     migrationsRun: false,
     entities: [fileURLToPath(new URL('../**/*.entity.js', import.meta.url))],
