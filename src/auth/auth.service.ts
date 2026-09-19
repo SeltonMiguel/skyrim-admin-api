@@ -1,3 +1,5 @@
+import { AuditService } from '../audit/audit.service.js';
+import { AuditAction, AuditResource } from '../audit/audit.types.js';
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { DataSource, EntityManager, IsNull } from 'typeorm';
@@ -16,6 +18,7 @@ export class AuthService {
     private readonly database: DataSource,
     private readonly passwords: PasswordService,
     private readonly tokens: TokenService,
+    private readonly audit: AuditService,
   ) {}
 
   async login(
@@ -35,24 +38,37 @@ export class AuthService {
     const valid = await this.passwords.verify(user.passwordHash, dto.password);
     if (!valid || user.status !== StaffStatus.ACTIVE)
       throw this.invalidCredentials();
-    return this.database.transaction(async (manager) => {
-      const current = await this.lockUser(manager, user.id);
-      if (!current || current.status !== StaffStatus.ACTIVE)
-        throw this.invalidCredentials();
-      const sessionId = randomUUID();
-      const pair = await this.tokens.issue(current.id, sessionId);
-      await manager.getRepository<StaffSession>('StaffSession').insert({
-        id: sessionId,
-        staffUserId: current.id,
-        refreshTokenHash: this.tokens.hash(pair.refreshToken),
-        expiresAt: pair.refreshExpiresAt,
-        ipAddress: metadata.ipAddress?.slice(0, 64) ?? null,
-        userAgent: metadata.userAgent?.slice(0, 512) ?? null,
-      });
-      current.lastLoginAt = new Date();
-      await manager.getRepository<StaffUser>('StaffUser').save(current);
-      return { ...pair, staff: publicStaff(current) };
-    });
+    return this.audit.execute(
+      {
+        actor: user,
+        action: AuditAction.AUTH_LOGIN,
+        resourceType: AuditResource.STAFF_SESSION,
+        statusCode: 200,
+      },
+      async (manager) => {
+        const current = await this.lockUser(manager, user.id);
+        if (!current || current.status !== StaffStatus.ACTIVE)
+          throw this.invalidCredentials();
+        const sessionId = randomUUID();
+        const pair = await this.tokens.issue(current.id, sessionId);
+        await manager.getRepository<StaffSession>('StaffSession').insert({
+          id: sessionId,
+          staffUserId: current.id,
+          refreshTokenHash: this.tokens.hash(pair.refreshToken),
+          expiresAt: pair.refreshExpiresAt,
+          ipAddress: metadata.ipAddress?.slice(0, 64) ?? null,
+          userAgent: metadata.userAgent?.slice(0, 512) ?? null,
+        });
+        current.lastLoginAt = new Date();
+        await manager.getRepository<StaffUser>('StaffUser').save(current);
+        return {
+          value: { ...pair, staff: publicStaff(current) },
+          actor: current,
+          resourceId: sessionId,
+        };
+      },
+      false,
+    );
   }
 
   async refresh(token: string) {
@@ -110,11 +126,17 @@ export class AuthService {
   }
 
   async logout(auth: AuthenticatedStaff): Promise<void> {
-    await this.database.transaction(async (manager) => {
-      await this.lockUser(manager, auth.user.id);
-      await manager
-        .getRepository<StaffSession>('StaffSession')
-        .update(
+    await this.audit.execute(
+      {
+        actor: auth.user,
+        action: AuditAction.AUTH_LOGOUT,
+        resourceType: AuditResource.STAFF_SESSION,
+        resourceId: auth.sessionId,
+        statusCode: 204,
+      },
+      async (manager) => {
+        await this.lockUser(manager, auth.user.id);
+        await manager.getRepository<StaffSession>('StaffSession').update(
           {
             id: auth.sessionId,
             staffUserId: auth.user.id,
@@ -122,7 +144,9 @@ export class AuthService {
           },
           { revokedAt: new Date() },
         );
-    });
+        return { value: undefined };
+      },
+    );
   }
 
   private lockUser(manager: EntityManager, id: string) {

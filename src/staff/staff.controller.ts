@@ -1,3 +1,5 @@
+import { CurrentStaff } from '../auth/decorators/current-staff.decorator.js';
+import type { AuthenticatedStaff } from '../auth/auth.types.js';
 import {
   Body,
   Controller,
@@ -62,8 +64,11 @@ export class StaffController {
   @Post()
   @RequirePermissions(Permission.STAFF_WRITE)
   @ApiCreatedResponse({ type: StaffPublicDto })
-  create(@Body() dto: CreateStaffDto) {
-    return this.staff.create(dto);
+  create(
+    @Body() dto: CreateStaffDto,
+    @CurrentStaff() auth: AuthenticatedStaff,
+  ) {
+    return this.staff.create(dto, auth.user);
   }
 
   @Patch(':id')
@@ -72,8 +77,9 @@ export class StaffController {
   update(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() dto: UpdateStaffDto,
+    @CurrentStaff() auth: AuthenticatedStaff,
   ) {
-    return this.staff.update(id, dto);
+    return this.staff.update(id, dto, auth.user);
   }
 
   @Patch(':id/role')
@@ -82,8 +88,9 @@ export class StaffController {
   role(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() dto: UpdateRoleDto,
+    @CurrentStaff() auth: AuthenticatedStaff,
   ) {
-    return this.staff.updateRole(id, dto.role);
+    return this.staff.updateRole(id, dto.role, auth.user);
   }
 
   @Patch(':id/status')
@@ -92,7 +99,8 @@ export class StaffController {
   status(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() dto: UpdateStatusDto,
+    @CurrentStaff() auth: AuthenticatedStaff,
   ) {
-    return this.staff.updateStatus(id, dto.status);
+    return this.staff.updateStatus(id, dto.status, auth.user);
   }
 }

@@ -1,7 +1,8 @@
 # Skyrim Admin API
 
-Backend administrativo do Skyrim Brasil / SkyMP. Foundation (Etapa 00) e
-autenticação/RBAC (Etapa 01). Funcionalidades do jogo ficam para etapas futuras.
+Backend administrativo do Skyrim Brasil / SkyMP. Foundation (Etapa 00),
+autenticação/RBAC (Etapa 01) e auditoria administrativa (Etapa 02).
+Funcionalidades do jogo ficam para etapas futuras.
 
 ## Desenvolvimento local
 
@@ -180,6 +181,57 @@ na migration. COORDINATOR possui todas as permissions; DEV somente `SERVER_START
 `STAFF_WRITE` e `VIP_STORE_WRITE`. Controllers usam `@RequirePermissions` e guards,
 sem comparar níveis de cargo. Nenhuma funcionalidade do jogo é executada nesta etapa.
 
+## Auditoria administrativa
+
+`AuditLog` é o histórico persistente e append-only de ações administrativas.
+Registra `STAFF_CREATE`, `STAFF_UPDATE`, `STAFF_ROLE_CHANGE`, `STAFF_STATUS_CHANGE`,
+`AUTH_LOGIN`, `AUTH_LOGOUT` e `COORDINATOR_BOOTSTRAP`. Login é registrado somente
+quando bem-sucedido; refresh e leituras não geram eventos. O bootstrap registra
+somente a criação inicial, com ator e contexto HTTP nulos.
+
+A migration `1789820000000-AuditLog` cria `audit_logs`, seus índices e um trigger
+`ENABLE ALWAYS` que rejeita UPDATE, DELETE e TRUNCATE, inclusive via SQL direto.
+Não existe `updatedAt` nem API de mutação. O rollback remove trigger, função e
+tabela (com seus dados). A proteção não impede um administrador do banco de
+alterar o schema ou desabilitar o trigger.
+
+| Método | Endpoint | Acesso |
+| --- | --- | --- |
+| GET | `/api/v1/audit` | `AUDIT_READ` |
+| GET | `/api/v1/audit/:id` | `AUDIT_READ` |
+
+A matriz permanece igual: Coordinator, General Chief, Admin e Moderator podem
+consultar; Support e Dev recebem 403; requests anônimas recebem 401.
+A listagem aceita `page` (padrão 1), `limit` (padrão 20, máximo 100) e filtros
+exatos `actorStaffId`, `action`, `outcome`, `resourceType`, `resourceId` e
+`requestId`. `from`/`to` são limites inclusivos em ISO 8601 com timezone; intervalos
+invertidos são rejeitados. A resposta contém `items`, `total`, `page`, `limit` e
+`totalPages`, ordenados por `createdAt DESC, id DESC`. Swagger documenta os DTOs.
+
+O ator vem da autenticação e seu username, displayName e role são copiados no
+momento da ação. `actorStaffId` identifica o staff sem FK: o histórico permanece
+válido mesmo diante de uma remoção excepcional do staff. Não há JOIN para
+reconstruir a identidade passada. O contexto usa o mesmo `x-request-id` da resposta,
+via AsyncLocalStorage, e somente método, caminho sem query string, IP e user-agent.
+Não são copiados body, headers completos, cookies ou mensagens de erro.
+
+A abstração `AuditService.execute` executa a mutação e o SUCCESS na mesma
+transação. Se a gravação falhar, a mutação é revertida e retorna 503. Erros de
+operações autenticadas que já entraram no service geram FAILURE em uma gravação
+separada, depois do rollback; o status original é preservado quando essa gravação
+funciona. Se nem FAILURE puder ser persistido, retorna 503 e emite apenas um aviso
+técnico seguro com request ID. Não há retry automático que possa duplicar eventos.
+Uma indisponibilidade total do banco impede persistir a evidência de falha;
+a aplicação nunca confirma uma mutação sem seu SUCCESS. Rejeições nos guards ou
+na validação anterior ao service não são auditadas nesta etapa.
+
+Metadata é construída explicitamente: campos alterados no perfil, roles ou status
+anteriores/novos. Um sanitizer recursivo remove chaves sensíveis, inclusive em
+arrays e com variações de caixa/separadores, e limita profundidade, tamanho e
+quantidade de elementos. Senhas, hashes, tokens, secrets, credenciais e objetos de
+erro não são contexto de auditoria. Essa defesa por chaves não substitui a seleção
+explícita de campos seguros em cada nova ação.
+
 ## Verificação
 
 ```bash
@@ -203,10 +255,11 @@ TEST_DATABASE_INTEGRATION=true npm run test:e2e
 ```
 
 A suíte Foundation continua validando conexão, opções e health sem alterar tabelas.
-A suíte Auth/RBAC cria um schema temporário exclusivo no mesmo PostgreSQL, executa
-migration/rollback/reaplicação, bootstrap e fluxos HTTP e remove o schema ao terminar.
+As suítes Auth/RBAC e Audit criam schemas temporários exclusivos no PostgreSQL,
+executam migration/rollback/reaplicação, bootstrap e fluxos HTTP e removem os
+schemas ao terminar.
 O usuário de teste precisa de permissão para criar schemas. Dados de staff do schema
-normal não são alterados. Sem a flag, ambas as suítes de banco são explicitamente
+normal não são alterados. Sem a flag, as suítes de banco são explicitamente
 ignoradas. `test:e2e` compila primeiro para carregar entidades/migrations de `dist`.
 `npm run test:cov` gera cobertura.
 
@@ -216,6 +269,7 @@ Para executar o build: `npm run build && npm run start:prod`.
 
 ```text
 src/
+  audit/              # Histórico append-only e consultas protegidas
   auth/               # Login, JWT, sessões e guards
   rbac/               # Roles, permissions e grants explícitos
   staff/              # Gestão de staff e CLI de bootstrap
