@@ -11,6 +11,12 @@ export function requestIdMiddleware(context: RequestContext): RequestHandler {
         : randomUUID();
 
     response.setHeader('x-request-id', requestId);
-    context.run(requestId, next);
+    context.run(requestId, next, {
+      method: request.method,
+      // Never persist query parameters, which can contain credentials.
+      path: request.path,
+      ipAddress: request.ip,
+      userAgent: request.headers['user-agent'],
+    });
   };
 }
