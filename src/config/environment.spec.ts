@@ -1,8 +1,13 @@
+import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { parse } from 'dotenv';
 import { validateEnvironment } from './environment.js';
 
-const example = parse(readFileSync('.env.example'));
+const example: Record<string, string> = {
+  ...parse(readFileSync('.env.example')),
+  JWT_ACCESS_SECRET: randomBytes(48).toString('hex'),
+  JWT_REFRESH_SECRET: randomBytes(48).toString('hex'),
+};
 
 describe('Environment validation', () => {
   it('accepts documented settings and converts types', () => {
@@ -74,5 +79,85 @@ describe('Environment validation', () => {
     expect(() =>
       validateEnvironment({ ...example, UNRELATED: 'value' }),
     ).not.toThrow();
+  });
+});
+
+describe('JWT environment validation', () => {
+  describe.each(['development', 'production'])('%s secrets', (nodeEnv) => {
+    it.each(['JWT_ACCESS_SECRET', 'JWT_REFRESH_SECRET'])(
+      'requires %s, rejects trivial values and enforces 32 characters',
+      (field) => {
+        for (const value of [
+          undefined,
+          '',
+          'secret',
+          'password',
+          '123456',
+          randomBytes(24).toString('base64url').slice(0, 31),
+          ' '.repeat(32),
+          'secret'.padEnd(32),
+        ]) {
+          expect(() =>
+            validateEnvironment({
+              ...example,
+              NODE_ENV: nodeEnv,
+              [field]: value,
+            }),
+          ).toThrow(field);
+        }
+        const secret = randomBytes(24).toString('base64url');
+        expect(secret).toHaveLength(32);
+        const config = validateEnvironment({
+          ...example,
+          NODE_ENV: nodeEnv,
+          [field]: secret,
+        });
+        expect(
+          field === 'JWT_ACCESS_SECRET'
+            ? config.jwt.accessSecret
+            : config.jwt.refreshSecret,
+        ).toBe(secret);
+      },
+    );
+    it('requires distinct secrets without exposing them in validation errors', () => {
+      const secret = randomBytes(32).toString('base64url');
+      const validate = () =>
+        validateEnvironment({
+          ...example,
+          NODE_ENV: nodeEnv,
+          JWT_ACCESS_SECRET: secret,
+          JWT_REFRESH_SECRET: secret,
+        });
+      expect(validate).toThrow('JWT_REFRESH_SECRET');
+      expect(validate).not.toThrow(secret);
+    });
+  });
+  it('rejects shared secrets and unsafe TTLs', () => {
+    expect(() =>
+      validateEnvironment({
+        ...example,
+        JWT_REFRESH_SECRET: example.JWT_ACCESS_SECRET,
+      }),
+    ).toThrow('JWT_REFRESH_SECRET');
+    for (const value of ['0s', '15', '-1h', '2h', 'Infinityd'])
+      expect(() =>
+        validateEnvironment({ ...example, JWT_ACCESS_TTL: value }),
+      ).toThrow('JWT_ACCESS_TTL');
+    expect(() =>
+      validateEnvironment({ ...example, JWT_REFRESH_TTL: '1s' }),
+    ).toThrow('JWT_REFRESH_TTL');
+    expect(() =>
+      validateEnvironment({ ...example, JWT_REFRESH_TTL: '91d' }),
+    ).toThrow('JWT_REFRESH_TTL');
+  });
+  it('uses distinct ephemeral secrets only in test', () => {
+    const config = validateEnvironment({
+      ...example,
+      NODE_ENV: 'test',
+      JWT_ACCESS_SECRET: '',
+      JWT_REFRESH_SECRET: '',
+    });
+    expect(config.jwt.accessSecret.length).toBeGreaterThanOrEqual(32);
+    expect(config.jwt.accessSecret).not.toBe(config.jwt.refreshSecret);
   });
 });
