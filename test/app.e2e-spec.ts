@@ -262,8 +262,11 @@ describe('Foundation HTTP (e2e, substituted database boundary)', () => {
       .expect(200);
     expect(
       Object.keys(response.body.paths).some((path) =>
-        /game-command|execute|console|game-bridge/.test(path),
+        /execute|console|game-bridge/.test(path),
       ),
     ).toBe(false);
+    expect(
+      Object.keys(response.body.paths['/api/v1/game-commands/{id}']),
+    ).toEqual(['get']);
   });
 });

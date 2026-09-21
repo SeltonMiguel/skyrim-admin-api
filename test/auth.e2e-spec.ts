@@ -73,7 +73,8 @@ describeDatabase('Auth + RBAC with real PostgreSQL', () => {
     });
     await database.initialize();
     // Exercise migration, rollback, reproducibility and no-op rerun in an isolated schema.
-    expect(await database.runMigrations()).toHaveLength(4);
+    expect(await database.runMigrations()).toHaveLength(5);
+    await database.undoLastMigration(); // Etapa 04 permission grants
     await database.undoLastMigration();
     await database.undoLastMigration();
     await database.undoLastMigration();
@@ -84,7 +85,7 @@ describeDatabase('Auth + RBAC with real PostgreSQL', () => {
         [schema],
       ),
     ).toHaveLength(0);
-    expect(await database.runMigrations()).toHaveLength(4);
+    expect(await database.runMigrations()).toHaveLength(5);
     expect(await database.runMigrations()).toHaveLength(0);
     const bootstrap = new BootstrapCoordinatorService(
       database,
@@ -482,7 +483,7 @@ describeDatabase('Auth + RBAC with real PostgreSQL', () => {
       expect(response.body.permissions).toEqual([]);
     } finally {
       await database.query(
-        "INSERT INTO role_permissions VALUES ('SUPPORT', 'PLAYER_TELEPORT_TO_STAFF')",
+        "INSERT INTO role_permissions VALUES ('SUPPORT', 'PLAYER_TELEPORT_TO_STAFF'), ('SUPPORT', 'DASHBOARD_READ'), ('SUPPORT', 'GAME_BRIDGE_READ')",
       );
     }
   });
