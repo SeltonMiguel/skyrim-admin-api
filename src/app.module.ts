@@ -1,3 +1,4 @@
+import { GameBridgeModule } from './game-bridge/game-bridge.module.js';
 import { AuditHttpModule } from './audit/audit-http.module.js';
 import { AuthModule } from './auth/auth.module.js';
 import { StaffModule } from './staff/staff.module.js';
@@ -16,6 +17,7 @@ import { HealthModule } from './health/health.module.js';
     AuthModule,
     StaffModule,
     AuditHttpModule,
+    GameBridgeModule,
   ],
 })
 export class AppModule {}

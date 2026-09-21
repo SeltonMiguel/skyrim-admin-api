@@ -1,7 +1,8 @@
 # Skyrim Admin API
 
 Backend administrativo do Skyrim Brasil / SkyMP. Foundation (Etapa 00),
-autenticação/RBAC (Etapa 01) e auditoria administrativa (Etapa 02).
+autenticação/RBAC (Etapa 01), auditoria administrativa (Etapa 02) e infraestrutura
+de Game Bridge/Commands (Etapa 03).
 Funcionalidades do jogo ficam para etapas futuras.
 
 ## Desenvolvimento local
@@ -232,6 +233,30 @@ quantidade de elementos. Senhas, hashes, tokens, secrets, credenciais e objetos 
 erro não são contexto de auditoria. Essa defesa por chaves não substitui a seleção
 explícita de campos seguros em cada nova ação.
 
+## Game Bridge e comandos internos
+
+A Etapa 03 adiciona GameServer, GameConnection, GameCommand e GameCommandResult,
+com migration explícita e serviços internos exportados por GameBridgeModule.
+O único comando é BRIDGE_PING; nenhum endpoint, transporte real ou comando de
+gameplay foi adicionado. GameGateway usa DisconnectedGameGateway em produção:
+nunca simula execução bem-sucedida. O MockGameGateway existe somente nos testes.
+
+Commands usam idempotência por servidor/chave, correlationId próprio, requestId
+do contexto quando existente e state machine centralizada. Dispatch, ACK, RESULT,
+retry e timeout usam transações curtas e locks PostgreSQL. O envio externo ocorre
+fora da transação, protegido por reserva persistente de tentativa. Mensagens duplicadas
+não repetem conclusão; RESULT antes de ACK infere recebimento atomicamente.
+Conexões mantêm histórico, supersession e heartbeat sem ressuscitar sessões antigas.
+Não há scheduler: operações de dispatch/expiração são chamadas explicitamente.
+
+Configure os quatro valores GAME_* documentados em `.env.example`. A política usa
+prazo total fixo desde a reserva da primeira possível entrega e retry limitado; transporte
+indisponível nunca gera sucesso. FAILED representa falha explícita do bridge ou
+pré-entrega comprovada; após possível entrega, ausência de resposta resulta em TIMEOUT. O futuro Agent precisará deduplicar efeitos, pois
+send e commit PostgreSQL não formam uma única transação. Nenhum lifecycle técnico
+entra no AuditLog. Consulte [o protocolo e as decisões](docs/game-bridge-protocol.md)
+para envelopes, transições, limites, timeouts e contrato de cancelamento do adapter.
+
 ## Verificação
 
 ```bash
@@ -255,7 +280,7 @@ TEST_DATABASE_INTEGRATION=true npm run test:e2e
 ```
 
 A suíte Foundation continua validando conexão, opções e health sem alterar tabelas.
-As suítes Auth/RBAC e Audit criam schemas temporários exclusivos no PostgreSQL,
+As suítes Auth/RBAC, Audit e Game Bridge criam schemas temporários exclusivos no PostgreSQL,
 executam migration/rollback/reaplicação, bootstrap e fluxos HTTP e removem os
 schemas ao terminar.
 O usuário de teste precisa de permissão para criar schemas. Dados de staff do schema
@@ -281,6 +306,7 @@ src/
   config/             # ConfigModule e validação compartilhada
   database/           # Conexão Nest e DataSource do CLI
     migrations/
+  game-bridge/        # Servidores, conexões, comandos e gateway interno
   health/             # Consulta real de disponibilidade
   app.module.ts
   main.ts

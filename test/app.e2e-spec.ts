@@ -245,4 +245,25 @@ describe('Foundation HTTP (e2e, substituted database boundary)', () => {
     });
     expect(response.body.paths).toHaveProperty('/api/v1/health');
   });
+  it('exposes no generic command execution or public bridge callback', async () => {
+    for (const path of [
+      '/api/v1/game-command',
+      '/api/v1/execute',
+      '/api/v1/console',
+      '/api/v1/command',
+      '/api/v1/game-bridge/ack',
+    ])
+      await request(app.getHttpServer())
+        .post(path)
+        .send({ command: 'anything' })
+        .expect(404);
+    const response = await request(app.getHttpServer())
+      .get('/docs-json')
+      .expect(200);
+    expect(
+      Object.keys(response.body.paths).some((path) =>
+        /game-command|execute|console|game-bridge/.test(path),
+      ),
+    ).toBe(false);
+  });
 });

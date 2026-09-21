@@ -161,3 +161,25 @@ describe('JWT environment validation', () => {
     expect(config.jwt.accessSecret).not.toBe(config.jwt.refreshSecret);
   });
 });
+
+describe('Game Bridge environment validation', () => {
+  it('provides bounded documented defaults', () => {
+    expect(validateEnvironment(example).gameBridge).toEqual({
+      heartbeatTimeoutMs: 30000,
+      ackTimeoutMs: 5000,
+      executionTimeoutMs: 30000,
+      maxDispatchAttempts: 3,
+    });
+  });
+  it.each([
+    'GAME_BRIDGE_HEARTBEAT_TIMEOUT_MS',
+    'GAME_COMMAND_ACK_TIMEOUT_MS',
+    'GAME_COMMAND_EXECUTION_TIMEOUT_MS',
+    'GAME_COMMAND_MAX_DISPATCH_ATTEMPTS',
+  ])('rejects invalid %s', (field) => {
+    for (const value of ['0', '-1', '1.5', 'abc', 'Infinity', '999999999999'])
+      expect(() => validateEnvironment({ ...example, [field]: value })).toThrow(
+        field,
+      );
+  });
+});
