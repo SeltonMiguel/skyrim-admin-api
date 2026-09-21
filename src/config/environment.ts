@@ -7,6 +7,12 @@ import Joi from 'joi';
 export interface ApplicationConfig {
   nodeEnv: 'development' | 'test' | 'production';
   port: number;
+  gameBridge: {
+    heartbeatTimeoutMs: number;
+    ackTimeoutMs: number;
+    executionTimeoutMs: number;
+    maxDispatchAttempts: number;
+  };
   jwt: {
     accessSecret: string;
     refreshSecret: string;
@@ -27,6 +33,10 @@ export interface ApplicationConfig {
 interface Environment {
   NODE_ENV: ApplicationConfig['nodeEnv'];
   PORT: number;
+  GAME_BRIDGE_HEARTBEAT_TIMEOUT_MS: number;
+  GAME_COMMAND_ACK_TIMEOUT_MS: number;
+  GAME_COMMAND_EXECUTION_TIMEOUT_MS: number;
+  GAME_COMMAND_MAX_DISPATCH_ATTEMPTS: number;
   DB_HOST: string;
   DB_PORT: number;
   DB_USERNAME: string;
@@ -55,6 +65,26 @@ const schema = Joi.object<Environment>({
     .valid('development', 'test', 'production')
     .default('development'),
   PORT: Joi.number().integer().min(1).max(65535).default(3000),
+  GAME_BRIDGE_HEARTBEAT_TIMEOUT_MS: Joi.number()
+    .integer()
+    .min(100)
+    .max(3600000)
+    .default(30000),
+  GAME_COMMAND_ACK_TIMEOUT_MS: Joi.number()
+    .integer()
+    .min(100)
+    .max(3600000)
+    .default(5000),
+  GAME_COMMAND_EXECUTION_TIMEOUT_MS: Joi.number()
+    .integer()
+    .min(100)
+    .max(86400000)
+    .default(30000),
+  GAME_COMMAND_MAX_DISPATCH_ATTEMPTS: Joi.number()
+    .integer()
+    .min(1)
+    .max(10)
+    .default(3),
   DB_HOST: Joi.string().trim().required(),
   DB_PORT: Joi.number().integer().min(1).max(65535).default(5432),
   DB_USERNAME: Joi.string().trim().required(),
@@ -114,6 +144,12 @@ export function validateEnvironment(
     );
   }
   return {
+    gameBridge: {
+      heartbeatTimeoutMs: value.GAME_BRIDGE_HEARTBEAT_TIMEOUT_MS,
+      ackTimeoutMs: value.GAME_COMMAND_ACK_TIMEOUT_MS,
+      executionTimeoutMs: value.GAME_COMMAND_EXECUTION_TIMEOUT_MS,
+      maxDispatchAttempts: value.GAME_COMMAND_MAX_DISPATCH_ATTEMPTS,
+    },
     jwt: {
       accessSecret: value.JWT_ACCESS_SECRET || testAccessSecret,
       refreshSecret: value.JWT_REFRESH_SECRET || testRefreshSecret,
