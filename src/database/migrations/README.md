@@ -41,3 +41,9 @@ a migration GameBridge aplicada. São dois campos nullable em `game_commands`:
 presença conjunta. A reserva persiste antes do send e permite liberar transações
 antes de I/O externo. O rollback remove somente os campos e o check; interrompa
 workers antes de reverter. Não há payloadHash nem nova configuração.
+
+A Etapa 04 adiciona `1789840000000-AdminQueries`: insere DASHBOARD_READ e
+GAME_BRIDGE_READ e seus 12 vínculos explícitos com as seis roles. Não altera
+tabelas, entidades ou migrations anteriores. O rollback remove somente essas
+permissions e seus vínculos; permissões anteriores são preservadas. O catálogo
+passa a ter 31 permissions e 83 grants. `synchronize` continua false.

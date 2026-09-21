@@ -6,6 +6,8 @@ export const ROLE_PERMISSIONS: Readonly<
   Record<RoleName, readonly Permission[]>
 > = {
   [RoleName.COORDINATOR]: [
+    Permission.DASHBOARD_READ,
+    Permission.GAME_BRIDGE_READ,
     Permission.STAFF_READ,
     Permission.STAFF_WRITE,
     Permission.VIP_STORE_WRITE,
@@ -37,6 +39,8 @@ export const ROLE_PERMISSIONS: Readonly<
     Permission.PLAYER_TELEPORT_TO_STAFF,
   ],
   [RoleName.GENERAL_CHIEF]: [
+    Permission.DASHBOARD_READ,
+    Permission.GAME_BRIDGE_READ,
     Permission.CHARACTER_INVENTORY_READ,
     Permission.CHARACTER_INVENTORY_WRITE,
     Permission.CHARACTER_PROPERTY_READ,
@@ -62,6 +66,8 @@ export const ROLE_PERMISSIONS: Readonly<
     Permission.PLAYER_TELEPORT_TO_STAFF,
   ],
   [RoleName.ADMIN]: [
+    Permission.DASHBOARD_READ,
+    Permission.GAME_BRIDGE_READ,
     Permission.PLAYER_BAN,
     Permission.PLAYER_UNBAN,
     Permission.PLAYER_GOD_MODE,
@@ -73,6 +79,8 @@ export const ROLE_PERMISSIONS: Readonly<
     Permission.PLAYER_TELEPORT_TO_STAFF,
   ],
   [RoleName.MODERATOR]: [
+    Permission.DASHBOARD_READ,
+    Permission.GAME_BRIDGE_READ,
     Permission.STAFF_NOCLIP,
     Permission.STAFF_INVISIBILITY,
     Permission.AUDIT_READ,
@@ -80,8 +88,14 @@ export const ROLE_PERMISSIONS: Readonly<
     Permission.STAFF_TELEPORT_TO_PLAYER,
     Permission.PLAYER_TELEPORT_TO_STAFF,
   ],
-  [RoleName.SUPPORT]: [Permission.PLAYER_TELEPORT_TO_STAFF],
+  [RoleName.SUPPORT]: [
+    Permission.DASHBOARD_READ,
+    Permission.GAME_BRIDGE_READ,
+    Permission.PLAYER_TELEPORT_TO_STAFF,
+  ],
   [RoleName.DEV]: [
+    Permission.DASHBOARD_READ,
+    Permission.GAME_BRIDGE_READ,
     Permission.SERVER_START,
     Permission.SERVER_PAUSE,
     Permission.SERVER_RESTART,

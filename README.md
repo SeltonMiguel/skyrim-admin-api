@@ -177,8 +177,9 @@ login cria outra sessão com nova expiração. Credenciais inválidas recebem a 
 mensagem de 401; autenticação válida sem as permissions necessárias recebe 403.
 
 A matriz explícita está em `src/rbac/role-permissions.ts` e seu snapshot versionado
-na migration. COORDINATOR possui todas as permissions; DEV somente `SERVER_START`,
-`SERVER_PAUSE` e `SERVER_RESTART`. Apenas COORDINATOR recebe `STAFF_READ`,
+nas migrations. COORDINATOR possui todas as permissions; DEV recebe `SERVER_START`,
+`SERVER_PAUSE`, `SERVER_RESTART` e as leituras operacionais `DASHBOARD_READ` e
+`GAME_BRIDGE_READ`. Apenas COORDINATOR recebe `STAFF_READ`,
 `STAFF_WRITE` e `VIP_STORE_WRITE`. Controllers usam `@RequirePermissions` e guards,
 sem comparar níveis de cargo. Nenhuma funcionalidade do jogo é executada nesta etapa.
 
@@ -257,6 +258,53 @@ send e commit PostgreSQL não formam uma única transação. Nenhum lifecycle t�
 entra no AuditLog. Consulte [o protocolo e as decisões](docs/game-bridge-protocol.md)
 para envelopes, transições, limites, timeouts e contrato de cancelamento do adapter.
 
+## Dashboard e consultas administrativas
+
+A Etapa 04 expõe somente GET autenticados. `DASHBOARD_READ` e `GAME_BRIDGE_READ`
+são concedidas explicitamente às seis roles (COORDINATOR, GENERAL_CHIEF, ADMIN,
+MODERATOR, SUPPORT e DEV), sem ampliar permissões de escrita ou `AUDIT_READ`.
+A migration incremental `1789840000000-AdminQueries` acrescenta duas permissions
+e 12 vínculos, totalizando 31 permissions e 83 grants; migrations anteriores não mudam.
+
+| Endpoint (prefixo `/api/v1`) | Permission | Filtros |
+| --- | --- | --- |
+| `GET /dashboard` | DASHBOARD_READ | Nenhum; janela fixa de 24h |
+| `GET /game-servers` | GAME_BRIDGE_READ | code exato, enabled (`true`/`false`), health, page, limit |
+| `GET /game-servers/:id` | GAME_BRIDGE_READ | UUID do servidor |
+| `GET /game-servers/:id/connections` | GAME_BRIDGE_READ | status, from, to, page, limit |
+| `GET /game-servers/:id/commands` | GAME_BRIDGE_READ | status, type, requestedByStaffId, requestId, correlationId, from, to, page, limit |
+| `GET /game-commands/:id` | GAME_BRIDGE_READ | UUID do comando |
+
+Dashboard retorna `generatedAt`, contadores de servidores e comandos criados no
+intervalo inclusivo `[generatedAt - 24h, generatedAt]`, com `windowHours: 24`,
+total, `byStatus` e `attentionRequired = FAILED + TIMEOUT`. Usa agregações no
+PostgreSQL, sem incluir AuditLog, dados pessoais, payloads ou resultados. Pequenas
+diferenças entre contagens concorrentes são aceitáveis; não há locks de leitura.
+
+Health é derivado pelo `BridgeClock` e pelo timeout de heartbeat existente:
+`DISABLED` tem precedência quando enabled=false; `ONLINE` exige conexão CONNECTED
+com heartbeat ainda válido; `STALE` significa CONNECTED com heartbeat vencido
+(inclusive no instante exato do timeout); `OFFLINE` significa ausência de CONNECTED.
+Detectar STALE não atualiza a conexão. `currentConnection` é a conexão CONNECTED,
+ou null, inclusive quando há apenas histórico de conexões encerradas.
+
+Listagens retornam `{ items, total, page, limit, totalPages }`, com page=1,
+limit=20, máximo 100 por página e page até 1000000, como Audit. Total zero implica
+totalPages=0. Servidores ordenam por name ASC/id ASC; conexões por connectedAt
+DESC/id DESC; comandos por createdAt DESC/id DESC. Datas from/to são ISO 8601 com
+timezone, inclusivas, filtram connectedAt nas conexões e createdAt nos comandos;
+intervalos invertidos são rejeitados. Não há ordenação SQL configurável pelo cliente.
+UUID inválido retorna 400; recurso/servidor inexistente retorna 404; histórico vazio
+de servidor existente retorna 200. Filtros desconhecidos são rejeitados.
+
+Presenters usam allowlists. Comandos na listagem não carregam payload/result;
+somente o detalhe os apresenta, junto com deadlines e timestamps. idempotencyKey,
+tokens de lease/ownership, hashes e tokens de autenticação ficam ocultos.
+Consultas não alteram estado nem geram AuditLog; requestId segue a infraestrutura
+HTTP existente. GameCommandBus permanece interno: não há mutation ou execução HTTP.
+Swagger documenta filtros, respostas e erros. Joins evitam consultas por servidor
+ou por comando; paginação/counts usam um número constante de queries.
+
 ## Verificação
 
 ```bash
@@ -280,7 +328,7 @@ TEST_DATABASE_INTEGRATION=true npm run test:e2e
 ```
 
 A suíte Foundation continua validando conexão, opções e health sem alterar tabelas.
-As suítes Auth/RBAC, Audit e Game Bridge criam schemas temporários exclusivos no PostgreSQL,
+As suítes Auth/RBAC, Audit, Game Bridge e Admin Queries criam schemas temporários exclusivos no PostgreSQL,
 executam migration/rollback/reaplicação, bootstrap e fluxos HTTP e removem os
 schemas ao terminar.
 O usuário de teste precisa de permissão para criar schemas. Dados de staff do schema
