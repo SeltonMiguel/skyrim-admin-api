@@ -22,6 +22,7 @@ import { GameServerService } from './game-server.service.js';
     { provide: GameGateway, useClass: DisconnectedGameGateway },
   ],
   exports: [
+    BridgeClock,
     GameServerService,
     GameConnectionService,
     GameCommandBus,
