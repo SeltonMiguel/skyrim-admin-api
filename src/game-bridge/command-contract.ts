@@ -1,15 +1,31 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ConflictException } from '@nestjs/common';
 import { canonicalJson } from './canonical-json.js';
 import { isUUID } from 'class-validator';
 import { CommandStatus } from './command-state.js';
 import type { GameCommand } from './entities/game-command.entity.js';
 
+import {
+  characterPayload,
+  characterResult,
+  CHARACTER_COMMAND_TYPES,
+  isCharacterCommand,
+} from '../character-management/character-command.contracts.js';
+import type { CharacterCommandMap } from '../character-management/character-command.contracts.js';
+import { MAX_COMMAND_PAYLOAD_BYTES } from './command-limits.js';
+export {
+  MAX_COMMAND_PAYLOAD_BYTES,
+  MAX_COMMAND_RESULT_BYTES,
+} from './command-limits.js';
+
 export const PROTOCOL_VERSION = '1' as const;
-export const MAX_JSON_BYTES = 4096;
-export interface CommandMap {
+export interface CommandMap extends CharacterCommandMap {
   BRIDGE_PING: { payload: { nonce: string }; result: { nonce: string } };
 }
 export type CommandType = keyof CommandMap;
+export const COMMAND_TYPES: readonly CommandType[] = [
+  'BRIDGE_PING',
+  ...CHARACTER_COMMAND_TYPES,
+];
 export type CommandPayload<T extends CommandType> = CommandMap[T]['payload'];
 export type CommandResult<T extends CommandType> = CommandMap[T]['result'];
 export type SubmitCommand = {
@@ -28,11 +44,11 @@ export interface BridgeMessage {
   commandId: string;
   correlationId: string;
 }
-export type ResultMessage = BridgeMessage &
+export type ResultMessage<T extends CommandType = CommandType> = BridgeMessage &
   (
     | {
         outcome: CommandStatus.SUCCEEDED;
-        result: CommandResult<'BRIDGE_PING'>;
+        result: CommandResult<T>;
       }
     | {
         outcome: CommandStatus.FAILED;
@@ -85,22 +101,40 @@ export function pingData(value: unknown): CommandPayload<'BRIDGE_PING'> {
   const nonce: unknown = descriptor.value;
   if (
     typeof nonce !== 'string' ||
-    Buffer.byteLength(nonce, 'utf8') > MAX_JSON_BYTES
+    Buffer.byteLength(nonce, 'utf8') > MAX_COMMAND_PAYLOAD_BYTES
   )
     throw new BadRequestException('BRIDGE_PING data too large or invalid');
   identifier(nonce, 'nonce');
   const data = { nonce };
-  if (Buffer.byteLength(JSON.stringify(data), 'utf8') > MAX_JSON_BYTES)
+  if (
+    Buffer.byteLength(JSON.stringify(data), 'utf8') > MAX_COMMAND_PAYLOAD_BYTES
+  )
     throw new BadRequestException('BRIDGE_PING data too large');
   return data;
 }
-export function commandPayload(
-  type: CommandType,
+export function commandPayload<T extends CommandType>(
+  type: T,
   payload: unknown,
-): CommandPayload<CommandType> {
-  if (type !== 'BRIDGE_PING')
-    throw new BadRequestException('Unsupported command type');
-  return pingData(payload);
+): CommandPayload<T> {
+  if (type === 'BRIDGE_PING') return pingData(payload) as CommandPayload<T>;
+  if (isCharacterCommand(type))
+    return characterPayload(type, payload) as CommandPayload<T>;
+  throw new BadRequestException('Unsupported command type');
+}
+export function commandResult<T extends CommandType>(
+  type: T,
+  value: unknown,
+  payload: unknown,
+): CommandResult<T> {
+  if (type === 'BRIDGE_PING') {
+    const result = pingData(value);
+    if (result.nonce !== pingData(payload).nonce)
+      throw new ConflictException('Result nonce mismatch');
+    return result as CommandResult<T>;
+  }
+  if (isCharacterCommand(type))
+    return characterResult(type, value, payload) as CommandResult<T>;
+  throw new BadRequestException('Unsupported command type');
 }
 export function sameCommand(
   existing: Pick<GameCommand, 'type' | 'payload'>,
@@ -111,8 +145,9 @@ export function sameCommand(
     existing.type === type &&
     canonicalJson(
       commandPayload(existing.type, existing.payload),
-      MAX_JSON_BYTES,
-    ) === canonicalJson(commandPayload(type, payload), MAX_JSON_BYTES)
+      MAX_COMMAND_PAYLOAD_BYTES,
+    ) ===
+      canonicalJson(commandPayload(type, payload), MAX_COMMAND_PAYLOAD_BYTES)
   );
 }
 export function validateMessage(message: BridgeMessage): void {

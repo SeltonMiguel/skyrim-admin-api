@@ -19,7 +19,7 @@ import type { TerminalStatus } from '../command-state.js';
 )
 @Check(
   'game_command_results_size_check',
-  `result IS NULL OR (jsonb_typeof(result) = 'object' AND octet_length(result::text) <= 4096)`,
+  `result IS NULL OR (jsonb_typeof(result) = 'object' AND octet_length(result::text) <= 65536)`,
 )
 export class GameCommandResult {
   @PrimaryGeneratedColumn('uuid')

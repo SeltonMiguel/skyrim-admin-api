@@ -1,0 +1,2 @@
+export const MAX_COMMAND_PAYLOAD_BYTES = 4096;
+export const MAX_COMMAND_RESULT_BYTES = 65536;
