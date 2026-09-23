@@ -324,7 +324,7 @@ describe('Admin read models', () => {
         .currentConnection,
     ).toBeNull();
   });
-  it('hides leases/idempotency/staff secrets and exposes payload/result only on detail', async () => {
+  it('hides leases/idempotency/staff secrets and redacts payload/result bodies even on detail', async () => {
     const command = Object.assign(new GameCommand(), {
       id: 'c',
       type: 'BRIDGE_PING',
@@ -347,10 +347,9 @@ describe('Admin read models', () => {
     });
     expect(commandSummary(command)).not.toHaveProperty('payload');
     expect(commandSummary(command)).not.toHaveProperty('result');
-    expect(commandDetail(command)).toMatchObject({
-      payload: { nonce: 'ping' },
-      result: { result: { nonce: 'ping' } },
-    });
+    expect(commandDetail(command)).not.toHaveProperty('payload');
+    expect(commandDetail(command).result).not.toHaveProperty('result');
+    expect(commandDetail(command).result).not.toHaveProperty('errorMessage');
     expect(commandDetail({ ...command, result: null }).result).toBeNull();
     expect(
       JSON.stringify([commandSummary(command), commandDetail(command)]),
@@ -361,7 +360,7 @@ describe('Admin read models', () => {
     f.builder.getOne.mockResolvedValue(command);
     expect(await f.commands.get('c')).toEqual(commandDetail(command));
     expect(JSON.stringify(f.builder.select.mock.calls)).not.toMatch(
-      /Lease|idempotency/,
+      /Lease|idempotency|command.payload|result.result|result.errorMessage/,
     );
   });
 });
