@@ -47,3 +47,11 @@ GAME_BRIDGE_READ e seus 12 vínculos explícitos com as seis roles. Não altera
 tabelas, entidades ou migrations anteriores. O rollback remove somente essas
 permissions e seus vínculos; permissões anteriores são preservadas. O catálogo
 passa a ter 31 permissions e 83 grants. `synchronize` continua false.
+
+A Etapa 05 adiciona `1789850000000-CharacterResultLimit`: substitui somente
+`game_command_results_size_check`, elevando `octet_length(result::text)` de 4096
+para 65536 bytes e mantendo objeto JSONB ou NULL. Payload permanece em 4096 bytes.
+Não cria tabelas nem altera grants ou migrations anteriores. `down` restaura 4096;
+se houver resultados maiores, falha atomicamente, preservando os dados e o check
+de 65536. Não trunca nem remove resultados. Testes exercitam rollback/reaplicação,
+recusa de downgrade com dados grandes e ausência de diferenças schema/entities.
