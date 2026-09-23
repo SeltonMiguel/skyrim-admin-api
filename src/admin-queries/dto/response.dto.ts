@@ -1,6 +1,7 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { CommandStatus } from '../../game-bridge/command-state.js';
 import type { TerminalStatus } from '../../game-bridge/command-state.js';
+import { COMMAND_TYPES } from '../../game-bridge/command-contract.js';
 import type { CommandType } from '../../game-bridge/command-contract.js';
 import { ServerHealth } from '../server-health.js';
 
@@ -60,7 +61,7 @@ export class CommandListDto {
   id: string;
   @ApiProperty({ format: 'uuid' })
   gameServerId: string;
-  @ApiProperty({ enum: ['BRIDGE_PING'] })
+  @ApiProperty({ enum: COMMAND_TYPES })
   type: CommandType;
   @ApiProperty({ enum: CommandStatus })
   status: CommandStatus;
@@ -82,11 +83,6 @@ export class CommandListDto {
   createdAt: Date;
 }
 
-export class BridgePingDataDto {
-  @ApiProperty({ minLength: 1, maxLength: 128 })
-  nonce: string;
-}
-
 export class CommandResultDto {
   @ApiProperty({
     enum: [
@@ -96,19 +92,13 @@ export class CommandResultDto {
     ],
   })
   outcome: TerminalStatus;
-  @ApiProperty({ type: BridgePingDataDto, nullable: true })
-  result: BridgePingDataDto | null;
   @ApiProperty({ type: String, nullable: true })
   errorCode: string | null;
-  @ApiProperty({ type: String, nullable: true })
-  errorMessage: string | null;
   @ApiProperty({ format: 'date-time' })
   receivedAt: Date;
 }
 
 export class CommandDetailDto extends CommandListDto {
-  @ApiProperty({ type: BridgePingDataDto })
-  payload: BridgePingDataDto;
   @ApiProperty({ type: String, format: 'date-time', nullable: true })
   ackDeadlineAt: Date | null;
   @ApiProperty({ type: String, format: 'date-time', nullable: true })

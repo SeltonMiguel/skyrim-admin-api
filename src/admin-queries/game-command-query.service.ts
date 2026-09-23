@@ -61,7 +61,6 @@ export class GameCommandQueryService {
       .createQueryBuilder('command')
       .select([
         ...SUMMARY_COLUMNS,
-        'command.payload',
         'command.ackDeadlineAt',
         'command.executionDeadlineAt',
       ])
@@ -71,6 +70,15 @@ export class GameCommandQueryService {
         'result',
         'result.gameCommandId = command.id',
       )
+      .select([
+        ...SUMMARY_COLUMNS,
+        'command.ackDeadlineAt',
+        'command.executionDeadlineAt',
+        'result.id',
+        'result.outcome',
+        'result.errorCode',
+        'result.receivedAt',
+      ])
       .where('command.id = :id', { id })
       .getOne();
     if (!command) throw new NotFoundException('Game command not found');

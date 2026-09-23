@@ -15,6 +15,7 @@ import {
   Min,
 } from 'class-validator';
 import { CommandStatus } from '../../game-bridge/command-state.js';
+import { COMMAND_TYPES } from '../../game-bridge/command-contract.js';
 import type { CommandType } from '../../game-bridge/command-contract.js';
 import { ServerHealth } from '../server-health.js';
 
@@ -98,9 +99,9 @@ export class CommandQueryDto extends DatePageQueryDto {
   @IsEnum(CommandStatus)
   status?: CommandStatus;
 
-  @ApiPropertyOptional({ enum: ['BRIDGE_PING'] })
+  @ApiPropertyOptional({ enum: COMMAND_TYPES })
   @IsOptional()
-  @IsIn(['BRIDGE_PING'])
+  @IsIn(COMMAND_TYPES)
   type?: CommandType;
 
   @ApiPropertyOptional({ format: 'uuid' })
