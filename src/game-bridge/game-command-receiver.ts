@@ -7,8 +7,13 @@ import { ConfigService } from '@nestjs/config';
 import { DataSource, EntityManager } from 'typeorm';
 import type { ApplicationConfig } from '../config/environment.js';
 import { canonicalJson } from './canonical-json.js';
+import { commandJson } from './command-json.js';
 import { BridgeClock } from './bridge-clock.js';
-import { pingData, validateMessage } from './command-contract.js';
+import {
+  commandResult,
+  validateMessage,
+  MAX_COMMAND_RESULT_BYTES,
+} from './command-contract.js';
 import type { BridgeMessage, ResultMessage } from './command-contract.js';
 import { CommandStatus, isTerminal, transition } from './command-state.js';
 import { GameCommand } from './entities/game-command.entity.js';
@@ -48,9 +53,9 @@ export class GameCommandReceiver {
   async result(input: ResultMessage): Promise<GameCommand> {
     const message = { ...input };
     validateMessage(message);
-    const result =
+    const rawResult =
       message.outcome === CommandStatus.SUCCEEDED
-        ? pingData(message.result)
+        ? commandJson(message.result, MAX_COMMAND_RESULT_BYTES)
         : null;
     const errorCode =
       message.outcome === CommandStatus.FAILED ? message.errorCode : null;
@@ -64,9 +69,13 @@ export class GameCommandReceiver {
       throw new BadRequestException('Invalid bridge result');
     return this.store.locked(message.commandId, async (manager, command) => {
       await this.match(manager, command, message);
+      const result =
+        message.outcome === CommandStatus.SUCCEEDED
+          ? commandResult(command.type, rawResult, command.payload)
+          : null;
+      if (command.type !== 'BRIDGE_PING' && errorCode === 'PING_REJECTED')
+        throw new BadRequestException('Invalid character failure code');
       this.store.markPossiblyDelivered(command);
-      if (result && result.nonce !== pingData(command.payload).nonce)
-        throw new ConflictException('Result nonce mismatch');
       if (isTerminal(command.status)) {
         const existing = await manager
           .getRepository<GameCommandResult>('GameCommandResult')
@@ -74,7 +83,8 @@ export class GameCommandReceiver {
         if (
           existing.outcome !== message.outcome ||
           existing.errorCode !== errorCode ||
-          canonicalJson(existing.result) !== canonicalJson(result)
+          canonicalJson(existing.result, MAX_COMMAND_RESULT_BYTES) !==
+            canonicalJson(result, MAX_COMMAND_RESULT_BYTES)
         )
           throw new ConflictException(
             'Command already completed with another result',

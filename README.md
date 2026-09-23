@@ -2,8 +2,9 @@
 
 Backend administrativo do Skyrim Brasil / SkyMP. Foundation (Etapa 00),
 autenticação/RBAC (Etapa 01), auditoria administrativa (Etapa 02) e infraestrutura
-de Game Bridge/Commands (Etapa 03).
-Funcionalidades do jogo ficam para etapas futuras.
+de Game Bridge/Commands (Etapa 03), consultas administrativas (Etapa 04) e
+Character Management assíncrono (Etapa 05). O transporte real para Skyrim continua
+reservado a uma etapa futura.
 
 ## Desenvolvimento local
 
@@ -238,8 +239,8 @@ explícita de campos seguros em cada nova ação.
 
 A Etapa 03 adiciona GameServer, GameConnection, GameCommand e GameCommandResult,
 com migration explícita e serviços internos exportados por GameBridgeModule.
-O único comando é BRIDGE_PING; nenhum endpoint, transporte real ou comando de
-gameplay foi adicionado. GameGateway usa DisconnectedGameGateway em produção:
+BRIDGE_PING permanece disponível; a Etapa 05 acrescenta 17 comandos tipados de
+Character Management. GameGateway usa DisconnectedGameGateway em produção:
 nunca simula execução bem-sucedida. O MockGameGateway existe somente nos testes.
 
 Commands usam idempotência por servidor/chave, correlationId próprio, requestId
@@ -297,13 +298,38 @@ intervalos invertidos são rejeitados. Não há ordenação SQL configurável pe
 UUID inválido retorna 400; recurso/servidor inexistente retorna 404; histórico vazio
 de servidor existente retorna 200. Filtros desconhecidos são rejeitados.
 
-Presenters usam allowlists. Comandos na listagem não carregam payload/result;
-somente o detalhe os apresenta, junto com deadlines e timestamps. idempotencyKey,
-tokens de lease/ownership, hashes e tokens de autenticação ficam ocultos.
+Presenters usam allowlists. Listagem e detalhe genéricos não carregam payload nem
+result body, inclusive para BRIDGE_PING. O detalhe expõe deadlines, timestamps e
+somente outcome/errorCode/receivedAt do resultado. idempotencyKey, characterId,
+IDs de alvos, tokens de lease/ownership e segredos de autenticação ficam ocultos.
 Consultas não alteram estado nem geram AuditLog; requestId segue a infraestrutura
-HTTP existente. GameCommandBus permanece interno: não há mutation ou execução HTTP.
+HTTP existente. GameCommandBus permanece interno; os POSTs da Etapa 05 escolhem
+tipos fixos e exigem suas próprias permissions.
 Swagger documenta filtros, respostas e erros. Joins evitam consultas por servidor
 ou por comando; paginação/counts usam um número constante de queries.
+
+## Character Management
+
+A Etapa 05 aceita 17 operações em
+`POST /api/v1/game-servers/:serverId/characters/:characterId/...` com JWT,
+permission específica e `Idempotency-Key` obrigatório. Todos retornam 202 e
+`Location: /api/v1/character-operations/:commandId`. 202 significa aceitação
+persistida; a execução depende do lifecycle do bridge. Servidor disabled retorna
+409; enabled offline/stale aceita PENDING.
+
+Mutations gravam GameCommand + AuditLog SUCCESS atomicamente; falha de auditoria
+retorna 503 e desfaz a criação. Queries não geram AuditLog. Retry HTTP equivalente
+retorna os mesmos IDs sem novo Audit ou dispatch. O dispatcher existente faz
+reserva/commit antes de send, sem transação aberta durante I/O; não há scheduler
+ou Agent real nesta etapa.
+
+`GET /api/v1/character-operations/:commandId` expõe payload/result tipados somente
+com a permission correspondente ao tipo. GAME_BRIDGE_READ não dá acesso ao domínio.
+Não são criados snapshots: Skyrim continua sendo a fonte de verdade.
+
+Payload tem teto de 4096 bytes; result, 65536 bytes, incluindo representação
+`jsonb::text`. A migration incremental `1789850000000-CharacterResultLimit` altera
+somente o check de result. Consulte [contratos, endpoints, auditoria e decisões](docs/character-management.md).
 
 ## Verificação
 

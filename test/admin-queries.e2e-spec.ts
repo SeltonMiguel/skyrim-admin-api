@@ -106,9 +106,10 @@ describeDatabase('Admin read APIs with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(5);
+    expect(await database.runMigrations()).toHaveLength(6);
     expect(await database.runMigrations()).toHaveLength(0);
     // Roll back only this stage and prove previous permission data survives.
+    await database.undoLastMigration(); // Etapa 05 result size constraint
     await database.undoLastMigration();
     expect(await database.query('SELECT * FROM permissions')).toHaveLength(29);
     expect(await database.query('SELECT * FROM role_permissions')).toHaveLength(
@@ -119,7 +120,7 @@ describeDatabase('Admin read APIs with real PostgreSQL', () => {
         "SELECT * FROM permissions WHERE name IN ('DASHBOARD_READ', 'GAME_BRIDGE_READ')",
       ),
     ).toEqual([]);
-    expect(await database.runMigrations()).toHaveLength(1);
+    expect(await database.runMigrations()).toHaveLength(2);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -178,7 +179,7 @@ describeDatabase('Admin read APIs with real PostgreSQL', () => {
     expect(
       (await database.driver.createSchemaBuilder().log()).upQueries,
     ).toEqual([]);
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(5);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(6);
     expect(await database.query('SELECT * FROM permissions')).toHaveLength(31);
   });
   it.each(Object.values(R))(
@@ -512,7 +513,7 @@ describeDatabase('Admin read APIs with real PostgreSQL', () => {
       target.id,
     ]);
   });
-  it('presents command detail with payload and result while hiding actual non-null lease data and idempotency', async () => {
+  it('presents operational command detail without payload/result body, leases or idempotency', async () => {
     const s = await server();
     const c = await command(s.id, S.PENDING, {
       dispatchLeaseId: randomUUID(),
@@ -520,13 +521,12 @@ describeDatabase('Admin read APIs with real PostgreSQL', () => {
     });
     const pending = await get(`/game-commands/${c.id}`).expect(200);
     expect(pending.body).toMatchObject({
-      payload: { nonce: 'ping' },
       result: null,
     });
     expect(pending.text).not.toContain(c.dispatchLeaseId!);
     expect(pending.text).not.toContain(c.idempotencyKey);
     expect(pending.text).not.toMatch(
-      /dispatchLease|idempotencyKey|passwordHash|refreshTokenHash/,
+      /payload|dispatchLease|idempotencyKey|passwordHash|refreshTokenHash/,
     );
     await commands().update(c.id, {
       status: S.SUCCEEDED,
@@ -548,14 +548,11 @@ describeDatabase('Admin read APIs with real PostgreSQL', () => {
     expect(body).toMatchObject({
       id: c.id,
       status: S.SUCCEEDED,
-      payload: { nonce: 'ping' },
       ackDeadlineAt: c.ackDeadlineAt?.toISOString(),
       executionDeadlineAt: c.executionDeadlineAt?.toISOString(),
       result: {
         outcome: S.SUCCEEDED,
-        result: { nonce: 'ping' },
         errorCode: null,
-        errorMessage: null,
         receivedAt: now.toISOString(),
       },
     });
@@ -577,9 +574,7 @@ describeDatabase('Admin read APIs with real PostgreSQL', () => {
       (await get(`/game-commands/${c.id}`).expect(200)).body.result,
     ).toEqual({
       outcome: S.FAILED,
-      result: null,
       errorCode: 'BRIDGE_ERROR',
-      errorMessage: 'Bridge reported failure',
       receivedAt: now.toISOString(),
     });
   });
@@ -732,9 +727,9 @@ describeDatabase('Admin read APIs with real PostgreSQL', () => {
     expect(
       body.components.schemas.CommandListDto.properties,
     ).not.toHaveProperty('payload');
-    expect(body.components.schemas.CommandDetailDto.properties).toHaveProperty(
-      'payload',
-    );
+    expect(
+      body.components.schemas.CommandDetailDto.properties,
+    ).not.toHaveProperty('payload');
     expect(body.components.schemas.CommandDetailDto.properties).toHaveProperty(
       'result',
     );

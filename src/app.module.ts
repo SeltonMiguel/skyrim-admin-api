@@ -1,3 +1,4 @@
+import { CharacterManagementModule } from './character-management/character-management.module.js';
 import { AdminQueriesModule } from './admin-queries/admin-queries.module.js';
 import { GameBridgeModule } from './game-bridge/game-bridge.module.js';
 import { AuditHttpModule } from './audit/audit-http.module.js';
@@ -20,6 +21,7 @@ import { HealthModule } from './health/health.module.js';
     AuditHttpModule,
     GameBridgeModule,
     AdminQueriesModule,
+    CharacterManagementModule,
   ],
 })
 export class AppModule {}

@@ -1,7 +1,9 @@
 # Game Bridge — protocolo interno v1
 
 Etapa 03. Contrato independente das entidades TypeORM, sem transporte de rede,
-Agent/SKSE, scheduler ou endpoints. O único comando é `BRIDGE_PING`. Não existe
+Agent/SKSE ou scheduler. A Etapa 05 adiciona endpoints de domínio e 17 comandos
+Character tipados, documentados em [Character Management](character-management.md),
+além de `BRIDGE_PING`. Não existe
 interpretação de strings como console Skyrim, shell ou comandos do sistema.
 
 ## Serviços e configuração
@@ -15,8 +17,10 @@ interpretação de strings como console Skyrim, shell ou comandos do sistema.
 Métodos de varredura processam até 100 candidatos por chamada, revalidando cada
 um sob lock. Não há timer de background; um orquestrador futuro deverá chamá-los.
 Serviços não selecionam um servidor padrão. Registre servidores explicitamente.
-Não há dependência de Auth, RBAC ou Audit; o módulo de domínio futuro fará a
-autorização e a auditoria da ação administrativa.
+O transporte não depende de Auth, RBAC ou Audit. CharacterService faz autorização
+e auditoria administrativa, usando `submitInTransaction` para confirmar Command e
+Audit na mesma transação curta. Queries não são auditadas. POST não dispara send;
+o dispatcher só enxerga commands confirmados. Retry HTTP não dispara transporte.
 
 | Variável | Padrão | Valores aceitos |
 | --- | --- | --- |
@@ -76,8 +80,10 @@ Servidor disabled impede connect, heartbeat válido e novo dispatch.
 rejeita tipos desconhecidos e copia somente os campos permitidos antes de awaits.
 Payload/result de BRIDGE_PING aceitam exatamente `{ nonce: string }`; nonce tem
 1–128 caracteres ASCII alfanuméricos ou `._:-`, sem execução/interpolação posterior.
-JSON tem teto de 4096 bytes tanto no contrato quanto em checks PostgreSQL; a forma
-atual de ping é ainda menor. Entidades usam `object` para JSONB, evitando tipos
+Payload tem teto de 4096 bytes; result, 65536 bytes (migration incremental
+CharacterResultLimit), tanto na aplicação quanto no check PostgreSQL. Character
+contabiliza espaços estruturais de `jsonb::text`; ping permanece restrito ao nonce
+curto. Entidades usam `object` para JSONB, evitando tipos
 recursivos em QueryDeepPartialEntity; a fronteira interna continua tipada, sem any.
 
 `commandId`, `correlationId`, `idempotencyKey`, type, payload, issuedAt e o prazo
@@ -250,11 +256,13 @@ para objetos aninhados e objetos dentro de arrays; `[1,2]` difere de `[2,1]`.
 
 Somente JSON válido é aceito: sem undefined, funções, getters, símbolos, ciclos,
 arrays esparsos, objetos de classe ou números não finitos. Há limite de tamanho
-de 4096 bytes e profundidade defensiva de 32 níveis. A representação é construída
+de 4096 bytes para payload, 65536 para result e profundidade defensiva de 32 níveis.
+A representação é construída
 explicitamente; não depende de identidade nem de stringify de objetos não
 canonicalizados. Não foi necessário payloadHash nem alteração de payload/result.
-O contrato BRIDGE_PING permanece restrito a `{ nonce }`; os exemplos genéricos
-acima ilustram a canonicalização, sem introduzir comandos de domínio.
+O contrato BRIDGE_PING permanece restrito a `{ nonce }`. Character valida cada
+payload/result por tipo, normaliza identificadores opacos e verifica characterId
+e targetId contra o payload persistido antes de concluir o comando.
 
 Igual retorna o command original; diferente é conflito. Staff/requestId da
 primeira criação são preservados nas repetições; outra chave/servidor é independente.
