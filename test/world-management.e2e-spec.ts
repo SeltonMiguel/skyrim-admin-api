@@ -107,7 +107,7 @@ describeDatabase('World with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(18);
+    expect(await database.runMigrations()).toHaveLength(19);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -196,6 +196,12 @@ describeDatabase('World with real PostgreSQL', () => {
       'player_guild_members',
       'player_guilds',
       'player_identities',
+      'player_marketplace_currency_escrows',
+      'player_marketplace_custody_events',
+      'player_marketplace_listings',
+      'player_marketplace_purchases',
+      'player_marketplace_requests',
+      'player_marketplace_settlement_events',
       'player_sessions',
       'player_trade_currency_escrows',
       'player_trade_items',
@@ -486,6 +492,7 @@ describeDatabase('World with real PostgreSQL', () => {
         .expect(404);
   });
   it('reverses only the four permissions and nine grants and reapplies cleanly', async () => {
+    await database.undoLastMigration(); // Etapa 10.14 Player Marketplace
     await database.undoLastMigration(); // Etapa 10.13 Player Trades
     await database.undoLastMigration(); // Etapa 10.12 Economy
     await database.undoLastMigration(); // Etapa 10.9 Player Guilds
@@ -507,7 +514,7 @@ describeDatabase('World with real PostgreSQL', () => {
         "SELECT * FROM permissions WHERE name LIKE 'WORLD_%'",
       ),
     ).toEqual([]);
-    expect(await database.runMigrations()).toHaveLength(12);
+    expect(await database.runMigrations()).toHaveLength(13);
     expect(await database.runMigrations()).toHaveLength(0);
     expect(
       await database.query(

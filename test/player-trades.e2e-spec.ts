@@ -238,7 +238,8 @@ describeDatabase('Player trades with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(18);
+    expect(await database.runMigrations()).toHaveLength(19);
+    await database.undoLastMigration(); // Etapa 10.14 Player Marketplace
     await database.undoLastMigration();
     expect(
       await database.query(
@@ -246,7 +247,7 @@ describeDatabase('Player trades with real PostgreSQL', () => {
         [schema],
       ),
     ).toEqual([]);
-    expect(await database.runMigrations()).toHaveLength(1);
+    expect(await database.runMigrations()).toHaveLength(2);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -302,7 +303,7 @@ describeDatabase('Player trades with real PostgreSQL', () => {
   it('adds the trade tables and TRADE_ESCROW with database-enforced lifecycle', async () => {
     expect(database.options.synchronize).toBe(false);
     expect(await database.showMigrations()).toBe(false);
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(18);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(19);
     const diff = await database.driver.createSchemaBuilder().log();
     expect([diff.upQueries, diff.downQueries]).toEqual([[], []]);
     const insertTrade = (a: string, b: string) =>
@@ -359,11 +360,11 @@ describeDatabase('Player trades with real PostgreSQL', () => {
     expect(await code(database.query('TRUNCATE player_trades CASCADE'))).toBe(
       '55000',
     );
-    // TRADE_ESCROW is now an allowed system key; other keys are not.
+    // TRADE_ESCROW is now an allowed system key; unknown keys are not.
     expect(
       await code(
         database.query(
-          "INSERT INTO economy_accounts(game_server_id, currency, owner_type, system_key) VALUES ($1, 'GOLD', 'SYSTEM', 'MARKET_ESCROW')",
+          "INSERT INTO economy_accounts(game_server_id, currency, owner_type, system_key) VALUES ($1, 'GOLD', 'SYSTEM', 'AUCTION_ESCROW')",
           [server.id],
         ),
       ),
@@ -1285,9 +1286,12 @@ describeDatabase('Player trades with real PostgreSQL', () => {
   });
   it('refuses to revert while trades exist', async () => {
     await reconciled();
+    // No listings here: 10.14 reverts, then 10.13 refuses and is kept.
+    await database.undoLastMigration();
     await expect(database.undoLastMigration()).rejects.toThrow(
       'player trades exist',
     );
+    expect(await database.runMigrations()).toHaveLength(1);
     expect(await database.showMigrations()).toBe(false);
   });
 });

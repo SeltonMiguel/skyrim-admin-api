@@ -101,7 +101,7 @@ describe('Economy ledger validation', () => {
           {
             account: {
               ownerType: O.SYSTEM,
-              systemKey: 'MARKET_ESCROW' as SystemAccountKey,
+              systemKey: 'AUCTION_ESCROW' as SystemAccountKey,
             },
             amount: -1,
           },
@@ -165,6 +165,7 @@ describe('Economy ledger validation', () => {
       'MINT',
       'BURN',
       'TRADE_ESCROW',
+      'MARKET_ESCROW',
     ]);
     expect(Object.values(T)).toEqual([
       'SYSTEM_CREDIT',

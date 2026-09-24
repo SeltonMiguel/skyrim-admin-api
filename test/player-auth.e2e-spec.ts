@@ -80,7 +80,8 @@ describeDatabase('Player authentication with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(18);
+    expect(await database.runMigrations()).toHaveLength(19);
+    await database.undoLastMigration(); // Etapa 10.14 Player Marketplace
     await database.undoLastMigration(); // Etapa 10.13 Player Trades
     await database.undoLastMigration(); // Etapa 10.12 Economy
     await database.undoLastMigration(); // Etapa 10.9 Player Guilds
@@ -94,7 +95,7 @@ describeDatabase('Player authentication with real PostgreSQL', () => {
         [schema],
       ),
     ).toEqual([]);
-    expect(await database.runMigrations()).toHaveLength(7);
+    expect(await database.runMigrations()).toHaveLength(8);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -437,10 +438,16 @@ describeDatabase('Player authentication with real PostgreSQL', () => {
       '/api/v1/player/guilds/{guildId}/members/{memberId}/kick',
       '/api/v1/player/guilds/{guildId}/members/{memberId}/role',
       '/api/v1/player/guilds/{guildId}/members/{memberId}/transfer-master',
+      '/api/v1/player/marketplace/listings',
+      '/api/v1/player/marketplace/listings/{listingId}',
+      '/api/v1/player/marketplace/listings/{listingId}/cancel',
+      '/api/v1/player/marketplace/listings/{listingId}/purchase',
       '/api/v1/player/me',
       '/api/v1/player/me/characters',
       '/api/v1/player/me/characters/{characterLinkId}',
       '/api/v1/player/me/characters/{characterLinkId}/guild',
+      '/api/v1/player/me/characters/{characterLinkId}/marketplace/listings',
+      '/api/v1/player/me/characters/{characterLinkId}/marketplace/purchases',
       '/api/v1/player/me/characters/{characterLinkId}/profession',
       '/api/v1/player/me/characters/{characterLinkId}/trades',
       '/api/v1/player/me/characters/{characterLinkId}/wallet',

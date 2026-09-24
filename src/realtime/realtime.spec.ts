@@ -116,6 +116,7 @@ describe('Realtime and group boundaries', () => {
       'player-groups',
       'player-guilds',
       'player-trades',
+      'player-marketplace',
       'realtime-events',
     ])
       for (const source of sources(dir))
@@ -124,7 +125,7 @@ describe('Realtime and group boundaries', () => {
     for (const source of sources('realtime'))
       for (const module of imports(source))
         expect(module).not.toMatch(
-          /player-groups|player-guilds|player-trades|player-characters|socket\.io|electron/i,
+          /player-groups|player-guilds|player-trades|player-marketplace|player-characters|socket\.io|electron/i,
         );
   });
   it('keeps the provisional group size centralized', () => {
