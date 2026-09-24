@@ -72,7 +72,7 @@ domínio. A Player API nunca chama controllers administrativos. O prefixo
 | 10.4 Character Ownership | **Implementada.** `player_characters`, challenges de vínculo, Player API mínima, `CharacterOwnershipService`, `confirmFromAgent` interno; migration `1789920000000-PlayerCharacters` |
 | 10.5 Character Profile + Skills | **Implementada.** `CHARACTER_PROFILE_QUERY`, `CHARACTER_SKILLS_QUERY`, Player API 202 + operation detail; sem migration |
 | 10.6 Multiple Characters | **Implementada.** `GET /api/v1/player/me/characters` e detalhe; sem migration |
-| 10.7 Professions | Profissão ativa por character, XP e nível persistidos |
+| 10.7 Professions | **Implementada.** `character_professions`, `profession_experience_events`, seleção única pela Player API, `grantFromAgent` interno; migration `1789930000000-Professions` |
 | 10.8 Groups + Realtime Foundation | Infraestrutura WebSocket e barramento de eventos internos; party com leader, members e invites como primeiro domínio realtime |
 | 10.9 Guilds / Clans | Guildas persistentes com membros, cargos e convites |
 | 10.10 Properties / Houses / Holds | Leitura reutilizando contratos Character, por ownership |
@@ -486,6 +486,91 @@ administrativo do servidor (sem health ou conexão).
   SYSTEM/Agent, por contrato próprio, idempotente e auditado.
 - **Troca de profissão desabilitada inicialmente** até existir regra oficial.
 
+#### Implementação (10.7)
+
+Módulo `src/professions/`. Domínio do backend: nenhuma GameCommand.
+
+**Pertence ao character, não ao vínculo:** a identidade da profissão é
+`game_server_id` + `character_external_id`, a mesma do jogo. Cada character do
+mesmo player tem a sua. O vínculo de ownership apenas autoriza o acesso: se a
+ownership de A for revogada e B verificar o mesmo character, B enxerga a mesma
+profissão, XP e nível (nenhum fluxo de transferência foi implementado; o modelo
+apenas não perde progressão).
+
+`character_professions`: `id`, `game_server_id` (FK `game_servers`),
+`character_external_id` (varchar(128), não vazio), `profession` (check das 7),
+`experience` (bigint, 0 a 1.000.000.000.000), `level` (1–100), `created_at`,
+`updated_at`, com `UNIQUE (game_server_id, character_external_id)`: uma profissão
+por character. `character_professions_progression_check` garante no banco, só com
+aritmética inteira, que o nível corresponde ao XP.
+
+`profession_experience_events`: `id`, `character_profession_id` (FK),
+`game_server_id` (FK), `external_event_id` (opaco, 1–128), `amount` (1–1.000.000),
+`created_at`, com `UNIQUE (game_server_id, external_event_id)`. O protocolo do
+Agent da Etapa 11 deve emitir `eventId` único dentro de cada GameServer.
+
+**Catálogo fechado:** TAILOR, HUNTER, MINER, BLACKSMITH, ALCHEMIST,
+CHARCOAL_BURNER, COOK (enum + check; sem tabela configurável).
+
+**Progressão** (`ProfessionProgressionPolicy`, apenas inteiros): XP acumulado para
+o nível N é `100 * (N - 1)^2` (1 = 0, 2 = 100, 3 = 400, 4 = 900, 5 = 1600, 100 =
+980100). O nível é o maior N cujo threshold é ≤ XP, limitado a 100.
+`nextLevelExperience` = threshold do próximo nível, ou `null` no nível 100.
+Semântica escolhida: o XP continua acumulando depois do nível 100 e satura no teto
+seguro de 1.000.000.000.000 (muito abaixo de `Number.MAX_SAFE_INTEGER`).
+
+**Player API** (`PlayerAuthGuard` + vínculo próprio VERIFIED; PENDING, REVOKED, de
+outro player ou inexistente → 404 `Character not found`):
+
+| Rota | Comportamento |
+| --- | --- |
+| `GET /api/v1/player/me/characters/:characterLinkId/profession` | estado atual, ou `{ characterLinkId, profession: null }` |
+| `POST /api/v1/player/me/characters/:characterLinkId/profession` `{ profession }` | 201 na primeira seleção; 200 repetindo a mesma (sem Audit); 409 `PROFESSION_ALREADY_SELECTED` para outra |
+
+O serviço carrega o vínculo pedido, exige que seja do player autenticado e esteja
+VERIFIED, e usa o `gameServerId` + `characterExternalId` desse vínculo para
+localizar ou criar a profissão; o character nunca vem da request.
+
+Resposta: `{ characterLinkId, profession, level, experience, nextLevelExperience }`.
+O body aceita somente `profession`; XP, nível, `playerId` e campos extras → 400.
+Troca de profissão não existe. Não retorna `playerId` nem `characterExternalId`.
+
+**XP confiável:** `ProfessionExperienceService.grantFromAgent({ gameServerId,
+characterExternalId, eventId, amount })` é exportado para o transporte do Agent
+(Etapa 11); não há rota HTTP de XP. O Agent identifica o character como o conhece,
+que é a própria identidade da profissão. Em uma transação:
+
+1. valida entrada (UUID, ids opacos, `amount` inteiro de 1 a 1.000.000);
+2. localiza e trava a profissão por servidor + character;
+3. se existe dono VERIFIED atual, exige que ele esteja ACTIVE;
+4. insere o evento com `ON CONFLICT DO NOTHING`;
+5. evento novo: soma XP, recalcula o nível e audita;
+6. replay (mesmo evento, mesma profissão e amount): `ALREADY_APPLIED` com o estado
+   atual, sem somar nem auditar; mesmo id com outro conteúdo: `EVENT_CONFLICT`.
+
+Resultado: `GRANTED` / `ALREADY_APPLIED` com o estado, ou `REJECTED` com
+`INVALID_INPUT`, `PROFESSION_NOT_SELECTED`, `PLAYER_UNAVAILABLE` ou
+`EVENT_CONFLICT`. Rejeições não alteram nada. O estado retornado é
+`{ gameServerId, characterExternalId, profession, level, experience,
+nextLevelExperience }`.
+**Character cujo dono VERIFIED está SUSPENDED/BANNED não recebe XP** (MVP). Sem
+dono verificado no momento, o XP continua sendo registrado, porque o progresso é
+do character.
+
+**Audit** (atômico com a mutation, `resourceType = CHARACTER_PROFESSION`):
+
+| Action | Actor | Metadata |
+| --- | --- | --- |
+| `PROFESSION_SELECTED` | PLAYER | playerCharacterId (vínculo que autorizou), gameServerId, characterExternalId, profession, level |
+| `PROFESSION_EXPERIENCE_GRANTED` | SYSTEM:AGENT | gameServerId, characterExternalId, profession, amount, previousLevel, newLevel, externalEventId |
+
+**Concorrência:** a seleção trava o vínculo e usa
+`UNIQUE (game_server_id, character_external_id)` com `ON CONFLICT`; seleções simultâneas geram uma linha e só uma profissão vence. Cada
+concessão trava a linha de profissão: replays simultâneos aplicam uma vez e
+eventos distintos simultâneos acumulam sem lost update.
+
+Integração real do Agent (eventos de XP e seu transporte) fica para a Etapa 11.
+
 ### Groups
 
 - Domínio do backend.
@@ -722,8 +807,7 @@ Detalhes que não bloqueiam a fundação e podem ser fixados na subetapa do dom�
 
 | Tema | Subetapa |
 | --- | --- |
-| Fórmula de XP e níveis de profissão | 10.7 |
-| Regras de troca de profissão | 10.7 (permanece desabilitada até definição) |
+| Regras de troca de profissão e origem dos eventos de XP no jogo | pós-definição de produto / Etapa 11 |
 | Tamanho máximo de group | 10.8 |
 | Cargos de guild e suas capacidades | 10.9 |
 | Taxas de marketplace | 10.14 |

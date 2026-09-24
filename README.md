@@ -514,5 +514,13 @@ vem do Skyrim, validado, sem snapshot. Não há migration nova.
 A Subetapa 10.6 lista os characters do player em `GET /api/v1/player/me/characters`
 (paginado, VERIFIED antes de PENDING, sem REVOKED) e `GET .../:characterLinkId`.
 Retorna apenas identidade e servidor, sem character selecionado no servidor nem
-dados de runtime. Também não tem migration: continuam treze. Consulte [arquitetura, decisões e roadmap da
+dados de runtime. Também não tem migration: continuam treze.
+
+A Subetapa 10.7 implementa Professions por character, identificadas por servidor +
+character e preservadas se a ownership mudar (TAILOR, HUNTER, MINER,
+BLACKSMITH, ALCHEMIST, CHARCOAL_BURNER, COOK): seleção única em
+`/api/v1/player/me/characters/:characterLinkId/profession` para vínculos VERIFIED
+e XP concedido apenas pelo serviço interno `grantFromAgent` (ator SYSTEM:AGENT,
+idempotente por evento). Nível = maior N com `100 * (N - 1)^2 <= XP`, máximo 100.
+A migration `1789930000000-Professions` completa catorze migrations. Consulte [arquitetura, decisões e roadmap da
 Etapa 10](docs/player-services.md).

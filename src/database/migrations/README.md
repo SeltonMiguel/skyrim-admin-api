@@ -95,3 +95,11 @@ check de lifecycle) e `player_character_link_challenges` (FK para o vínculo, ha
 único, índice único parcial de um challenge ativo por vínculo, checks de formato,
 exclusividade consumido/revogado e expiração). `down` remove as duas tabelas e o
 histórico de vínculos. Detalhes em `docs/player-services.md`.
+
+A Subetapa 10.7 adiciona `1789930000000-Professions`: cria `character_professions`
+(identidade do character por `game_server_id` + `character_external_id`, com FK
+para `game_servers` e `UNIQUE`, independente dos vínculos; check do catálogo, XP bigint limitado, nível 1–100 e
+check inteiro de coerência nível/XP) e `profession_experience_events` (FKs para a
+profissão e o servidor, `UNIQUE(game_server_id, external_event_id)`, checks de
+amount e id). `down` remove as duas tabelas e o progresso. Detalhes em
+`docs/player-services.md`.
