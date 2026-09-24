@@ -1,4 +1,5 @@
 import type { RoleName } from '../rbac/roles.js';
+import type { Actor } from '../actors/actor.contracts.js';
 
 export enum AuditAction {
   SERVER_START_REQUESTED = 'SERVER_START_REQUESTED',
@@ -61,8 +62,10 @@ export interface AuditActor {
   roleName: RoleName;
 }
 export type AuditMetadata = Record<string, unknown>;
+// Staff snapshot without a type (existing callers) is interpreted as STAFF.
+export type AuditEventActor = AuditActor | Actor;
 export interface AuditEvent {
-  actor?: AuditActor;
+  actor?: AuditEventActor;
   action: AuditAction;
   resourceType?: AuditResource;
   resourceId?: string;
@@ -71,7 +74,7 @@ export interface AuditEvent {
 }
 export interface AuditResult<T> {
   value: T;
-  actor?: AuditActor;
+  actor?: AuditEventActor;
   resourceId?: string;
   metadata?: AuditMetadata;
 }

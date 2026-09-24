@@ -9,8 +9,37 @@ import { DataSource, EntityManager } from 'typeorm';
 import { RequestContext } from '../common/request-context/request-context.service.js';
 import { AuditLog } from './entities/audit-log.entity.js';
 import { AuditOutcome } from './audit.types.js';
-import type { AuditEvent, AuditResult } from './audit.types.js';
+import type {
+  AuditEvent,
+  AuditEventActor,
+  AuditResult,
+} from './audit.types.js';
+import {
+  actor as validActor,
+  ActorType,
+  staffActor,
+} from '../actors/actor.contracts.js';
+import type { Actor } from '../actors/actor.contracts.js';
 import { sanitizeMetadata } from './metadata-sanitizer.js';
+
+// Untyped staff snapshots (existing callers, StaffUser entities) become STAFF.
+// Only the allowlisted identity fields are copied; never the source object.
+export function auditActor(value?: AuditEventActor): Actor | undefined {
+  if (!value) return undefined;
+  return 'type' in value ? validActor(value) : staffActor(value);
+}
+function actorColumns(value?: Actor) {
+  return {
+    actorType: value?.type ?? null,
+    actorStaffId: value?.type === ActorType.STAFF ? value.id : null,
+    actorUsername: value?.type === ActorType.STAFF ? value.username : null,
+    actorDisplayName:
+      value?.type === ActorType.STAFF ? value.displayName : null,
+    actorRole: value?.type === ActorType.STAFF ? value.roleName : null,
+    actorPlayerId: value?.type === ActorType.PLAYER ? value.playerId : null,
+    actorSystemSource: value?.type === ActorType.SYSTEM ? value.source : null,
+  };
+}
 
 @Injectable()
 export class AuditService {
@@ -25,13 +54,12 @@ export class AuditService {
     manager: EntityManager = this.database.manager,
   ): Promise<void> {
     const http = this.context.http;
+    // Invalid actor is a programming error, not an Audit outage.
+    const actor = actorColumns(auditActor(event.actor));
     try {
       await manager.getRepository<AuditLog>('AuditLog').insert({
         id: randomUUID(),
-        actorStaffId: event.actor?.id ?? null,
-        actorUsername: event.actor?.username ?? null,
-        actorDisplayName: event.actor?.displayName ?? null,
-        actorRole: event.actor?.roleName ?? null,
+        ...actor,
         action: event.action,
         outcome: event.outcome,
         resourceType: event.resourceType ?? null,
@@ -59,17 +87,7 @@ export class AuditService {
     operation: (manager: EntityManager) => Promise<AuditResult<T>>,
     recordFailure = true,
   ): Promise<T> {
-    const snapshot: AuditEvent = {
-      ...event,
-      actor: event.actor
-        ? {
-            id: event.actor.id,
-            username: event.actor.username,
-            displayName: event.actor.displayName,
-            roleName: event.actor.roleName,
-          }
-        : undefined,
-    };
+    const snapshot: AuditEvent = { ...event, actor: auditActor(event.actor) };
     try {
       return await this.database.transaction(async (manager) => {
         const result = await operation(manager);

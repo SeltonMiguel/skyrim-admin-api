@@ -8,6 +8,7 @@ import {
 } from 'typeorm';
 import { AuditAction, AuditOutcome } from '../audit.types.js';
 import type { RoleName } from '../../rbac/roles.js';
+import type { ActorType, SystemSource } from '../../actors/actor.contracts.js';
 
 @Entity('audit_logs')
 @Check('audit_logs_outcome_check', `outcome IN ('SUCCESS', 'FAILURE')`)
@@ -17,6 +18,13 @@ import type { RoleName } from '../../rbac/roles.js';
 @Index('audit_logs_outcome_idx', ['outcome'])
 @Index('audit_logs_request_idx', ['requestId'])
 @Index('audit_logs_resource_idx', ['resourceType', 'resourceId'])
+@Index('audit_logs_actor_player_idx', ['actorPlayerId'])
+// actor_type NULL: historical rows (STAFF when actor_staff_id is set) and
+// anonymous events. Rows are never rewritten to backfill it.
+@Check(
+  'audit_logs_actor_check',
+  `(actor_type IS NULL AND actor_player_id IS NULL AND actor_system_source IS NULL) OR (actor_type IS NOT NULL AND actor_type = 'STAFF' AND actor_staff_id IS NOT NULL AND actor_player_id IS NULL AND actor_system_source IS NULL) OR (actor_type IS NOT NULL AND actor_type = 'PLAYER' AND actor_player_id IS NOT NULL AND actor_staff_id IS NULL AND actor_username IS NULL AND actor_display_name IS NULL AND actor_role IS NULL AND actor_system_source IS NULL) OR (actor_type IS NOT NULL AND actor_type = 'SYSTEM' AND actor_system_source IS NOT NULL AND actor_system_source IN ('AGENT', 'PROFESSION', 'VIP_DELIVERY') AND actor_staff_id IS NULL AND actor_username IS NULL AND actor_display_name IS NULL AND actor_role IS NULL AND actor_player_id IS NULL)`,
+)
 export class AuditLog {
   @PrimaryGeneratedColumn('uuid')
   id: string;
@@ -65,6 +73,18 @@ export class AuditLog {
   userAgent: string | null;
   @Column({ type: 'jsonb', nullable: true })
   metadata: object | null;
+  @Column({ name: 'actor_type', type: 'varchar', length: 16, nullable: true })
+  actorType: ActorType | null;
+  // Historical identifier without FK, like actor_staff_id: Audit outlives rows.
+  @Column({ name: 'actor_player_id', type: 'uuid', nullable: true })
+  actorPlayerId: string | null;
+  @Column({
+    name: 'actor_system_source',
+    type: 'varchar',
+    length: 32,
+    nullable: true,
+  })
+  actorSystemSource: SystemSource | null;
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
 }

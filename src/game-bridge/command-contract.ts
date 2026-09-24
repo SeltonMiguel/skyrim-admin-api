@@ -1,3 +1,4 @@
+import type { Actor } from '../actors/actor.contracts.js';
 import {
   worldPayload,
   worldResult,
@@ -51,7 +52,11 @@ export type SubmitCommand = {
     type: T;
     payload: CommandPayload<T>;
     idempotencyKey: string;
+    // Legacy staff attribution; mutually exclusive with actor.
     requestedByStaffId?: string;
+    // Internal origin; never taken from HTTP input. Absent means the shared
+    // STAFF scope without attribution (existing internal submits).
+    actor?: Actor;
   };
 }[CommandType];
 export interface BridgeMessage {
