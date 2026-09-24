@@ -11,6 +11,7 @@ import {
 } from './player-character.contracts.js';
 import { PlayerCharactersModule } from './player-characters.module.js';
 import { CharacterLinkController } from './character-link.controller.js';
+import { PlayerCharacterController } from './player-character.controller.js';
 
 describe('Character link challenge', () => {
   it('uses an unambiguous alphabet with at least 60 bits of entropy', () => {
@@ -67,9 +68,10 @@ describe('Character link challenge', () => {
 });
 
 describe('Player characters boundaries', () => {
-  it('exposes only the player link controller, no Agent endpoint or GameCommand', () => {
+  it('exposes only player link and directory controllers, no Agent endpoint or GameCommand', () => {
     expect(Reflect.getMetadata('controllers', PlayerCharactersModule)).toEqual([
       CharacterLinkController,
+      PlayerCharacterController,
     ]);
     const files = globSync(
       fileURLToPath(new URL('./**/*.ts', import.meta.url)),

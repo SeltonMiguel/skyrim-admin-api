@@ -640,7 +640,7 @@ describeDatabase('Character ownership with real PostgreSQL', () => {
         .send({ challenge: link.challenge })
         .expect(404);
     await http()
-      .get('/api/v1/player/me/characters')
+      .get('/api/v1/player/me/characters/active/select')
       .auth(a.accessToken, { type: 'bearer' })
       .expect(404);
     expect((await row(link.linkId)).status).toBe('PENDING');

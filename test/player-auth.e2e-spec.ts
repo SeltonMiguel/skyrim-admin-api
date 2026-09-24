@@ -410,6 +410,8 @@ describeDatabase('Player authentication with real PostgreSQL', () => {
       '/api/v1/player/game-servers/{gameServerId}/characters/{characterId}/profile-query',
       '/api/v1/player/game-servers/{gameServerId}/characters/{characterId}/skills-query',
       '/api/v1/player/me',
+      '/api/v1/player/me/characters',
+      '/api/v1/player/me/characters/{characterLinkId}',
     ]);
     expect(
       Object.keys(body.components.schemas.DiscordExchangeDto.properties).sort(),
