@@ -111,8 +111,9 @@ describeDatabase('Character Management with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(7);
+    expect(await database.runMigrations()).toHaveLength(8);
     expect(await database.runMigrations()).toHaveLength(0);
+    await database.undoLastMigration(); // Etapa 08 VIP Store
     await database.undoLastMigration(); // Etapa 07 World permission grants
     await database.undoLastMigration();
     const resultConstraint = () =>
@@ -122,7 +123,7 @@ describeDatabase('Character Management with real PostgreSQL', () => {
          AND conname = 'game_command_results_size_check'`,
       );
     expect((await resultConstraint())[0].definition).toContain('4096');
-    expect(await database.runMigrations()).toHaveLength(2);
+    expect(await database.runMigrations()).toHaveLength(3);
     expect((await resultConstraint())[0].definition).toContain('65536');
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -182,9 +183,9 @@ describeDatabase('Character Management with real PostgreSQL', () => {
     expect(
       (await database.driver.createSchemaBuilder().log()).upQueries,
     ).toEqual([]);
-    expect(await database.query('SELECT * FROM permissions')).toHaveLength(35);
+    expect(await database.query('SELECT * FROM permissions')).toHaveLength(36);
     expect(await database.query('SELECT * FROM role_permissions')).toHaveLength(
-      92,
+      93,
     );
     expect(
       await database.query(
@@ -671,9 +672,10 @@ describeDatabase('Character Management with real PostgreSQL', () => {
       ),
     ).rejects.toMatchObject({ driverError: { code: '23514' } });
     // Downgrade refuses existing large results atomically, without deleting them.
+    await database.undoLastMigration(); // Etapa 08 VIP Store
     await database.undoLastMigration(); // Etapa 07 before testing the Etapa 05 constraint
     await expect(database.undoLastMigration()).rejects.toThrow();
-    expect(await database.runMigrations()).toHaveLength(1);
+    expect(await database.runMigrations()).toHaveLength(2);
     expect(await database.showMigrations()).toBe(false);
     expect((await get(command.id).expect(200)).body.result.result).toEqual(
       result,
