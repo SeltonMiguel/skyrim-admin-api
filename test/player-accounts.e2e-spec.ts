@@ -49,7 +49,7 @@ describeDatabase('Player accounts with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(12);
+    expect(await database.runMigrations()).toHaveLength(13);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -76,7 +76,7 @@ describeDatabase('Player accounts with real PostgreSQL', () => {
     const diff = await database.driver.createSchemaBuilder().log();
     expect(diff.upQueries).toEqual([]);
     expect(diff.downQueries).toEqual([]);
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(12);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(13);
     expect(await database.query('SELECT * FROM permissions')).toHaveLength(36);
     expect(await database.query('SELECT * FROM role_permissions')).toHaveLength(
       93,
@@ -110,13 +110,14 @@ describeDatabase('Player accounts with real PostgreSQL', () => {
            OR $3 IN (conrelid::regclass::text, confrelid::regclass::text))`,
       [schema, 'players', 'player_identities'],
     );
-    // 10.2 adds game_commands → players; 10.3 adds player_sessions → players.
+    // Later subetapas reference players: game_commands (10.2), sessions (10.3), characters (10.4).
     expect(
       foreignKeys.sort((a: { source: string }, b: { source: string }) =>
         a.source.localeCompare(b.source),
       ),
     ).toEqual([
       { source: 'game_commands', target: 'players' },
+      { source: 'player_characters', target: 'players' },
       { source: 'player_identities', target: 'players' },
       { source: 'player_sessions', target: 'players' },
     ]);
@@ -361,6 +362,7 @@ describeDatabase('Player accounts with real PostgreSQL', () => {
     ).toEqual([]);
   });
   it('reverts only the player tables and reapplies cleanly', async () => {
+    await database.undoLastMigration(); // Etapa 10.4 Player Characters
     await database.undoLastMigration(); // Etapa 10.3 Player Sessions
     await database.undoLastMigration(); // Etapa 10.2 Generic Actor
     await database.undoLastMigration();
@@ -379,7 +381,7 @@ describeDatabase('Player accounts with real PostgreSQL', () => {
       { tablename: 'server_control_operations' },
       { tablename: 'staff_users' },
     ]);
-    expect(await database.runMigrations()).toHaveLength(3);
+    expect(await database.runMigrations()).toHaveLength(4);
     expect(await database.runMigrations()).toHaveLength(0);
     expect(
       (await database.driver.createSchemaBuilder().log()).upQueries,

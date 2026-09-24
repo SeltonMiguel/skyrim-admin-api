@@ -80,7 +80,8 @@ describeDatabase('Player authentication with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(12);
+    expect(await database.runMigrations()).toHaveLength(13);
+    await database.undoLastMigration(); // Etapa 10.4 Player Characters
     await database.undoLastMigration();
     expect(
       await database.query(
@@ -88,7 +89,7 @@ describeDatabase('Player authentication with real PostgreSQL', () => {
         [schema],
       ),
     ).toEqual([]);
-    expect(await database.runMigrations()).toHaveLength(1);
+    expect(await database.runMigrations()).toHaveLength(2);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -402,6 +403,9 @@ describeDatabase('Player authentication with real PostgreSQL', () => {
       '/api/v1/player/auth/discord/exchange',
       '/api/v1/player/auth/logout',
       '/api/v1/player/auth/refresh',
+      '/api/v1/player/character-links',
+      '/api/v1/player/character-links/{linkId}',
+      '/api/v1/player/character-links/{linkId}/revoke',
       '/api/v1/player/me',
     ]);
     expect(

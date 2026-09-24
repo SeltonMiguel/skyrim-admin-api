@@ -289,3 +289,15 @@ describe('Player auth environment validation', () => {
     }
   });
 });
+
+describe('Player character environment validation', () => {
+  it('defaults the link challenge to 10 minutes within 1m–1h bounds', () => {
+    expect(validateEnvironment(example).playerCharacters).toEqual({
+      challengeTtl: 600,
+    });
+    for (const value of ['30s', '2h', '0m', 'x'])
+      expect(() =>
+        validateEnvironment({ ...example, PLAYER_LINK_CHALLENGE_TTL: value }),
+      ).toThrow('PLAYER_LINK_CHALLENGE_TTL');
+  });
+});
