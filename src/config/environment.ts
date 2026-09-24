@@ -34,6 +34,8 @@ export interface ApplicationConfig {
     } | null;
   };
   playerCharacters: { challengeTtl: number };
+  playerGroups: { inviteTtl: number };
+  realtime: { authTimeoutMs: number };
   bootstrap: { username?: string; displayName?: string; password?: string };
   database: {
     host: string;
@@ -68,6 +70,8 @@ interface Environment {
   PLAYER_JWT_REFRESH_TTL: string;
   PLAYER_AUTH_RATE_LIMIT_PER_MINUTE: number;
   PLAYER_LINK_CHALLENGE_TTL: string;
+  PLAYER_GROUP_INVITE_TTL: string;
+  REALTIME_AUTH_TIMEOUT_MS: number;
   DISCORD_CLIENT_ID?: string;
   DISCORD_CLIENT_SECRET?: string;
   DISCORD_REDIRECT_URIS?: string;
@@ -176,6 +180,12 @@ const schema = Joi.object<Environment>({
     .max(1000)
     .default(20),
   PLAYER_LINK_CHALLENGE_TTL: ttl('10m'),
+  PLAYER_GROUP_INVITE_TTL: ttl('10m'),
+  REALTIME_AUTH_TIMEOUT_MS: Joi.number()
+    .integer()
+    .min(100)
+    .max(60000)
+    .default(5000),
   DISCORD_CLIENT_ID: Joi.string().trim().allow('').max(128),
   DISCORD_CLIENT_SECRET: Joi.string().allow('').max(256),
   DISCORD_REDIRECT_URIS: Joi.string().allow('').max(4096),
@@ -218,8 +228,13 @@ export function validateEnvironment(
   const challengeTtl = ttlSeconds(value.PLAYER_LINK_CHALLENGE_TTL);
   if (challengeTtl < 60 || challengeTtl > 3600)
     throw new Error('Invalid environment variables: PLAYER_LINK_CHALLENGE_TTL');
+  const inviteTtl = ttlSeconds(value.PLAYER_GROUP_INVITE_TTL);
+  if (inviteTtl < 60 || inviteTtl > 86400)
+    throw new Error('Invalid environment variables: PLAYER_GROUP_INVITE_TTL');
   return {
     playerCharacters: { challengeTtl },
+    playerGroups: { inviteTtl },
+    realtime: { authTimeoutMs: value.REALTIME_AUTH_TIMEOUT_MS },
     playerAuth: {
       accessSecret: value.PLAYER_JWT_ACCESS_SECRET || testPlayerAccessSecret,
       refreshSecret: value.PLAYER_JWT_REFRESH_SECRET || testPlayerRefreshSecret,
