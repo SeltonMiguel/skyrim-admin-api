@@ -107,7 +107,7 @@ describeDatabase('Player characters directory with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(13);
+    expect(await database.runMigrations()).toHaveLength(14);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
       .overrideProvider(DataSource)
@@ -156,7 +156,7 @@ describeDatabase('Player characters directory with real PostgreSQL', () => {
   });
 
   it('needs no migration and returns an empty page for a player without characters', async () => {
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(13);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(14);
     expect(await database.showMigrations()).toBe(false);
     expect(database.options.synchronize).toBe(false);
     const diff = await database.driver.createSchemaBuilder().log();
@@ -400,6 +400,11 @@ describeDatabase('Player characters directory with real PostgreSQL', () => {
     ).toEqual([
       ['/api/v1/player/me/characters', ['get']],
       ['/api/v1/player/me/characters/{characterLinkId}', ['get']],
+      // 10.7: profession of a character (no selection of a "current" character).
+      [
+        '/api/v1/player/me/characters/{characterLinkId}/profession',
+        ['get', 'post'],
+      ],
     ]);
     expect(
       Object.keys(body.components.schemas.PlayerCharacterDto.properties).sort(),

@@ -83,7 +83,7 @@ describeDatabase('Server Control with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(13);
+    expect(await database.runMigrations()).toHaveLength(14);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -138,7 +138,7 @@ describeDatabase('Server Control with real PostgreSQL', () => {
     expect(
       (await database.driver.createSchemaBuilder().log()).upQueries,
     ).toEqual([]);
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(13);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(14);
     expect(await database.query('SELECT * FROM permissions')).toHaveLength(36);
     expect(await database.query('SELECT * FROM role_permissions')).toHaveLength(
       93,
@@ -160,6 +160,7 @@ describeDatabase('Server Control with real PostgreSQL', () => {
     );
     expect(rows.map((r: { tablename: string }) => r.tablename)).toEqual([
       'audit_logs',
+      'character_professions',
       'game_command_results',
       'game_commands',
       'game_connections',
@@ -171,6 +172,7 @@ describeDatabase('Server Control with real PostgreSQL', () => {
       'player_identities',
       'player_sessions',
       'players',
+      'profession_experience_events',
       'role_permissions',
       'roles',
       'server_control_operations',
@@ -607,6 +609,7 @@ describeDatabase('Server Control with real PostgreSQL', () => {
     expect(await count()).toBe(0);
   });
   it('reverts only the operation table and reapplies cleanly', async () => {
+    await database.undoLastMigration(); // Etapa 10.7 Professions
     await database.undoLastMigration(); // Etapa 10.4 Player Characters
     await database.undoLastMigration(); // Etapa 10.3 Player Sessions
     await database.undoLastMigration(); // Etapa 10.2 Generic Actor
@@ -622,7 +625,7 @@ describeDatabase('Server Control with real PostgreSQL', () => {
     expect(await database.query('SELECT * FROM role_permissions')).toHaveLength(
       93,
     );
-    expect(await database.runMigrations()).toHaveLength(5);
+    expect(await database.runMigrations()).toHaveLength(6);
     expect(await database.runMigrations()).toHaveLength(0);
     expect(
       (await database.driver.createSchemaBuilder().log()).upQueries,

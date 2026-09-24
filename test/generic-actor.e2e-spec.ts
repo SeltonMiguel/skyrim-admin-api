@@ -95,8 +95,9 @@ describeDatabase(
         extra: { ...options.extra, options: `-c search_path=${schema},public` },
       });
       await database.initialize();
-      expect(await database.runMigrations()).toHaveLength(13);
+      expect(await database.runMigrations()).toHaveLength(14);
       // Write pre-10.2 history, then re-apply the migrations over it.
+      await database.undoLastMigration(); // Etapa 10.7 Professions
       await database.undoLastMigration(); // Etapa 10.4 Player Characters
       await database.undoLastMigration(); // Etapa 10.3 Player Sessions
       await database.undoLastMigration();
@@ -127,7 +128,7 @@ describeDatabase(
           randomUUID(),
         ],
       );
-      expect(await database.runMigrations()).toHaveLength(3);
+      expect(await database.runMigrations()).toHaveLength(4);
       expect(await database.runMigrations()).toHaveLength(0);
       const { AppModule } = await import('../src/app.module.js');
       const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -666,11 +667,12 @@ describeDatabase(
         { ...ping(), idempotencyKey: randomUUID() },
         systemActor(SystemSource.AGENT),
       );
-      // 10.4 and 10.3 revert cleanly; 10.2 then refuses to drop PLAYER/SYSTEM data.
+      // 10.7, 10.4 and 10.3 revert cleanly; 10.2 then refuses to drop PLAYER/SYSTEM data.
+      await database.undoLastMigration();
       await database.undoLastMigration();
       await database.undoLastMigration();
       await expect(database.undoLastMigration()).rejects.toThrow();
-      expect(await database.runMigrations()).toHaveLength(2);
+      expect(await database.runMigrations()).toHaveLength(3);
       expect(await database.showMigrations()).toBe(false);
       expect(
         await commands().countBy({ actorType: ActorType.SYSTEM }),

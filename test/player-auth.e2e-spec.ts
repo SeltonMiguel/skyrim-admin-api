@@ -80,7 +80,8 @@ describeDatabase('Player authentication with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(13);
+    expect(await database.runMigrations()).toHaveLength(14);
+    await database.undoLastMigration(); // Etapa 10.7 Professions
     await database.undoLastMigration(); // Etapa 10.4 Player Characters
     await database.undoLastMigration();
     expect(
@@ -89,7 +90,7 @@ describeDatabase('Player authentication with real PostgreSQL', () => {
         [schema],
       ),
     ).toEqual([]);
-    expect(await database.runMigrations()).toHaveLength(2);
+    expect(await database.runMigrations()).toHaveLength(3);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -412,6 +413,7 @@ describeDatabase('Player authentication with real PostgreSQL', () => {
       '/api/v1/player/me',
       '/api/v1/player/me/characters',
       '/api/v1/player/me/characters/{characterLinkId}',
+      '/api/v1/player/me/characters/{characterLinkId}/profession',
     ]);
     expect(
       Object.keys(body.components.schemas.DiscordExchangeDto.properties).sort(),
