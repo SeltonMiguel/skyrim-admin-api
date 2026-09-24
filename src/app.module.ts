@@ -1,3 +1,4 @@
+import { ServerControlModule } from './server-control/server-control.module.js';
 import { VipStoreModule } from './vip-store/vip-store.module.js';
 import { WorldModule } from './world-management/world.module.js';
 import { ModerationModule } from './moderation/moderation.module.js';
@@ -28,6 +29,7 @@ import { HealthModule } from './health/health.module.js';
     ModerationModule,
     WorldModule,
     VipStoreModule,
+    ServerControlModule,
   ],
 })
 export class AppModule {}
