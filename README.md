@@ -559,5 +559,16 @@ projeção mantida pelo banco, idempotência por ator e crédito/débito SYSTEM 
 transfer apenas internos. O player lê a wallet e o histórico em
 `/api/v1/player/me/characters/:characterLinkId/wallet[/transactions]`; nenhuma
 rota altera saldo e o gold do Skyrim não é sincronizado. A migration
-`1789960000000-Economy` completa dezessete migrations. Consulte [arquitetura,
+`1789960000000-Economy` completa dezessete migrations.
+
+A Subetapa 10.13 adiciona trades entre characters do mesmo servidor em
+`/api/v1/player/trades` (criar, trocar a própria oferta, aceitar a versão atual
+da oferta da contraparte via `counterpartyOfferVersion`, cancelar, ler) e
+`/api/v1/player/me/characters/:characterLinkId/trades`, com `Idempotency-Key`
+obrigatório nas mutations. GOLD é reservado em `TRADE_ESCROW` no segundo aceite:
+trades só de GOLD completam na hora; com GAME_ITEM ficam em
+AWAITING_GAME_CONFIRMATION até a confirmação interna do Agent (Etapa 11), que
+só pode pedir SETTLED com os itens sob custódia reversível; se o ledger recusar a
+liquidação, o trade continua aguardando. A
+migration `1789970000000-PlayerTrades` completa dezoito migrations. Consulte [arquitetura,
 decisões e roadmap da Etapa 10](docs/player-services.md).

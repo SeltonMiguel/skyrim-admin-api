@@ -78,7 +78,7 @@ domínio. A Player API nunca chama controllers administrativos. O prefixo
 | 10.10 Properties / Houses / Holds | **Implementada.** `properties-query` e `holds-query` read-only sobre `CHARACTER_PROPERTIES_QUERY`/`CHARACTER_HOLDS_QUERY` existentes, por ownership VERIFIED; sem migration |
 | 10.11 Horses / Mounts | **Implementada.** `horses-query` read-only sobre `CHARACTER_HORSES_QUERY` existente, por ownership VERIFIED; sem migration |
 | 10.12 Economy / Wallet | **Implementada.** Ledger de partidas dobradas imutável (GOLD inteiro) do character identity, balances como projeção, credit/debit SYSTEM e transfer internos, wallet read-only; migration `1789960000000-Economy` |
-| 10.13 Player Trade | Trade entre players com escrow; LEDGER_CURRENCY e GAME_ITEM |
+| 10.13 Player Trade | **Implementada.** Trade entre character identities com ofertas versionadas, escrow de GOLD em TRADE_ESCROW, settlement só de GOLD imediato e GAME_ITEM aguardando o Agent (contrato interno); migration `1789970000000-PlayerTrades` |
 | 10.14 Marketplace | Listings sobre wallet/ledger/escrow, com as mesmas regras de custódia do Trade |
 | 10.15 Chat | Chat event-driven sobre a infraestrutura realtime da 10.8 |
 | 10.16 Player Settings | Preferências de conta com allowlist explícita |
@@ -923,6 +923,142 @@ Dois tipos de ativo são suportados arquiteturalmente: **LEDGER_CURRENCY** e
 A Etapa 10 constrói o domínio, os estados e os contratos. A **Etapa 11**
 implementa a integração real necessária para o settlement de GAME_ITEM.
 
+#### Implementação (10.13)
+
+Módulo `src/player-trades/`. Trade entre **dois character identities do mesmo
+GameServer** (`game_server_id` + `character_external_id`); a ownership VERIFIED só
+autoriza o Player atual a agir por um deles. O counterparty pode ser de outra
+conta (ou outro character da mesma conta), nunca de outro servidor.
+
+| Tabela | Colunas e garantias |
+| --- | --- |
+| `player_trades` | `id`, `game_server_id` (FK), `initiator_character_id`, `target_character_id` (diferentes), `status`, `initiator_accepted_at`, `target_accepted_at`, `locked_at`, `completed_at`, `cancelled_at`, `failed_at`, `created_at`, `updated_at`; CHECK de coerência de timestamps por status; trigger: só transições para frente, partes imutáveis, sem DELETE/TRUNCATE |
+| `player_trade_offers` | `id`, `trade_id`, `side` INITIATOR/TARGET (`UNIQUE(trade_id, side)`), `gold_amount` 0..10¹², `version` ≥ 1, `updated_at` |
+| `player_trade_items` | `id`, `offer_id`, `item_external_id` (id opaco, validador padrão), `quantity` 1..10.000, `created_at`; `UNIQUE(offer_id, item_external_id)`; sem nome/descrição do cliente |
+| `player_trade_currency_escrows` | `trade_id`, `character_external_id` (`UNIQUE` por trade + character), `amount`, `status` RESERVED/RELEASED/SETTLED, `reservation_transaction_id` e `resolution_transaction_id` (FKs para o ledger; resolução presente sse ≠ RESERVED); só RESERVED → RELEASED/SETTLED, uma vez, sem DELETE |
+| `player_trade_requests` | idempotência do domínio: `idempotency_scope` `PLAYER:<playerId>`, `idempotency_key`, `operation`, `request_fingerprint`, `trade_id`; `UNIQUE(scope, key)`; append-only |
+| `player_trade_settlement_events` | `game_server_id`, `settlement_event_id` (`UNIQUE` por servidor), `trade_id` (`UNIQUE`: um settlement por trade), `outcome`; append-only |
+
+Um trigger congela offers e items quando o trade sai de NEGOTIATING. A migration
+também amplia os system keys da economia com **`TRADE_ESCROW`** (a da 10.12 não
+muda). O `down` recusa reverter se existir trade ou account TRADE_ESCROW.
+
+**Lifecycle:** `NEGOTIATING` → (ambos aceitam) → `COMPLETED` (só GOLD) ou
+`AWAITING_GAME_CONFIRMATION` (há GAME_ITEM) → `COMPLETED`/`FAILED` pelo Agent;
+`NEGOTIATING` → `CANCELLED`. Terminais nunca reabrem. Não há EXPIRED nesta etapa.
+
+**Ofertas e versões:** cada side tem uma oferta (`gold` + até 20 linhas de item,
+ids distintos). Trocar a própria oferta incrementa `version` e **limpa as duas
+aceitações** — qualquer alteração de qualquer oferta zera ambas. O accept envia
+`counterpartyOfferVersion` = versão atual da **oferta da contraparte** (o
+initiator confirma a versão da oferta TARGET; o target, a da INITIATOR); se ela
+mudou, 409. Assim ninguém aceita em silêncio uma oferta alterada. O nome antigo
+`offerVersion` é recusado (400). O segundo accept revalida tudo sob o lock. Ofertas unilaterais (gift) são permitidas, mas o
+segundo aceite exige pelo menos um ativo no trade (senão 409 `Trade has no
+assets`). Aceitar de novo é no-op.
+
+**Player API** (`PlayerAuthGuard`; `Idempotency-Key` obrigatório nas mutations):
+
+| Rota | Regra |
+| --- | --- |
+| `POST /api/v1/player/trades` `{ actorCharacterLinkId, targetCharacterId, offer }` | 201; target resolvido no servidor do ator (não resolvido/indisponível → 404 `Character not available`); mesmo character → 400; `targetCharacterLinkId`/`targetPlayerId`/`gameServerId` → 400 |
+| `PUT /api/v1/player/trades/:tradeId/offer` `{ characterLinkId, gold, items }` | só a própria side, só NEGOTIATING (senão 409) |
+| `POST /api/v1/player/trades/:tradeId/accept` `{ characterLinkId, counterpartyOfferVersion }` | ver acima |
+| `POST /api/v1/player/trades/:tradeId/cancel` `{ characterLinkId }` | NEGOTIATING → CANCELLED; CANCELLED de novo → 200 no-op; AWAITING_GAME_CONFIRMATION, COMPLETED, FAILED → 409 |
+| `GET /api/v1/player/trades/:tradeId?characterLinkId=` | só participantes (senão 404) |
+| `GET /api/v1/player/me/characters/:characterLinkId/trades?page&limit` | trades do character, mais recentes primeiro |
+
+O DTO traz `tradeId`, `gameServer`, `status`, `initiator`/`target` (`characterId`,
+`characterLinkId` só para characters do próprio player, `acceptedAt`, `offer`) e
+timestamps; nunca player ids, vínculos de outros, accounts, ledger ou scopes.
+
+**GOLD escrow:** no segundo aceite, na mesma transação: lock do trade, revalida
+que os dois characters têm dono VERIFIED ACTIVE (senão 409 `Trade party
+unavailable`), revalida versões e ativos e reserva o GOLD de cada side que
+ofereceu em `SYSTEM:TRADE_ESCROW` por uma posting balanceada
+(`EconomyLedgerService.postWithin`, que participa da transação do trade),
+registrando uma linha RESERVED por contribuinte. Saldo insuficiente → 409
+`Insufficient funds` e nada muda (nem a aceitação). A reconciliação interna
+(`TradeEscrowService.mismatches/orphanReservations`) confere que o saldo de
+TRADE_ESCROW é a soma dos escrows RESERVED e que só trades AWAITING têm reservas.
+
+**Settlement só de GOLD:** na mesma transação do segundo aceite, TRADE_ESCROW paga
+a contraparte de cada contribuição (ex.: A 100 / B 50 → reserva `A −100, B −50,
+ESCROW +150`; liquidação `ESCROW −150, B +100, A +50`), os escrows viram SETTLED
+e o trade COMPLETED. Duas postings balanceadas, com `reference_type =
+PLAYER_TRADE` e chave idempotente por fase (`trade:<id>:reserve|settle|release`).
+
+**Fronteira GAME_ITEM:** itens são declarações opacas; o backend não consulta
+inventário, não afirma que o item existe nem usa `CHARACTER_ITEM_GIVE/REMOVE`. Com
+qualquer item, o trade para em AWAITING_GAME_CONFIRMATION com o GOLD reservado e
+ofertas congeladas; o Player não cancela (o Agent pode estar executando).
+
+**Contrato Agent (interno, sem rota HTTP):**
+`TradeSettlementService.confirmFromAgent({ tradeId, settlementEventId, outcome })`,
+ator SYSTEM:AGENT. `SETTLED` liquida o escrow para as contrapartes e completa;
+`FAILED` devolve o GOLD aos contribuintes (RELEASED) e marca FAILED. Mesmo evento
+e conteúdo → `ALREADY_APPLIED`; mesmo id com outro conteúdo → `EVENT_CONFLICT`;
+trade não AWAITING → `TRADE_NOT_AWAITING`.
+
+**Semântica de SETTLED (condição do protocolo da Etapa 11):** `SETTLED` **não**
+significa que os itens já foram entregues irreversivelmente. O Agent só pode
+enviá-lo depois de validar os GAME_ITEM e colocá-los sob **custódia durável e
+reversível**, da qual consegue repetir a entrega ou liberar os itens se o backend
+recusar a liquidação. **O commit do backend é a autoridade que finaliza o
+trade:**
+
+```
+custódia do Agent → SETTLED → liquidação do GOLD no backend
+                                ├─ sucesso → COMPLETED (o Agent entrega)
+                                └─ falha   → continua AWAITING_GAME_CONFIRMATION
+```
+
+Se o ledger recusar por qualquer motivo (inclusive o teto de saldo do
+recebedor), o retorno é `LEDGER_REJECTED` (com `ledgerReason` interno, ex.
+`BALANCE_LIMIT`, e um log de aviso) e toda a transação é desfeita: o trade
+continua AWAITING_GAME_CONFIRMATION, os escrows continuam RESERVED, o
+`settlementEventId` não fica registrado (pode ser repetido), não há Audit
+`PLAYER_TRADE_SETTLED` nem realtime `TRADE_COMPLETED`. O Agent continua
+responsável pela custódia e pode repetir depois ou enviar `FAILED` (liberando
+itens e GOLD). A 10.13 não reserva capacidade de recebimento: a recusa por teto é
+aceita como temporária, sem corromper o trade nem liberar o escrow. A Etapa 11
+implementa o protocolo real de custódia, entrega e retry.
+
+**Ownership:** o trade é dos characters. Se a ownership de uma parte deixa de ser
+VERIFIED, o antigo dono perde acesso na hora; um novo dono VERIFIED do mesmo
+character vê o trade (com o próprio `characterLinkId`) e pode continuar ou
+cancelar. Em AWAITING, trocas de dono não mudam as partes nem quem recebe o GOLD.
+
+**Idempotência:** create, offer, accept e cancel exigem `Idempotency-Key`,
+persistida em `player_trade_requests` na mesma transação (scope `PLAYER:<id>`,
+nunca exposto). Mesma key + mesmo request → o trade no estado atual, sem Audit ou
+evento extra; mesma key com outro conteúdo ou operação → 409. O settlement do
+Agent é idempotente por `settlementEventId`.
+
+**Concorrência:** ordem de locks: claim da key → linha do trade `FOR UPDATE` →
+vínculos → offers/items/escrows → accounts da economia (ordem crescente de id,
+no ledger). Tudo que muda um trade trava sua linha. Cobertos: edições
+concorrentes, accept × edição, dois accepts simultâneos, cancel × accept, dois
+trades disputando o mesmo GOLD (sem double-spend), settlements concorrentes e
+replays. Sem mutex em memória.
+
+**Audit** (`resourceType = PLAYER_TRADE`, na mesma transação):
+`PLAYER_TRADE_CREATED`, `PLAYER_TRADE_OFFER_UPDATED`, `PLAYER_TRADE_ACCEPTED`,
+`PLAYER_TRADE_CANCELLED` (ator PLAYER) e `PLAYER_TRADE_SETTLED`,
+`PLAYER_TRADE_FAILED` (SYSTEM:AGENT). Metadata: `tradeId`, `gameServerId`,
+`actorCharacterId`, `side`, `status`, `offerVersion` (create/offer) ou
+`counterpartyOfferVersion` (accept), valores de GOLD, contagem de
+itens e `settlementEventId`; sem ids de account/player, payload do cliente ou
+idempotência. Replays e no-ops não auditam. As postings do ledger não geram Audit
+genérico (a fronteira da 10.12).
+
+**Realtime:** `TRADE_CREATED`, `TRADE_OFFER_UPDATED`, `TRADE_ACCEPTED`,
+`TRADE_AWAITING_GAME_CONFIRMATION`, `TRADE_COMPLETED`, `TRADE_CANCELLED`,
+`TRADE_FAILED` pelo mesmo `RealtimeEventBus`, após o commit, para os donos
+VERIFIED atuais dos dois characters (nunca estranhos ou Staff). Payload com
+`tradeId`, `gameServerId`, `status` e characterExternalIds/side/versão. Rollback
+não publica. Realtime não é fonte de verdade.
+
 ### Marketplace
 
 - Listings persistidos.
@@ -1225,14 +1361,14 @@ Detalhes que não bloqueiam a fundação e podem ser fixados na subetapa do dom�
 | Limite definitivo de guild (hoje 50, provisório), relação com VIP e representação no jogo | pós-definição de produto / Etapa 11 |
 | Taxas de marketplace | 10.14 |
 | Retenção de chat | 10.15 |
-| Moedas além de GOLD e contas de escrow | 10.13 / 10.14 |
+| Moedas além de GOLD e escrow de Marketplace | 10.14 |
 
 Pontos de implementação a fixar no início da subetapa correspondente, sem alterar
 as decisões acima:
 
 | Tema | Subetapa |
 | --- | --- |
-| Efeito de SUSPENDED/BANNED em trade e marketplace; revogação administrativa de vínculos | 10.13 / 10.14 / futura |
+| Efeito de SUSPENDED/BANNED em marketplace; revogação administrativa de vínculos; expiração de trades | 10.14 / futura |
 | Transporte autenticado do Agent chamando `confirmFromAgent` e digitação do challenge no jogo | 11 |
 | Implementação real de perfil e skills pelo Agent, conforme os contratos da 10.5 | 11 |
 | Chaves de Player Settings | 10.16 |

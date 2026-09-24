@@ -133,3 +133,16 @@ ledger append-only, balanço (soma zero, ≥ 2 legs) verificado no COMMIT por
 constraint triggers deferred, balance projetado a partir das entries e protegido
 contra escrita direta e remoção. `down` recusa reverter se o ledger não estiver
 vazio. Detalhes em `docs/player-services.md`.
+
+A Subetapa 10.13 adiciona `1789970000000-PlayerTrades`: amplia
+`economy_accounts_owner_check` com o system key `TRADE_ESCROW` (a migration da
+10.12 não muda) e cria `player_trades` (partes distintas, CHECK de lifecycle,
+trigger de transições só para frente e sem DELETE), `player_trade_offers`
+(`UNIQUE(trade_id, side)`, gold e versão), `player_trade_items`
+(`UNIQUE(offer_id, item_external_id)`, quantidade), `player_trade_currency_escrows`
+(`UNIQUE(trade_id, character_external_id)`, FKs para as transactions de reserva e
+resolução, resolução única), `player_trade_requests` (idempotência por scope de
+player, FK de trade deferred) e `player_trade_settlement_events` (evento único por
+servidor e por trade). Triggers congelam offers/items fora de NEGOTIATING e tornam
+requests/eventos append-only. `down` recusa reverter com trades ou TRADE_ESCROW
+existentes. Detalhes em `docs/player-services.md`.
