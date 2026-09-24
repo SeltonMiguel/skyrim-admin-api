@@ -3,7 +3,8 @@
 Backend administrativo do Skyrim Brasil / SkyMP. Foundation (Etapa 00),
 autenticação/RBAC (Etapa 01), auditoria administrativa (Etapa 02) e infraestrutura
 de Game Bridge/Commands (Etapa 03), consultas administrativas (Etapa 04) e
-Character Management assíncrono (Etapa 05). O transporte real para Skyrim continua
+Character Management assíncrono (Etapa 05) e Moderation (Etapa 06).
+O transporte real para Skyrim continua
 reservado a uma etapa futura.
 
 ## Desenvolvimento local
@@ -240,7 +241,8 @@ explícita de campos seguros em cada nova ação.
 A Etapa 03 adiciona GameServer, GameConnection, GameCommand e GameCommandResult,
 com migration explícita e serviços internos exportados por GameBridgeModule.
 BRIDGE_PING permanece disponível; a Etapa 05 acrescenta 17 comandos tipados de
-Character Management. GameGateway usa DisconnectedGameGateway em produção:
+Character Management e a Etapa 06 acrescenta oito de Moderation, totalizando 26
+tipos fechados. GameGateway usa DisconnectedGameGateway em produção:
 nunca simula execução bem-sucedida. O MockGameGateway existe somente nos testes.
 
 Commands usam idempotência por servidor/chave, correlationId próprio, requestId
@@ -303,7 +305,7 @@ result body, inclusive para BRIDGE_PING. O detalhe expõe deadlines, timestamps 
 somente outcome/errorCode/receivedAt do resultado. idempotencyKey, characterId,
 IDs de alvos, tokens de lease/ownership e segredos de autenticação ficam ocultos.
 Consultas não alteram estado nem geram AuditLog; requestId segue a infraestrutura
-HTTP existente. GameCommandBus permanece interno; os POSTs da Etapa 05 escolhem
+HTTP existente. GameCommandBus permanece interno; os POSTs das Etapas 05/06 escolhem
 tipos fixos e exigem suas próprias permissions.
 Swagger documenta filtros, respostas e erros. Joins evitam consultas por servidor
 ou por comando; paginação/counts usam um número constante de queries.
@@ -330,6 +332,28 @@ Não são criados snapshots: Skyrim continua sendo a fonte de verdade.
 Payload tem teto de 4096 bytes; result, 65536 bytes, incluindo representação
 `jsonb::text`. A migration incremental `1789850000000-CharacterResultLimit` altera
 somente o check de result. Consulte [contratos, endpoints, auditoria e decisões](docs/character-management.md).
+
+## Moderation
+
+A Etapa 06 aceita oito operações tipadas em
+`POST /api/v1/game-servers/:serverId/moderation/...`: ban/unban, god mode SET,
+noclip SET, invisibility SET, announcement e teleport nas duas direções.
+`actorStaffId` vem exclusivamente da autenticação nas ações de staff; o cliente
+não pode escolher outro staff. SET exige boolean explícito, incluindo false.
+
+Todas exigem Idempotency-Key e permission existente; retornam 202 com
+`Location: /api/v1/moderation-operations/{commandId}`. O detalhe exige a permission
+do CommandType persistido. Support só possui PLAYER_TELEPORT_TO_STAFF; DEV não
+possui Moderation. O endpoint genérico continua exibindo apenas metadata operacional.
+
+Character e Moderation compartilham `AdministrativeCommandService`, extraído do
+fluxo da Etapa 05: Command + Audit SUCCESS na mesma transação, rollback em falha
+de Audit, replay sem criação/auditoria/envio adicional e commit antes do dispatcher.
+SUCCESS significa solicitação aceita pelo backend. Reason e message ficam no
+payload autorizado da operação, nunca no Audit. Não há tabelas locais de estados
+de moderação nem migration nova. Limites continuam 4 KiB/64 KiB.
+
+Consulte [contratos, endpoints, matriz e decisões](docs/moderation.md).
 
 ## Verificação
 
