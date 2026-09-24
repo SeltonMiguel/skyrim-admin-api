@@ -245,7 +245,8 @@ A Etapa 03 adiciona GameServer, GameConnection, GameCommand e GameCommandResult,
 com migration explícita e serviços internos exportados por GameBridgeModule.
 BRIDGE_PING permanece disponível; a Etapa 05 acrescenta 17 comandos tipados de
 Character Management, a Etapa 06 acrescenta oito de Moderation e a Etapa 07 quatro
-de World Management, totalizando 30 tipos fechados. GameGateway usa DisconnectedGameGateway em produção:
+de World Management; a Subetapa 10.5 acrescenta duas queries player-facing
+(CHARACTER_PROFILE_QUERY e CHARACTER_SKILLS_QUERY), totalizando 32 tipos fechados. GameGateway usa DisconnectedGameGateway em produção:
 nunca simula execução bem-sucedida. O MockGameGateway existe somente nos testes.
 
 Commands usam idempotência por servidor/chave, correlationId próprio, requestId
@@ -501,5 +502,12 @@ abre um vínculo PENDING e devolve uma única vez um challenge para digitar no j
 só vira VERIFIED pela confirmação interna do Agent (`confirmFromAgent`, usada na
 Etapa 11); não há endpoint de Agent nem GameCommand. Um character fica VERIFIED
 para no máximo um player por servidor. A migration `1789920000000-PlayerCharacters`
-completa treze migrations, 36 permissions e 93 grants. Consulte [arquitetura, decisões e roadmap da
+completa treze migrations, 36 permissions e 93 grants.
+
+A Subetapa 10.5 permite ao player consultar perfil e skills de um character
+VERIFIED: `POST /api/v1/player/game-servers/:gameServerId/characters/:characterId/`
+`profile-query` e `skills-query` (Idempotency-Key obrigatório, 202 + Location) e
+`GET /api/v1/player/character-operations/:operationId`, visível só para o próprio
+player. Os commands usam ator PLAYER e scope de idempotência próprio; o resultado
+vem do Skyrim, validado, sem snapshot. Não há migration nova. Consulte [arquitetura, decisões e roadmap da
 Etapa 10](docs/player-services.md).

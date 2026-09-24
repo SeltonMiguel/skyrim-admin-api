@@ -406,6 +406,9 @@ describeDatabase('Player authentication with real PostgreSQL', () => {
       '/api/v1/player/character-links',
       '/api/v1/player/character-links/{linkId}',
       '/api/v1/player/character-links/{linkId}/revoke',
+      '/api/v1/player/character-operations/{operationId}',
+      '/api/v1/player/game-servers/{gameServerId}/characters/{characterId}/profile-query',
+      '/api/v1/player/game-servers/{gameServerId}/characters/{characterId}/skills-query',
       '/api/v1/player/me',
     ]);
     expect(

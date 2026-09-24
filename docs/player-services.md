@@ -70,7 +70,7 @@ domínio. A Player API nunca chama controllers administrativos. O prefixo
 | 10.2 Generic Actor + Player-safe Idempotency | **Implementada.** Ator STAFF/PLAYER/SYSTEM em Audit e GameCommand; idempotency scope; `ActorCommandService`; migration `1789900000000-GenericActor` |
 | 10.3 Player Authentication | **Implementada.** Discord OAuth2, auto-provisioning, `player_sessions`, tokens, `PlayerAuthGuard`, `GET /api/v1/player/me`; migration `1789910000000-PlayerSessions` |
 | 10.4 Character Ownership | **Implementada.** `player_characters`, challenges de vínculo, Player API mínima, `CharacterOwnershipService`, `confirmFromAgent` interno; migration `1789920000000-PlayerCharacters` |
-| 10.5 Character Profile + Skills | Contratos de GameCommand para perfil e skills; leitura pela Player API |
+| 10.5 Character Profile + Skills | **Implementada.** `CHARACTER_PROFILE_QUERY`, `CHARACTER_SKILLS_QUERY`, Player API 202 + operation detail; sem migration |
 | 10.6 Multiple Characters | Listagem e gestão dos vínculos 1:N do player |
 | 10.7 Professions | Profissão ativa por character, XP e nível persistidos |
 | 10.8 Groups + Realtime Foundation | Infraestrutura WebSocket e barramento de eventos internos; party com leader, members e invites como primeiro domínio realtime |
@@ -374,6 +374,68 @@ um efeito; dois players no mesmo character geram um VERIFIED; pedidos simultâne
 do mesmo player geram um vínculo e um challenge ativo; revoke e confirm
 concorrentes terminam em estado coerente.
 
+### Character Profile + Skills (10.5)
+
+Queries do Skyrim pedidas pelo player. **O Skyrim continua sendo a fonte de
+verdade:** o backend valida e devolve o resultado do command; não existem
+snapshots, read-models ou cache. Contratos em
+`src/player-character-operations/character-profile.contracts.ts`, registrados no
+catálogo do Game Bridge (32 tipos) e fora de `CHARACTER_COMMAND_TYPES`: não são
+operações staff de Character Management e `/character-operations/:id` responde 404
+para eles.
+
+| CommandType | Payload | Result |
+| --- | --- | --- |
+| `CHARACTER_PROFILE_QUERY` | `{ characterId }` | `{ characterId, name, level, race, sex, health, magicka, stamina }` |
+| `CHARACTER_SKILLS_QUERY` | `{ characterId }` | `{ characterId, skills: { <18 skills> } }` |
+
+- `characterId`, `name` e `race`: strings opacas (trim, 1–128, sem controles);
+  `race` não é interpretada (por exemplo, editor ID ou FormID do Agent).
+- `level`: inteiro de 1 a 65535 (uint16 no Skyrim).
+- `sex`: `MALE` ou `FEMALE`.
+- `health`, `magicka`, `stamina`: valor atual do atributo, número finito de 0 a
+  1.000.000 (pode ser fracionário).
+- `skills`: exatamente `alchemy`, `alteration`, `archery`, `block`, `conjuration`,
+  `destruction`, `enchanting`, `heavyArmor`, `illusion`, `lightArmor`,
+  `lockpicking`, `oneHanded`, `pickpocket`, `restoration`, `smithing`, `sneak`,
+  `speech`, `twoHanded`; cada uma inteira de 0 a 100 (nível base, sem
+  modificadores temporários). Skill ausente, desconhecida, fracionária ou fora da
+  faixa é rejeitada.
+- Campos extras, tipos errados, `characterId` divergente do payload e resultados
+  acima de 65536 bytes são rejeitados pelo receiver; o command não conclui.
+
+**Player API** (`PlayerAuthGuard`):
+
+| Rota | Resposta |
+| --- | --- |
+| `POST /api/v1/player/game-servers/:gameServerId/characters/:characterId/profile-query` | 202 + `Location` |
+| `POST /api/v1/player/game-servers/:gameServerId/characters/:characterId/skills-query` | 202 + `Location` |
+| `GET /api/v1/player/character-operations/:operationId` | detalhe do próprio player |
+
+- `Idempotency-Key` obrigatório; body vazio (qualquer campo → 400).
+- Ownership: dentro da transação do command, após o lock do servidor,
+  `requireVerifiedOwnership(playerId do token, gameServerId, characterId)`.
+  PENDING, REVOKED, de outro player ou inexistente → 404 `Character not available`;
+  retries também são reautorizados. Servidor inexistente 404, desabilitado 409.
+  Para isso o `ActorCommandService.create` ganhou um hook opcional `authorize`,
+  executado na mesma transação; os chamadores staff não mudaram.
+- Ator PLAYER e scope `PLAYER:<playerId>`: retry do mesmo player devolve o mesmo
+  command, conteúdo diferente com a mesma chave → 409, outro player com a mesma
+  chave cria command independente.
+- 202 significa apenas aceito e persistido. O dispatch segue o fluxo existente do
+  Game Bridge após o commit (dispatcher explícito, sem scheduler); servidor
+  offline/stale aceita PENDING. Sem Agent real (Etapa 11), nenhum resultado chega
+  em produção.
+- Referência: `{ operationId, type, gameServerId, characterId, status, createdAt }`.
+  Detalhe acrescenta `completedAt` e `result: { outcome, data, errorCode,
+  receivedAt } | null`, com `data` revalidado pelo contrato; FAILED/TIMEOUT têm
+  `data: null`. O detalhe só encontra commands desses dois tipos com
+  `requested_by_player_id` do player autenticado; qualquer outro → 404.
+- Nunca expostos: `requestedByStaffId`, `requestedByPlayerId`, `idempotencyScope`,
+  `idempotencyKey`, `correlationId`, lease, deadlines, tentativas, conexão e payload.
+  `/game-commands` (admin) continua com seu allowlist, sem payload nem resultado.
+- Queries não geram Audit, como no padrão staff; o GameCommand é a trilha.
+
 ### Professions
 
 - Domínio incluído no MVP.
@@ -641,6 +703,6 @@ as decisões acima:
 | --- | --- |
 | Efeito de SUSPENDED/BANNED em trade e marketplace; revogação administrativa de vínculos | 10.13 / 10.14 / futura |
 | Transporte autenticado do Agent chamando `confirmFromAgent` e digitação do challenge no jogo | 11 |
-| Campos de perfil e skills expostos pelo Agent | 10.5 |
+| Implementação real de perfil e skills pelo Agent, conforme os contratos da 10.5 | 11 |
 | Chaves de Player Settings | 10.16 |
 | Rate limiting distribuído, confiança em proxy e cotas por conta | Etapa 12 |
