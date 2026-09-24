@@ -511,6 +511,12 @@ VERIFIED: `POST /api/v1/player/game-servers/:gameServerId/characters/:characterI
 player. Os commands usam ator PLAYER e scope de idempotência próprio; o resultado
 vem do Skyrim, validado, sem snapshot. Não há migration nova.
 
+A Subetapa 10.10 acrescenta, no mesmo padrão, `properties-query` (casas) e
+`holds-query`, somente leitura, sobre os contratos existentes
+`CHARACTER_PROPERTIES_QUERY` e `CHARACTER_HOLDS_QUERY`. O player não compra, vende,
+concede nem revoga propriedades ou holds; essas mutations continuam exclusivas da
+Admin API. Não há migration nova: continuam dezesseis.
+
 A Subetapa 10.6 lista os characters do player em `GET /api/v1/player/me/characters`
 (paginado, VERIFIED antes de PENDING, sem REVOKED) e `GET .../:characterLinkId`.
 Retorna apenas identidade e servidor, sem character selecionado no servidor nem

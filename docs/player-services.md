@@ -75,7 +75,7 @@ domínio. A Player API nunca chama controllers administrativos. O prefixo
 | 10.7 Professions | **Implementada.** `character_professions`, `profession_experience_events`, seleção única pela Player API, `grantFromAgent` interno; migration `1789930000000-Professions` |
 | 10.8 Groups + Realtime Foundation | **Implementada.** Groups (party, invites), `RealtimeEventBus`, WebSocket em `/api/v1/realtime`; migration `1789940000000-PlayerGroups` |
 | 10.9 Guilds / Clans | **Implementada.** Guildas persistentes do character identity (MASTER/OFFICER/MEMBER, convites, limite provisório de 50), eventos no realtime da 10.8; migration `1789950000000-PlayerGuilds` |
-| 10.10 Properties / Houses / Holds | Leitura reutilizando contratos Character, por ownership |
+| 10.10 Properties / Houses / Holds | **Implementada.** `properties-query` e `holds-query` read-only sobre `CHARACTER_PROPERTIES_QUERY`/`CHARACTER_HOLDS_QUERY` existentes, por ownership VERIFIED; sem migration |
 | 10.11 Horses / Mounts | Leitura reutilizando contratos Character, por ownership |
 | 10.12 Economy / Wallet | Ledger imutável e wallet derivada |
 | 10.13 Player Trade | Trade entre players com escrow; LEDGER_CURRENCY e GAME_ITEM |
@@ -920,6 +920,51 @@ privacidade seguem o mesmo modelo (donos VERIFIED atuais, sem Staff).
   (`CHARACTER_PROPERTIES_QUERY`, `CHARACTER_HOLDS_QUERY`, `CHARACTER_HORSES_QUERY`).
 - A **Player API usa ownership VERIFIED em vez de Staff permission**.
 - Mutations administrativas (grant/revoke/give) continuam exclusivas da Admin API.
+
+#### Implementação (10.10)
+
+Properties e Holds para o Player são **leitura do Skyrim** pelos contratos da
+Etapa 05, reutilizados sem alteração: `CHARACTER_PROPERTIES_QUERY` e
+`CHARACTER_HOLDS_QUERY`, com o mesmo payload `{ characterId }`, os mesmos
+validators de resultado (`{ characterId, properties: [{ propertyId,
+displayName? }] }` e `{ characterId, holds: [{ holdId, displayName? }] }`, até 512
+entradas, rejeição de mismatch de `characterId`), limites de payload/resultado e
+lifecycle de GameCommand. Nenhum tipo novo, tabela, snapshot ou read-model.
+
+- **Properties = casas/propriedades apresentadas ao Player.** "House" é só a
+  apresentação player-facing de Properties; não existe tabela `houses` nem um
+  segundo conceito técnico.
+- **Holds** são as Holds do Skyrim associadas ao character, somente leitura. Não
+  são Guilds (10.9), reinos nem Factions.
+- **Sem compra, venda, grant ou revoke pelo Player.** A aquisição comercial de
+  propriedades dependerá de Economy (10.12) e será decidida depois.
+
+**Player API** (mesmo módulo e padrão da 10.5, `PlayerAuthGuard`,
+`Idempotency-Key` obrigatório, body vazio, campos extras → 400):
+
+| Rota | CommandType |
+| --- | --- |
+| `POST /api/v1/player/game-servers/:gameServerId/characters/:characterId/properties-query` | `CHARACTER_PROPERTIES_QUERY` |
+| `POST /api/v1/player/game-servers/:gameServerId/characters/:characterId/holds-query` | `CHARACTER_HOLDS_QUERY` |
+
+Ambas respondem 202 + `Location` e são lidas em
+`GET /api/v1/player/character-operations/:operationId`, cuja allowlist
+(`PLAYER_CHARACTER_QUERY_TYPES`) passa a incluir os dois tipos; o resultado é
+revalidado antes de apresentado e o detalhe continua sem payload, atribuição,
+scope, key, correlation, lease ou tentativas. Ownership, ator PLAYER, scope
+`PLAYER:<playerId>` e códigos (404 genérico, 409 servidor desabilitado ou key
+reutilizada com outro conteúdo) são os da 10.5. Queries não geram Audit; o
+GameCommand é a trilha operacional. Nenhum evento realtime novo.
+
+**Separação Player/Admin:** a allowlist Player contém apenas queries; as rotas
+Staff de grant/revoke (`CHARACTER_PROPERTY_*`, `CHARACTER_HOLD_*`) continuam com as
+mesmas permissions e recusam tokens Player (401). Commands Staff desses tipos não
+aparecem no detalhe Player (404). O detalhe administrativo de domínio
+(`GET /api/v1/character-operations/:commandId`, e os de World/Moderation) passa a
+considerar apenas commands de autoria STAFF: uma query criada por Player não é
+uma operação Staff de Character Management (404 ali) e continua visível somente na
+view genérica e redigida `GET /api/v1/game-commands/:id`, sem payload nem
+resultado.
 
 ### VIP
 
