@@ -37,7 +37,7 @@ const cases = moderationCases(randomUUID());
 describe('Moderation closed contracts', () => {
   it('adds exactly eight fixed commands to ping and the 17 Character commands', () => {
     expect(MODERATION_COMMAND_TYPES).toHaveLength(8);
-    expect(COMMAND_TYPES).toHaveLength(26);
+    expect(COMMAND_TYPES).toHaveLength(30);
   });
   it.each(cases)(
     'validates payload, result, policy and redaction for $type',
