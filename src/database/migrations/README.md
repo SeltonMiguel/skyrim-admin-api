@@ -111,3 +111,14 @@ vínculo e um leader ativo por group) e `player_group_invites` (FKs, status,
 `responded_at` nulo apenas em PENDING, índice único parcial de um convite pendente
 por group e target). `down` remove as três tabelas e o histórico de groups.
 Detalhes em `docs/player-services.md`.
+
+A Subetapa 10.9 adiciona `1789950000000-PlayerGuilds`: cria `player_guilds` (FK
+para `game_servers`, `UNIQUE(id, game_server_id)`, checks de status, de
+`disbanded_at` e do nome, índice único parcial do `name_key` por servidor entre
+guildas ACTIVE), `player_guild_members` (FK composta `(guild_id, game_server_id)`
+para a guild, identidade `character_external_id` sem FK para vínculos, índices
+únicos parciais de uma membership ativa por character e um MASTER ativo por guild)
+e `player_guild_invites` (FK composta, status, `responded_at` nulo apenas em
+PENDING, índice único parcial de um convite pendente por guild e target). `down`
+remove as três tabelas e o histórico de guildas. Detalhes em
+`docs/player-services.md`.

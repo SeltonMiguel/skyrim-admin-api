@@ -74,7 +74,7 @@ domínio. A Player API nunca chama controllers administrativos. O prefixo
 | 10.6 Multiple Characters | **Implementada.** `GET /api/v1/player/me/characters` e detalhe; sem migration |
 | 10.7 Professions | **Implementada.** `character_professions`, `profession_experience_events`, seleção única pela Player API, `grantFromAgent` interno; migration `1789930000000-Professions` |
 | 10.8 Groups + Realtime Foundation | **Implementada.** Groups (party, invites), `RealtimeEventBus`, WebSocket em `/api/v1/realtime`; migration `1789940000000-PlayerGroups` |
-| 10.9 Guilds / Clans | Guildas persistentes com membros, cargos e convites |
+| 10.9 Guilds / Clans | **Implementada.** Guildas persistentes do character identity (MASTER/OFFICER/MEMBER, convites, limite provisório de 50), eventos no realtime da 10.8; migration `1789950000000-PlayerGuilds` |
 | 10.10 Properties / Houses / Holds | Leitura reutilizando contratos Character, por ownership |
 | 10.11 Horses / Mounts | Leitura reutilizando contratos Character, por ownership |
 | 10.12 Economy / Wallet | Ledger imutável e wallet derivada |
@@ -661,6 +661,138 @@ revogar ownership fica como evolução futura.
 - Membros, cargos e convites.
 - Integração com o jogo pode existir depois, sem mudar o modelo do backend.
 
+#### Implementação (10.9)
+
+Módulo `src/player-guilds/`. **GUILD** é o nome canônico no backend ("Clan" pode
+ser só nomenclatura de UI). Guild é **backend-owned**: não há GameCommand, evento
+de Agent, Papyrus, Faction nem sincronização com o Skyrim; uma representação no
+jogo fica para integração futura.
+
+**A guild pertence ao character identity** (`game_server_id` +
+`character_external_id`), não ao vínculo de ownership. A ownership VERIFIED serve
+apenas para autorizar o Player atual a agir pelo character. Se o character mudar
+de dono, membership e cargo permanecem com o character — diferente de Groups, que
+pertencem ao ownership atual.
+
+| Tabela | Colunas e garantias |
+| --- | --- |
+| `player_guilds` | `id`, `game_server_id` (FK), `name` (exibição), `name_key` (normalizado), `status` ACTIVE/DISBANDED, `created_at`, `updated_at`, `disbanded_at` (presente sse DISBANDED); `UNIQUE(id, game_server_id)` para as FKs compostas; índice único parcial `(game_server_id, name_key) WHERE status = 'ACTIVE'` |
+| `player_guild_members` | `id`, `guild_id` + `game_server_id` (**FK composta** para `player_guilds(id, game_server_id)`: o membro sempre é do servidor da guild), `character_external_id`, `role` MASTER/OFFICER/MEMBER, `joined_at`, `left_at`; índice único parcial de **uma membership ativa por character identity** e de **um MASTER ativo por guild**; histórico nunca apagado |
+| `player_guild_invites` | `id`, `guild_id` + `game_server_id` (FK composta), `target_character_external_id`, `invited_by_character_external_id`, `status` PENDING/ACCEPTED/DECLINED/CANCELLED/EXPIRED, `expires_at`, `responded_at` (nulo sse PENDING), `created_at`; índice único parcial de um PENDING por guild + target |
+
+Nenhuma tabela de guild referencia `player_characters` nem `players`.
+
+**Nome:** trim; 3..48 code points; rejeita controles, caracteres de formato
+(zero-width, overrides bidi), separadores de linha/parágrafo, private-use, não
+atribuídos e surrogates isolados. O nome original (após trim) é preservado para
+exibição. A unicidade usa `name_key` = NFKC → maiúsculas → minúsculas
+(aproxima case folding completo: "ß" ≡ "SS") → NFKC → sequências de espaço viram
+um espaço. A chave é independente de locale, calculada uma vez e armazenada;
+nomes em formas de compatibilidade (ex.: letras full-width) colidem. Único por
+GameServer entre guildas ACTIVE; o mesmo nome é permitido em outro servidor e
+volta a ficar livre após DISBANDED.
+
+**Roles** (policy centralizada em `GUILD_PERMISSIONS`):
+
+| Role | Pode |
+| --- | --- |
+| MASTER | invite; kick OFFICER/MEMBER; promote MEMBER → OFFICER; demote OFFICER → MEMBER; transfer master; disband |
+| OFFICER | invite |
+| MEMBER | leitura; leave |
+
+O MASTER não usa `leave`: precisa transferir a maestria ou desfazer a guild (409).
+Transfer master é atômico: MASTER atual → OFFICER e depois target → MASTER, na
+mesma transação, sob o lock da guild; o índice parcial garante no máximo um
+MASTER, e o fluxo garante exatamente um em toda guild ACTIVE.
+
+- Máximo **provisório de 50 membros ativos** em `MAX_GUILD_MEMBERS`, sem relação
+  com VIP; verificado sob o lock da guild (alterar não exige migration).
+- Convites valem `PLAYER_GUILD_INVITE_TTL` (padrão 7d, de 1h a 30d). Expiração
+  lazy como em Groups: a listagem omite expirados e usar ou repetir um convite
+  expirado o materializa como EXPIRED. Sem scheduler.
+
+**Lifecycle:** create (ACTIVE + MASTER) → invites → accept/decline → role
+changes / transfer master → leave/kick → disband. Accept cria o MEMBER, marca o
+convite ACCEPTED e **cancela os demais convites PENDING do mesmo character**.
+Disband marca DISBANDED, fecha todas as memberships (`left_at`) e cancela convites
+PENDING; a guild fica como histórico.
+
+**Player API** (`PlayerAuthGuard` em tudo; o player vem do token; o vínculo do
+ator precisa ser próprio e VERIFIED, senão 404 `Character not found`; não membro
+→ 404 `Guild not found`; membro sem permissão → 403):
+
+| Rota | Regra |
+| --- | --- |
+| `POST /api/v1/player/guilds` `{ characterLinkId, name }` | 201; character sem guild ativa, servidor habilitado, nome disponível (409 `Guild name unavailable`) |
+| `GET /api/v1/player/me/characters/:characterLinkId/guild` | `{ guild }` do character, ou `{ guild: null }` |
+| `GET /api/v1/player/guilds/:guildId?characterLinkId=` | só se o character indicado for membro ativo |
+| `POST .../:guildId/invites` `{ actorCharacterLinkId, targetCharacterId }` | MASTER/OFFICER; target resolvido no servidor da guild; não resolvido → 404 `Character not available`; já na guild → 409 `Character already in this guild`; em outra guild → 409 `Character unavailable`; cheia → 409 `Guild full`. Convite PENDING repetido → 200 com o mesmo convite, sem Audit |
+| `GET /api/v1/player/guild-invites?characterLinkId=` | PENDING, não expirados, destinados ao character indicado |
+| `POST /api/v1/player/guild-invites/:inviteId/accept` `{ characterLinkId }` | só pelo vínculo VERIFIED do target; PENDING, não expirado, guild ACTIVE, vaga livre, character sem guild ativa |
+| `POST .../:inviteId/decline` `{ characterLinkId }` | mesmo padrão |
+| `POST .../:guildId/leave` `{ characterLinkId }` | MEMBER/OFFICER; MASTER → 409 |
+| `POST .../:guildId/members/:memberId/kick` `{ actorCharacterLinkId }` | MASTER; a si mesmo → 400 |
+| `POST .../:guildId/members/:memberId/role` `{ actorCharacterLinkId, role }` | MASTER; `role` OFFICER ou MEMBER (MASTER → 400); target MASTER → 400; mesmo cargo → 200 sem Audit |
+| `POST .../:guildId/members/:memberId/transfer-master` `{ actorCharacterLinkId }` | MASTER; a si mesmo → 400 |
+| `POST .../:guildId/disband` `{ actorCharacterLinkId }` | MASTER |
+
+`targetCharacterLinkId`, `targetPlayerId`, `gameServerId` e campos extras → 400.
+`targetCharacterId` segue a validação padrão de `characterExternalId`.
+
+**Ownership:** a Player API sempre autoriza pelo `characterLinkId` próprio
+VERIFIED, mas a membership é do character. Se a ownership for REVOKED, o antigo
+dono perde acesso imediatamente e deixa de receber realtime; a membership **não**
+é removida. Se outro Player verificar o mesmo character, passa a ver a mesma
+membership e cargo (inclusive MASTER) e a agir com eles.
+
+**DTO/privacy:** a guild é `{ id, gameServer: { id, code, name, enabled }, name,
+status, members: [{ memberId, characterId, characterLinkId, role, joinedAt }],
+createdAt }`; `characterId` é o `characterExternalId` e `characterLinkId` só é
+preenchido para characters do player autenticado (null para os demais). O convite
+é `{ inviteId, guildId, guildName, gameServerId, targetCharacterId,
+invitedByCharacterId, status, expiresAt, createdAt, respondedAt }`. Nunca aparecem
+`playerId`, vínculos de outros players nem identidade de provider.
+
+**Concorrência:** ordem de locks guild → vínculos (ator, depois target) →
+memberships/convites; criação (sem guild ainda) começa no vínculo do character.
+Accept trava guild, vínculo do target e só então o convite, o que evita deadlock
+ao cancelar convites de outras guildas. Tudo que muda uma guild trava a sua linha,
+serializando role × kick, transfer × disband e transfers simultâneos. Os índices
+parciais são a garantia final (violações viram 409): criações simultâneas do mesmo
+character geram uma guild; o mesmo nome no mesmo servidor tem um vencedor; dois
+accepts de guildas diferentes geram uma membership; a última vaga admite um; nunca
+há dois MASTER. Sem mutex em memória.
+
+**Audit** (actor PLAYER, `resourceType = PLAYER_GUILD`, metadata com `guildId`,
+`gameServerId`, `actorCharacterId` e, quando relevante, `targetCharacterId`,
+`memberId`, `role`/`previousRole`, `inviteId`): `PLAYER_GUILD_CREATED`,
+`PLAYER_GUILD_INVITED`, `PLAYER_GUILD_INVITE_ACCEPTED`,
+`PLAYER_GUILD_INVITE_DECLINED`, `PLAYER_GUILD_MEMBER_LEFT`,
+`PLAYER_GUILD_MEMBER_KICKED`, `PLAYER_GUILD_MEMBER_ROLE_CHANGED`,
+`PLAYER_GUILD_MASTER_TRANSFERRED`, `PLAYER_GUILD_DISBANDED`, na mesma transação da
+mutação. Convite repetido e mudança para o mesmo cargo não auditam. Convites
+cancelados como efeito indireto não têm Audit próprio: o accept e o disband
+registram `cancelledInvites`.
+
+**Realtime:** reutiliza o `RealtimeEventBus` e o gateway da 10.8 (nenhum segundo
+gateway). Onze eventos: `GUILD_CREATED`, `GUILD_INVITE_CREATED`,
+`GUILD_INVITE_ACCEPTED`, `GUILD_INVITE_DECLINED`, `GUILD_INVITE_CANCELLED`,
+`GUILD_MEMBER_JOINED`, `GUILD_MEMBER_LEFT`, `GUILD_MEMBER_KICKED`,
+`GUILD_MEMBER_ROLE_CHANGED`, `GUILD_MASTER_TRANSFERRED`, `GUILD_DISBANDED`,
+publicados após o commit aos donos VERIFIED atuais dos membros envolvidos, ao
+target do convite e aos membros restantes; nunca a estranhos nem a Staff. Payloads
+trazem ids de guild/membro/convite e `characterExternalId`, nunca `playerId` ou
+vínculos. Realtime continua não sendo fonte de verdade.
+
+`GUILD_INVITE_CANCELLED` cobre o cancelamento indireto de um convite PENDING:
+payload `{ guildId, gameServerId, inviteId, targetCharacterId, reason }`, com
+`reason` fechado em `TARGET_JOINED_ANOTHER_GUILD` (o target aceitou outra guild) ou
+`GUILD_DISBANDED`. O cancelamento é um único `UPDATE ... WHERE status = 'PENDING'
+RETURNING`, e só as linhas que realmente passaram de PENDING para CANCELLED geram
+evento (um por convite; convites já respondidos não geram nada). Vai ao dono
+VERIFIED atual do target e aos membros da guild que emitiu o convite (no disband,
+aos membros que a guild tinha). Rollback não publica.
+
 ### Economy / Wallet
 
 - **O ledger do backend é a fonte de verdade econômica.**
@@ -778,6 +910,9 @@ conexão do registry.
 broker ou outbox. Um evento pode se perder (queda, reconexão); o cliente refaz o
 GET HTTP. Entrega entre múltiplas instâncias e garantias de entrega ficam para a
 Etapa 12.
+
+A 10.9 adiciona os eventos `GUILD_*` ao mesmo bus e gateway; fan-out e regras de
+privacidade seguem o mesmo modelo (donos VERIFIED atuais, sem Staff).
 
 ### Properties / Houses / Holds e Horses / Mounts
 
@@ -931,7 +1066,7 @@ Detalhes que não bloqueiam a fundação e podem ser fixados na subetapa do dom�
 | --- | --- |
 | Regras de troca de profissão e origem dos eventos de XP no jogo | pós-definição de produto / Etapa 11 |
 | Tamanho definitivo de group (hoje 5, provisório) e limpeza de memberships de ownership revogada | pós-definição de produto |
-| Cargos de guild e suas capacidades | 10.9 |
+| Limite definitivo de guild (hoje 50, provisório), relação com VIP e representação no jogo | pós-definição de produto / Etapa 11 |
 | Taxas de marketplace | 10.14 |
 | Retenção de chat | 10.15 |
 | Moeda/denominação apresentada ao jogador | 10.12 |

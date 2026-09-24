@@ -531,5 +531,15 @@ handshake por frame `AUTH` contendo o access token da superfície PLAYER ou STAF
 fechamento na expiração do token e fan-out decidido pelo servidor a partir do
 `RealtimeEventBus`. Realtime é best-effort e de processo único; o estado verdadeiro
 continua na API HTTP. A migration `1789940000000-PlayerGroups` completa quinze
-migrations. Consulte [arquitetura, decisões e roadmap da
+migrations.
+
+A Subetapa 10.9 adiciona Guilds persistentes (não são Skyrim Factions) em
+`/api/v1/player/guilds`, `/api/v1/player/guild-invites` e
+`/api/v1/player/me/characters/:characterLinkId/guild`. A guild pertence ao
+character identity (servidor + `characterExternalId`): a ownership VERIFIED só
+autoriza o Player atual, e membership e cargo sobrevivem a uma troca de dono.
+Cargos MASTER/OFFICER/MEMBER, limite provisório de 50 membros, convites com TTL
+`PLAYER_GUILD_INVITE_TTL` (padrão 7d) e eventos `GUILD_*` no realtime da 10.8.
+Sem GameCommand nem integração com o jogo. A migration `1789950000000-PlayerGuilds`
+completa dezesseis migrations. Consulte [arquitetura, decisões e roadmap da
 Etapa 10](docs/player-services.md).
