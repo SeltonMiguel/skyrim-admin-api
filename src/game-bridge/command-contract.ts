@@ -1,4 +1,11 @@
 import {
+  worldPayload,
+  worldResult,
+  WORLD_COMMAND_TYPES,
+  isWorldCommand,
+} from '../world-management/world-command.contracts.js';
+import type { WorldCommandMap } from '../world-management/world-command.contracts.js';
+import {
   moderationPayload,
   moderationResult,
   MODERATION_COMMAND_TYPES,
@@ -25,7 +32,8 @@ export {
 } from './command-limits.js';
 
 export const PROTOCOL_VERSION = '1' as const;
-export interface CommandMap extends CharacterCommandMap, ModerationCommandMap {
+export interface CommandMap
+  extends CharacterCommandMap, ModerationCommandMap, WorldCommandMap {
   BRIDGE_PING: { payload: { nonce: string }; result: { nonce: string } };
 }
 export type CommandType = keyof CommandMap;
@@ -33,6 +41,7 @@ export const COMMAND_TYPES: readonly CommandType[] = [
   'BRIDGE_PING',
   ...CHARACTER_COMMAND_TYPES,
   ...MODERATION_COMMAND_TYPES,
+  ...WORLD_COMMAND_TYPES,
 ];
 export type CommandPayload<T extends CommandType> = CommandMap[T]['payload'];
 export type CommandResult<T extends CommandType> = CommandMap[T]['result'];
@@ -129,6 +138,8 @@ export function commandPayload<T extends CommandType>(
     return characterPayload(type, payload) as CommandPayload<T>;
   if (isModerationCommand(type))
     return moderationPayload(type, payload) as CommandPayload<T>;
+  if (isWorldCommand(type))
+    return worldPayload(type, payload) as CommandPayload<T>;
   throw new BadRequestException('Unsupported command type');
 }
 export function commandResult<T extends CommandType>(
@@ -146,6 +157,8 @@ export function commandResult<T extends CommandType>(
     return characterResult(type, value, payload) as CommandResult<T>;
   if (isModerationCommand(type))
     return moderationResult(type, value, payload) as CommandResult<T>;
+  if (isWorldCommand(type))
+    return worldResult(type, value, payload) as CommandResult<T>;
   throw new BadRequestException('Unsupported command type');
 }
 export function sameCommand(

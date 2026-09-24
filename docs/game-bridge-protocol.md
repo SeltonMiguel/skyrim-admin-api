@@ -4,7 +4,8 @@ Etapa 03. Contrato independente das entidades TypeORM, sem transporte de rede,
 Agent/SKSE ou scheduler. A Etapa 05 adiciona endpoints de domínio e 17 comandos
 Character tipados, documentados em [Character Management](character-management.md),
 além de `BRIDGE_PING`. A Etapa 06 adiciona oito comandos de
-[Moderation](moderation.md), totalizando 26 tipos fechados. Não existe
+[Moderation](moderation.md) e a Etapa 07 adiciona quatro de
+[World Management](world-management.md), totalizando 30 tipos fechados. Não existe
 interpretação de strings como console Skyrim, shell ou comandos do sistema.
 
 ## Serviços e configuração
@@ -19,10 +20,10 @@ Métodos de varredura processam até 100 candidatos por chamada, revalidando cad
 um sob lock. Não há timer de background; um orquestrador futuro deverá chamá-los.
 Serviços não selecionam um servidor padrão. Registre servidores explicitamente.
 O transporte não depende de Auth, RBAC ou Audit. CharacterService e
-ModerationService fornecem as policies de domínio ao AdministrativeCommandService,
+ModerationService e WorldService fornecem as policies de domínio ao AdministrativeCommandService,
 extraído da Etapa 05. Ele usa `submitInTransaction` para confirmar Command e Audit
-na mesma transação curta. Queries Character não são auditadas; todas as oito
-operações Moderation são auditadas. POST não dispara send;
+na mesma transação curta. Queries Character/World não são auditadas; todas as oito
+operações Moderation e as três mutations World são auditadas. POST não dispara send;
 o dispatcher só enxerga commands confirmados. Retry HTTP não dispara transporte.
 
 | Variável | Padrão | Valores aceitos |

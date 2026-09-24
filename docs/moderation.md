@@ -159,9 +159,12 @@ explícitas; DisconnectedGameGateway é o adapter padrão. Retries/ACK/RESULT/ti
 preservam o protocolo existente e a entrega remota at-least-once.
 
 Nenhuma migration nova: não há mudança de schema, entidades, permissions ou
-grants. Mantêm-se seis migrations, 31 permissions, 83 grants e synchronize=false.
+grants. Ao concluir a Etapa 06, eram seis migrations, 31 permissions e 83 grants, com
+synchronize=false. A Etapa 07 adiciona os grants descritos em
+[World Management](world-management.md).
 Não existem tabelas locais de Moderation nem temporary bans, scheduler,
-World Management, VIP Store, Server Control, Agent/SKSE real ou frontend realtime.
+VIP Store, Server Control, Agent/SKSE real ou frontend realtime nesta etapa.
+World Management é tratado separadamente na Etapa 07.
 
 Decisões para revisão: reason limitado a 500 e textos de uma linha; result mínimo
 sem conteúdo textual; SET exige confirmação do mesmo boolean; detalhes por
