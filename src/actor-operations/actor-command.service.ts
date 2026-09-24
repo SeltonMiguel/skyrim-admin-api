@@ -1,5 +1,5 @@
 import { ConflictException, Injectable } from '@nestjs/common';
-import { DataSource } from 'typeorm';
+import { DataSource, EntityManager } from 'typeorm';
 import { AuditService } from '../audit/audit.service.js';
 import { AuditOutcome } from '../audit/audit.types.js';
 import type { AuditEvent } from '../audit/audit.types.js';
@@ -41,6 +41,9 @@ export class ActorCommandService {
     input: ActorSubmission,
     origin: Actor,
     event?: CommandAudit,
+    // Caller policy (e.g. ownership) evaluated in the same transaction, after
+    // the server lock and before any insert; replays are re-authorized too.
+    authorize?: (manager: EntityManager) => Promise<void>,
   ): Promise<{ command: GameCommand; created: boolean }> {
     // Snapshot before the first await; never retain caller-owned objects.
     const actor = validActor(origin);
@@ -59,6 +62,7 @@ export class ActorCommandService {
       );
       // Domain HTTP replays, like new operations, require an enabled server.
       if (!server.enabled) throw new ConflictException('Game server disabled');
+      await authorize?.(manager);
       const result = await this.bus.submitInTransaction(submission, manager);
       if (result.created && event)
         await this.audit.record(

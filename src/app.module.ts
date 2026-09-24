@@ -1,3 +1,4 @@
+import { PlayerCharacterOperationsModule } from './player-character-operations/player-character-operations.module.js';
 import { PlayerCharactersModule } from './player-characters/player-characters.module.js';
 import { PlayerAuthModule } from './player-auth/player-auth.module.js';
 import { PlayerAccountsModule } from './player-accounts/player-accounts.module.js';
@@ -36,6 +37,7 @@ import { HealthModule } from './health/health.module.js';
     PlayerAccountsModule,
     PlayerAuthModule,
     PlayerCharactersModule,
+    PlayerCharacterOperationsModule,
   ],
 })
 export class AppModule {}

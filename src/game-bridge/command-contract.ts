@@ -26,6 +26,13 @@ import {
   isCharacterCommand,
 } from '../character-management/character-command.contracts.js';
 import type { CharacterCommandMap } from '../character-management/character-command.contracts.js';
+import {
+  characterProfilePayload,
+  characterProfileResult,
+  CHARACTER_PROFILE_COMMAND_TYPES,
+  isCharacterProfileCommand,
+} from '../player-character-operations/character-profile.contracts.js';
+import type { CharacterProfileCommandMap } from '../player-character-operations/character-profile.contracts.js';
 import { MAX_COMMAND_PAYLOAD_BYTES } from './command-limits.js';
 export {
   MAX_COMMAND_PAYLOAD_BYTES,
@@ -34,7 +41,11 @@ export {
 
 export const PROTOCOL_VERSION = '1' as const;
 export interface CommandMap
-  extends CharacterCommandMap, ModerationCommandMap, WorldCommandMap {
+  extends
+    CharacterCommandMap,
+    ModerationCommandMap,
+    WorldCommandMap,
+    CharacterProfileCommandMap {
   BRIDGE_PING: { payload: { nonce: string }; result: { nonce: string } };
 }
 export type CommandType = keyof CommandMap;
@@ -43,6 +54,7 @@ export const COMMAND_TYPES: readonly CommandType[] = [
   ...CHARACTER_COMMAND_TYPES,
   ...MODERATION_COMMAND_TYPES,
   ...WORLD_COMMAND_TYPES,
+  ...CHARACTER_PROFILE_COMMAND_TYPES,
 ];
 export type CommandPayload<T extends CommandType> = CommandMap[T]['payload'];
 export type CommandResult<T extends CommandType> = CommandMap[T]['result'];
@@ -145,6 +157,8 @@ export function commandPayload<T extends CommandType>(
     return moderationPayload(type, payload) as CommandPayload<T>;
   if (isWorldCommand(type))
     return worldPayload(type, payload) as CommandPayload<T>;
+  if (isCharacterProfileCommand(type))
+    return characterProfilePayload(type, payload) as CommandPayload<T>;
   throw new BadRequestException('Unsupported command type');
 }
 export function commandResult<T extends CommandType>(
@@ -164,6 +178,8 @@ export function commandResult<T extends CommandType>(
     return moderationResult(type, value, payload) as CommandResult<T>;
   if (isWorldCommand(type))
     return worldResult(type, value, payload) as CommandResult<T>;
+  if (isCharacterProfileCommand(type))
+    return characterProfileResult(type, value, payload) as CommandResult<T>;
   throw new BadRequestException('Unsupported command type');
 }
 export function sameCommand(
