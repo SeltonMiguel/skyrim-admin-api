@@ -32,7 +32,9 @@ describe('Player character query allowlist', () => {
       'CHARACTER_SKILLS_QUERY',
       'CHARACTER_PROPERTIES_QUERY',
       'CHARACTER_HOLDS_QUERY',
+      'CHARACTER_HORSES_QUERY',
     ]);
+    expect(PLAYER_CHARACTER_QUERY_TYPES).toHaveLength(5);
     for (const type of PLAYER_CHARACTER_QUERY_TYPES) {
       expect(COMMAND_TYPES).toContain(type);
       expect(type).toMatch(/_QUERY$/);
@@ -41,13 +43,16 @@ describe('Player character query allowlist', () => {
     for (const type of [
       'CHARACTER_PROPERTIES_QUERY',
       'CHARACTER_HOLDS_QUERY',
+      'CHARACTER_HORSES_QUERY',
     ] as const) {
       expect(CHARACTER_COMMAND_TYPES).toContain(type);
       expect(CHARACTER_POLICY[type].auditAction).toBeNull();
     }
   });
-  it('never allows property or hold mutations (or any other mutation)', () => {
+  it('never allows property, hold or horse mutations (or any other mutation)', () => {
     for (const type of [
+      'CHARACTER_HORSE_GIVE',
+      'CHARACTER_HORSE_REVOKE',
       'CHARACTER_PROPERTY_GRANT',
       'CHARACTER_PROPERTY_REVOKE',
       'CHARACTER_HOLD_GRANT',
@@ -57,7 +62,7 @@ describe('Player character query allowlist', () => {
     for (const type of COMMAND_TYPES.filter((t) => !t.endsWith('_QUERY')))
       expect(isPlayerCharacterQuery(type)).toBe(false);
   });
-  it('keeps the player module free of property/hold mutation types', () => {
+  it('keeps the player module free of property/hold/horse mutation types', () => {
     const sources = globSync(
       fileURLToPath(new URL('./**/*.ts', import.meta.url)),
     )
@@ -65,7 +70,7 @@ describe('Player character query allowlist', () => {
       .map((file) => readFileSync(file, 'utf8'));
     for (const source of sources)
       expect(source).not.toMatch(
-        /CHARACTER_(PROPERTY|HOLD)_(GRANT|REVOKE)|RequirePermissions|AdministrativeCommandService/,
+        /CHARACTER_(PROPERTY|HOLD)_(GRANT|REVOKE)|CHARACTER_HORSE_(GIVE|REVOKE)|RequirePermissions|AdministrativeCommandService/,
       );
   });
 });
@@ -124,5 +129,50 @@ describe('Properties and holds contracts reused by players', () => {
     expect(() =>
       commandResult('CHARACTER_HOLDS_QUERY', properties, payload),
     ).toThrow();
+  });
+});
+
+describe('Horses contract reused by players', () => {
+  const horses = {
+    characterId: 'char-1',
+    horses: [
+      { horseId: 'ShadowmereRef', displayName: 'Shadowmere' },
+      { horseId: '0x0009CCD7' },
+    ],
+  };
+  it('builds the payload from the character only', () => {
+    expect(
+      commandPayload('CHARACTER_HORSES_QUERY', { characterId: ' char-1 ' }),
+    ).toEqual(payload);
+    expect(() =>
+      commandPayload('CHARACTER_HORSES_QUERY', {
+        characterId: 'char-1',
+        horseId: 'x',
+      }),
+    ).toThrow();
+  });
+  it('validates results as they are, including empty lists and mismatches', () => {
+    const result = (value: unknown) =>
+      commandResult('CHARACTER_HORSES_QUERY', value, payload);
+    expect(result(horses)).toEqual(horses);
+    expect(result({ characterId: 'char-1', horses: [] })).toEqual({
+      characterId: 'char-1',
+      horses: [],
+    });
+    expect(() => result({ ...horses, characterId: 'char-2' })).toThrow(
+      'Result character mismatch',
+    );
+    for (const invalid of [
+      { ...horses, mounted: true },
+      { characterId: 'char-1', horses: [{ horseId: '' }] },
+      { characterId: 'char-1', horses: [{ horseId: 'h', health: 100 }] },
+      { characterId: 'char-1', horses: 'Shadowmere' },
+      { characterId: 'char-1', mounts: [] },
+      {
+        characterId: 'char-1',
+        horses: Array.from({ length: 513 }, (_, i) => ({ horseId: `h${i}` })),
+      },
+    ])
+      expect(() => result(invalid)).toThrow();
   });
 });

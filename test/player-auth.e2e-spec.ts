@@ -411,6 +411,7 @@ describeDatabase('Player authentication with real PostgreSQL', () => {
       '/api/v1/player/character-links/{linkId}/revoke',
       '/api/v1/player/character-operations/{operationId}',
       '/api/v1/player/game-servers/{gameServerId}/characters/{characterId}/holds-query',
+      '/api/v1/player/game-servers/{gameServerId}/characters/{characterId}/horses-query',
       '/api/v1/player/game-servers/{gameServerId}/characters/{characterId}/profile-query',
       '/api/v1/player/game-servers/{gameServerId}/characters/{characterId}/properties-query',
       '/api/v1/player/game-servers/{gameServerId}/characters/{characterId}/skills-query',

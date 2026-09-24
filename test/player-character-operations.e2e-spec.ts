@@ -76,13 +76,27 @@ describeDatabase(
       characterId,
       holds: [{ holdId: 'WhiterunHold', displayName: 'Whiterun' }],
     });
-    type Kind = 'profile' | 'skills' | 'properties' | 'holds';
-    const KINDS = ['profile', 'skills', 'properties', 'holds'] as const;
+    const horsesOf = (characterId: string) => ({
+      characterId,
+      horses: [
+        { horseId: 'ShadowmereRef', displayName: 'Shadowmere' },
+        { horseId: '0x0009CCD7' },
+      ],
+    });
+    type Kind = 'profile' | 'skills' | 'properties' | 'holds' | 'horses';
+    const KINDS = [
+      'profile',
+      'skills',
+      'properties',
+      'holds',
+      'horses',
+    ] as const;
     const TYPES = {
       profile: 'CHARACTER_PROFILE_QUERY',
       skills: 'CHARACTER_SKILLS_QUERY',
       properties: 'CHARACTER_PROPERTIES_QUERY',
       holds: 'CHARACTER_HOLDS_QUERY',
+      horses: 'CHARACTER_HORSES_QUERY',
     } as const;
     const staffCharacter = (
       path: string,
@@ -251,6 +265,7 @@ describeDatabase(
       ['skills', 'CHARACTER_SKILLS_QUERY'],
       ['properties', 'CHARACTER_PROPERTIES_QUERY'],
       ['holds', 'CHARACTER_HOLDS_QUERY'],
+      ['horses', 'CHARACTER_HORSES_QUERY'],
     ] as const)(
       'accepts a %s query as a PLAYER-scoped command without Audit or dispatch',
       async (kind, type) => {
@@ -364,10 +379,13 @@ describeDatabase(
         { type: 'CHARACTER_PROPERTY_GRANT' },
         { propertyId: 'BreezehomeLocation' },
         { holdId: 'WhiterunHold' },
+        { horseId: 'ShadowmereRef' },
+        { type: 'CHARACTER_HORSE_GIVE' },
+        { permission: 'CHARACTER_HORSE_GIVE' },
       ])
-        for (const kind of ['properties', 'holds'] as const)
+        for (const kind of ['properties', 'holds', 'horses'] as const)
           await query(a, kind, charA).send(body).expect(400);
-      for (const kind of ['properties', 'holds'] as const)
+      for (const kind of ['properties', 'holds', 'horses'] as const)
         await http()
           .post(
             `/api/v1/player/game-servers/${server.id}/characters/${charA}/${kind}-query`,
@@ -377,6 +395,7 @@ describeDatabase(
           .expect(401);
       await query(a, 'properties', charA, null).expect(400);
       await query(a, 'holds', charA, null).expect(400);
+      await query(a, 'horses', charA, null).expect(400);
       await query(a, 'skills', charA, null).expect(400);
       for (const key of ['', 'a b', 'x'.repeat(129)])
         await query(a, 'skills', charA, key).expect(400);
@@ -761,6 +780,210 @@ describeDatabase(
       );
       expect(generic.text).not.toContain(a.player.id);
       // Player detail never shows operational internals.
+      const stored = await command(own.operationId);
+      const text = (await detail(a, own.operationId).expect(200)).text;
+      for (const secret of [
+        stored.idempotencyKey,
+        stored.idempotencyScope,
+        stored.correlationId,
+        a.player.id,
+        stored.dispatchedConnectionId!,
+      ])
+        expect(text).not.toContain(secret);
+      expect(text).not.toMatch(
+        /requestedBy|idempotency|scope|lease|dispatchAttempts|deadline|correlation|payload|actorType/i,
+      );
+      await detail(b, own.operationId).expect(404);
+      expect(
+        await database.query(
+          'SELECT id FROM audit_logs WHERE resource_id = $1',
+          [own.operationId],
+        ),
+      ).toEqual([]);
+    });
+    it('isolates horses idempotency per player and per content', async () => {
+      const key = randomUUID();
+      const first = (await query(a, 'horses', charA, key).expect(202)).body;
+      expect(
+        (await query(a, 'horses', ` ${charA} `, key).expect(202)).body,
+      ).toEqual(first);
+      await query(a, 'properties', charA, key).expect(409);
+      await query(a, 'horses', await verified(a), key).expect(409);
+      const fromB = (await query(b, 'horses', charB, key).expect(202)).body;
+      expect(fromB.operationId).not.toBe(first.operationId);
+      const race = randomUUID();
+      const responses = await Promise.all(
+        Array.from({ length: 8 }, () => query(a, 'horses', charA, race)),
+      );
+      expect(responses.map((r) => r.status)).toEqual(Array(8).fill(202));
+      expect(new Set(responses.map((r) => r.body.operationId)).size).toBe(1);
+      expect(
+        await database.query(
+          'SELECT count(*)::int AS n, min(idempotency_scope) AS scope, min(type) AS type FROM game_commands WHERE idempotency_key = $1',
+          [race],
+        ),
+      ).toEqual([
+        {
+          n: 1,
+          scope: `PLAYER:${a.player.id}`,
+          type: 'CHARACTER_HORSES_QUERY',
+        },
+      ]);
+    });
+    it('reports horses (mounts) through PENDING, DISPATCHED, SUCCEEDED, FAILED and TIMEOUT', async () => {
+      for (const result of [
+        horsesOf(charA),
+        { characterId: charA, horses: [] },
+      ]) {
+        const { operationId } = (await query(a, 'horses', charA).expect(202))
+          .body;
+        expect((await detail(a, operationId).expect(200)).body).toMatchObject({
+          type: 'CHARACTER_HORSES_QUERY',
+          status: 'PENDING',
+          result: null,
+        });
+        const sent = await dispatched(operationId);
+        expect(gateway.sends.at(-1)).toMatchObject({
+          envelope: {
+            commandId: operationId,
+            type: 'CHARACTER_HORSES_QUERY',
+            payload: { characterId: charA },
+          },
+        });
+        expect((await detail(a, operationId).expect(200)).body.status).toBe(
+          'DISPATCHED',
+        );
+        await receiver.result(message(sent, result));
+        expect((await detail(a, operationId).expect(200)).body).toEqual({
+          operationId,
+          type: 'CHARACTER_HORSES_QUERY',
+          gameServerId: server.id,
+          characterId: charA,
+          status: 'SUCCEEDED',
+          createdAt: expect.any(String),
+          completedAt: expect.any(String),
+          result: {
+            outcome: 'SUCCEEDED',
+            data: result,
+            errorCode: null,
+            receivedAt: expect.any(String),
+          },
+        });
+      }
+      const failed = (await query(a, 'horses', charA).expect(202)).body
+        .operationId;
+      const sent = await dispatched(failed);
+      await receiver.result({
+        ...message(sent, null),
+        outcome: S.FAILED,
+        errorCode: 'BRIDGE_ERROR',
+      } as ResultMessage);
+      expect((await detail(a, failed).expect(200)).body).toMatchObject({
+        status: 'FAILED',
+        result: { outcome: 'FAILED', data: null, errorCode: 'BRIDGE_ERROR' },
+      });
+      const late = (await query(a, 'horses', charA).expect(202)).body
+        .operationId;
+      await dispatched(late);
+      clock.advance(86400000);
+      await receiver.expireCommands();
+      expect((await detail(a, late).expect(200)).body).toMatchObject({
+        status: 'TIMEOUT',
+        result: { outcome: 'TIMEOUT', data: null },
+      });
+    });
+    it('rejects invalid horses results without completing the command', async () => {
+      for (const invalid of [
+        { ...horsesOf(charA), characterId: charB },
+        { ...horsesOf(charA), mounted: true },
+        { characterId: charA, horses: [{ horseId: 'h', health: 100 }] },
+        { characterId: charA, horses: [{ horseId: '' }] },
+        { characterId: charA, horses: 'Shadowmere' },
+        { characterId: charA, mounts: [] },
+        {
+          characterId: charA,
+          horses: Array.from({ length: 513 }, (_, i) => ({ horseId: `h${i}` })),
+        },
+      ]) {
+        const { operationId } = (await query(a, 'horses', charA).expect(202))
+          .body;
+        const sent = await dispatched(operationId);
+        await expect(receiver.result(message(sent, invalid))).rejects.toThrow();
+        expect((await command(operationId)).status).toBe(S.DISPATCHED);
+        expect(
+          (await detail(a, operationId).expect(200)).body.result,
+        ).toBeNull();
+      }
+    });
+    it('keeps horse mutations staff-only and player horse queries out of admin details', async () => {
+      const before = await commandCount();
+      for (const path of [
+        'horses-give',
+        'horses-revoke',
+        'horse-give',
+        'horses/give',
+        'horses/summon',
+        'horses-summon',
+      ])
+        await http()
+          .post(
+            `/api/v1/player/game-servers/${server.id}/characters/${charA}/${path}`,
+          )
+          .auth(a.accessToken, { type: 'bearer' })
+          .set('Idempotency-Key', randomUUID())
+          .send({ horseId: 'ShadowmereRef' })
+          .expect(404);
+      for (const [path, body] of [
+        ['horses/give', { horseId: 'ShadowmereRef' }],
+        ['horses/revoke', { horseId: 'ShadowmereRef' }],
+        ['horses/query', {}],
+      ] as const)
+        await staffCharacter(path, charA, body, a.accessToken).expect(401);
+      expect(await commandCount()).toBe(before);
+      // Staff keeps querying and giving horses; only the give is audited.
+      const give = (
+        await staffCharacter('horses/give', charA, {
+          horseId: 'ShadowmereRef',
+        }).expect(202)
+      ).body;
+      const staffQuery = (
+        await staffCharacter('horses/query', charA).expect(202)
+      ).body;
+      for (const id of [give.commandId, staffQuery.commandId]) {
+        await http()
+          .get(`/api/v1/character-operations/${id}`)
+          .auth(staffToken, { type: 'bearer' })
+          .expect(200);
+        await detail(a, id).expect(404);
+      }
+      expect(
+        (
+          await database.query(
+            'SELECT action FROM audit_logs WHERE resource_id = $1',
+            [charA],
+          )
+        ).map((r: { action: string }) => r.action),
+      ).toEqual(['CHARACTER_HORSE_GIVE_REQUESTED']);
+      const own = (await query(a, 'horses', charA).expect(202)).body;
+      const sent = await dispatched(own.operationId);
+      await receiver.result(message(sent, horsesOf(charA)));
+      await http()
+        .get(`/api/v1/character-operations/${own.operationId}`)
+        .auth(staffToken, { type: 'bearer' })
+        .expect(404);
+      const generic = await http()
+        .get(`/api/v1/game-commands/${own.operationId}`)
+        .auth(staffToken, { type: 'bearer' })
+        .expect(200);
+      expect(generic.body).toMatchObject({
+        type: 'CHARACTER_HORSES_QUERY',
+        status: 'SUCCEEDED',
+      });
+      expect(generic.body).not.toHaveProperty('payload');
+      expect(generic.text).not.toMatch(
+        /idempotency|scope|PLAYER:|Shadowmere|horseId|"horses"/i,
+      );
+      expect(generic.text).not.toContain(a.player.id);
       const stored = await command(own.operationId);
       const text = (await detail(a, own.operationId).expect(200)).text;
       for (const secret of [
