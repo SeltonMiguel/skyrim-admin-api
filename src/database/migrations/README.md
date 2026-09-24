@@ -62,3 +62,11 @@ A Etapa 09 adiciona `1789880000000-ServerControl`: cria somente
 timestamps e erro, três índices). Permissions `SERVER_*` e grants já existiam
 desde AuthRbac; nada é alterado neles. `down` remove a tabela e o histórico de
 operações. Detalhes em `docs/server-control.md`.
+
+A Subetapa 10.1 adiciona `1789890000000-PlayerAccounts`: cria `players` (status
+ACTIVE/SUSPENDED/BANNED com default ACTIVE e display_name não vazio) e
+`player_identities` (FK para `players`, sem cascade; `UNIQUE(provider,
+provider_subject)`; provider DISCORD/STEAM; subject não vazio; índice por
+player). Não há relação com `staff_users`/`staff_sessions` nem alteração de
+permissions, grants ou migrations anteriores. `down` remove `player_identities`
+e `players`, com perda desses dados. Detalhes em `docs/player-services.md`.

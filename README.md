@@ -5,6 +5,7 @@ autenticação/RBAC (Etapa 01), auditoria administrativa (Etapa 02) e infraestru
 de Game Bridge/Commands (Etapa 03), consultas administrativas (Etapa 04) e
 Character Management assíncrono (Etapa 05), Moderation (Etapa 06), World Management
 (Etapa 07), catálogo VIP Store (Etapa 08) e Server Control (Etapa 09).
+Player Services (Etapa 10) foi iniciado com o modelo de contas de jogador.
 O transporte real para Skyrim continua
 reservado a uma etapa futura.
 
@@ -407,6 +408,7 @@ src/
     migrations/
   game-bridge/        # Servidores, conexões, comandos e gateway interno
   health/             # Consulta real de disponibilidade
+  player-accounts/    # Contas e identidades externas de jogador (sem auth)
   server-control/     # Start/pause/restart e gateway abstrato do Agent
   app.module.ts
   main.ts
@@ -465,3 +467,18 @@ administráveis além do registro (`code`, `name`, `enabled`). A migration
 `1789880000000-ServerControl` adiciona apenas a tabela: nove migrations,
 36 permissions e 93 grants. Consulte [operações, estados, gateway e
 pendências](docs/server-control.md).
+
+## Player Services
+
+A Etapa 10 foi iniciada. A Subetapa 10.1 implementa o Player Account Model:
+`players` (UUID canônico, displayName, status ACTIVE/SUSPENDED/BANNED) e
+`player_identities` (provider DISCORD/STEAM e providerSubject opaco, com
+`UNIQUE(provider, provider_subject)`). O `PlayerAccountService` é interno; não há
+rotas HTTP novas. Player e Staff são identidades separadas, sem FK ou coluna
+compartilhada, e nenhum token OAuth, senha ou e-mail é armazenado.
+
+**Player Auth ainda não existe**: não há login, JWT, sessões ou guard de jogador,
+e os status SUSPENDED/BANNED ainda não têm efeito. A migration
+`1789890000000-PlayerAccounts` adiciona as duas tabelas: dez migrations,
+36 permissions e 93 grants. Consulte [arquitetura, decisões e roadmap da
+Etapa 10](docs/player-services.md).

@@ -66,7 +66,7 @@ domínio. A Player API nunca chama controllers administrativos. O prefixo
 | Subetapa | Conteúdo |
 | --- | --- |
 | 10.0 Player Architecture Decisions | Este documento |
-| 10.1 Player Account Model | `players`, `player_identities`, status, migration |
+| 10.1 Player Account Model | **Implementada.** `players`, `player_identities`, status, migration `1789890000000-PlayerAccounts` |
 | 10.2 Generic Actor + Player-safe Idempotency | Ator STAFF/PLAYER/SYSTEM em Audit e GameCommand; idempotência por ator; núcleo de operações desacoplado de `AuthenticatedStaff` |
 | 10.3 Player Authentication | Discord OAuth2, sessões, tokens, guard, `GET /api/v1/player/me` |
 | 10.4 Character Ownership | Vínculo PENDING/VERIFIED/REVOKED e contrato de confirmação pelo Agent |
@@ -118,6 +118,52 @@ realtime; Chat (10.15) e os eventos de Guilds, Trade e Marketplace a reutilizam.
   herança. Uma pessoa que é staff e joga possui duas identidades independentes.
 - O `playerId` opaco da Moderation permanece identificador externo do jogo; sua
   associação a `players.id` não é inferida.
+
+#### Implementação (10.1)
+
+Módulo `src/player-accounts/`, sem controllers, guards, tokens ou sessões. Nenhuma
+rota HTTP nova.
+
+`players`:
+
+| Coluna | Tipo | Regras |
+| --- | --- | --- |
+| `id` | uuid PK | `gen_random_uuid()` |
+| `status` | varchar(16) | default `ACTIVE`; `players_status_check` IN (ACTIVE, SUSPENDED, BANNED) |
+| `display_name` | varchar(64) | trim, 1–64 unidades UTF-16, Unicode válido, sem C0/C1; não único; `players_display_name_check` exige não vazio após trim |
+| `created_at`, `updated_at` | timestamptz | default `now()` |
+
+`player_identities`:
+
+| Coluna | Tipo | Regras |
+| --- | --- | --- |
+| `id` | uuid PK | `gen_random_uuid()` |
+| `player_id` | uuid | `player_identities_player_fkey` → `players(id)`, sem cascade; índice `player_identities_player_idx` |
+| `provider` | varchar(32) | `player_identities_provider_check` IN (DISCORD, STEAM); novo provider exige migration |
+| `provider_subject` | varchar(128) | opaco: trim, 1–128, Unicode válido, sem C0/C1, nunca interpretado; `player_identities_subject_check` exige não vazio |
+| `created_at`, `updated_at` | timestamptz | default `now()` |
+
+`player_identities_provider_subject_key UNIQUE (provider, provider_subject)` é a
+garantia final de que uma identidade externa pertence a um único player. O mesmo
+subject textual em providers diferentes são identidades distintas.
+
+Não há colunas de senha, e-mail, token OAuth, avatar ou outro dado pessoal, nem
+FK/coluna relacionada a `staff_users` ou `staff_sessions`.
+
+`PlayerAccountService` (interno, para a 10.3):
+
+- `createPlayer({ displayName, identity? })`: cria player ACTIVE e, opcionalmente,
+  a primeira identidade na mesma transação. Identidade já vinculada → 409 com
+  rollback do player.
+- `findPlayerById(id)`: UUID inválido → 400; inexistente → `null`.
+- `findByIdentity(provider, providerSubject)`: player ou `null`.
+- `attachIdentity(playerId, identity)`: lock do player, `INSERT … ON CONFLICT DO
+  NOTHING` na constraint única e releitura. Mesmo player → idempotente; outro
+  player → 409; player inexistente → 404.
+
+Concorrência é resolvida pelo PostgreSQL, sem mutex em memória. Erros de validação
+não ecoam o subject, e o módulo não registra logs. Status não tem enforcement nesta
+subetapa: SUSPENDED/BANNED só produzirão efeito a partir da 10.3.
 
 ### Characters
 
@@ -319,7 +365,7 @@ as decisões acima:
 | --- | --- |
 | Escopos do Discord OAuth2 e fluxo no Electron (ex.: authorization code com PKCE) | 10.3 |
 | Criação de conta no primeiro login ou cadastro explícito; TTL/revogação de sessão | 10.3 |
-| Efeito de SUSPENDED/BANNED em sessões, ownership, trade e marketplace | 10.1 / 10.3 |
+| Efeito de SUSPENDED/BANNED em sessões, ownership, trade e marketplace | 10.3 |
 | Forma da idempotência por ator (constraint vs tabela) e representação do ator | 10.2 |
 | Mecanismo de confirmação de ownership com o Agent | 10.4 (contrato) / 11 (real) |
 | Campos de perfil e skills expostos pelo Agent | 10.5 |
