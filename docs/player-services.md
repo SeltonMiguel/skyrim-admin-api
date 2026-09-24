@@ -69,7 +69,7 @@ domínio. A Player API nunca chama controllers administrativos. O prefixo
 | 10.1 Player Account Model | **Implementada.** `players`, `player_identities`, status, migration `1789890000000-PlayerAccounts` |
 | 10.2 Generic Actor + Player-safe Idempotency | **Implementada.** Ator STAFF/PLAYER/SYSTEM em Audit e GameCommand; idempotency scope; `ActorCommandService`; migration `1789900000000-GenericActor` |
 | 10.3 Player Authentication | **Implementada.** Discord OAuth2, auto-provisioning, `player_sessions`, tokens, `PlayerAuthGuard`, `GET /api/v1/player/me`; migration `1789910000000-PlayerSessions` |
-| 10.4 Character Ownership | Vínculo PENDING/VERIFIED/REVOKED e contrato de confirmação pelo Agent |
+| 10.4 Character Ownership | **Implementada.** `player_characters`, challenges de vínculo, Player API mínima, `CharacterOwnershipService`, `confirmFromAgent` interno; migration `1789920000000-PlayerCharacters` |
 | 10.5 Character Profile + Skills | Contratos de GameCommand para perfil e skills; leitura pela Player API |
 | 10.6 Multiple Characters | Listagem e gestão dos vínculos 1:N do player |
 | 10.7 Professions | Profissão ativa por character, XP e nível persistidos |
@@ -192,8 +192,7 @@ administrativa append-only; os eventos de sessão têm volume alto e a própria
 `player_sessions` registra criação, uso e revogação. Assim nenhum dado de provider
 chega ao Audit. Mutations futuras do player serão auditadas com ator PLAYER (10.2).
 
-**Fora desta subetapa:** Character Ownership (10.4). Um player autenticado ainda
-não tem acesso a nenhum character.
+**Fora desta subetapa:** Character Ownership, implementado na 10.4.
 
 ### Account
 
@@ -265,6 +264,115 @@ subetapa: SUSPENDED/BANNED só produzirão efeito a partir da 10.3.
 - **Sem limite inicial de slots.**
 - **Criação de personagem continua fora do backend.** O backend registra e verifica
   vínculos; não cria characters.
+
+#### Implementação (10.4)
+
+Módulo `src/player-characters/`. Ownership é domínio do backend, confirmado por
+evento confiável do Agent: nenhuma GameCommand é criada e não há endpoint de Agent.
+
+`player_characters`:
+
+| Coluna | Regra |
+| --- | --- |
+| `id` | uuid PK |
+| `player_id` | FK `players` |
+| `game_server_id` | FK `game_servers` |
+| `character_external_id` | varchar(128), opaco (trim, 1–128, sem controles), nunca interpretado |
+| `status` | `PENDING` / `VERIFIED` / `REVOKED`, default `PENDING` |
+| `verified_at`, `revoked_at` | coerentes com o status (`player_characters_lifecycle_check`) |
+| `created_at`, `updated_at` | timestamps |
+
+- `player_characters_link_key UNIQUE (player_id, game_server_id, character_external_id)`:
+  um vínculo por player/servidor/character; relink reutiliza a linha.
+- `player_characters_verified_key UNIQUE (game_server_id, character_external_id)
+  WHERE status = 'VERIFIED'`: no máximo um dono verificado por character.
+- Lifecycle: PENDING exige `verified_at` e `revoked_at` nulos; VERIFIED exige
+  `verified_at`; REVOKED exige `revoked_at` e preserva `verified_at` se houve
+  verificação.
+
+`player_character_link_challenges`: `id`, `player_character_id` (FK),
+`challenge_hash` (SHA-256 hex, único), `expires_at`, `consumed_at`, `revoked_at`,
+`created_at`. `player_character_link_challenges_active_key` garante no banco no
+máximo um challenge não consumido e não revogado por vínculo; consumido e revogado
+são mutuamente exclusivos.
+
+**Challenge:** 13 caracteres de `23456789ABCDEFGHJKMNPQRSTUVWXYZ` (sem 0/O, 1/I/L),
+≈ 64 bits via `crypto.randomInt`, exibido como `XXXX-XXXX-XXXXX`. Aceita espaços,
+hífens e minúsculas ao ser digitado. Vale `PLAYER_LINK_CHALLENGE_TTL` (padrão 10m,
+de 1m a 1h) e é de uso único. Só o hash do formato canônico é persistido; o
+plaintext aparece apenas na resposta do POST. Um novo pedido revoga o challenge
+ativo anterior na mesma transação.
+
+**Lifecycle**
+
+```text
+(novo) ─ POST ─► PENDING ─ confirmFromAgent ─► VERIFIED
+                  │  ▲                            │
+             revoke  └──── POST (relink) ◄── REVOKED ◄─ revoke
+```
+
+**Player API** (`PlayerAuthGuard`; o player vem sempre do token):
+
+| Rota | Efeito |
+| --- | --- |
+| `POST /api/v1/player/character-links` `{ gameServerId, characterExternalId }` | 201; cria ou reabre o vínculo PENDING e devolve `challenge` + `challengeExpiresAt` (única vez). Rate limited como a Player Auth |
+| `GET /api/v1/player/character-links/:linkId` | vínculo do próprio player; de outro player ou inexistente → 404 |
+| `POST /api/v1/player/character-links/:linkId/revoke` | PENDING/VERIFIED → REVOKED; já REVOKED → 200 sem mudança nem Audit |
+
+Erros: servidor inexistente 404; desabilitado 409; character VERIFIED por outro
+player → 409 `Character unavailable` (sem revelar o dono); vínculo próprio já
+VERIFIED → 409. Body não aceita `playerId`, `status` ou `challenge`. A listagem de
+characters (`/player/me/characters`) pertence à 10.6.
+
+**Relink:** um vínculo REVOKED do mesmo player volta a PENDING (`verified_at` e
+`revoked_at` zerados) com novo challenge. Ownership nunca é transferida
+automaticamente: outro player só verifica depois que o dono revoga.
+
+**Ownership policy:** `CharacterOwnershipService.findVerifiedOwnership` /
+`requireVerifiedOwnership(playerId, gameServerId, characterExternalId, manager?)`
+para as subetapas 10.5+. Responde 404 `Character not available` para
+não verificado, de outro player ou inexistente. O `playerId` deve vir do
+`PlayerActor` autenticado. Status da conta é responsabilidade do guard.
+
+**Confirmação pelo Agent:** `CharacterLinkService.confirmFromAgent({ challenge,
+gameServerId, characterExternalId })` é exportado para o transporte autenticado
+da Etapa 11 e não tem rota HTTP. Em uma transação, com lock do vínculo e depois
+do challenge:
+
+1. localiza o challenge pelo hash;
+2. rejeita consumido, revogado ou expirado;
+3. confere servidor e character do vínculo;
+4. exige servidor habilitado e player ACTIVE (relido do banco);
+5. exige que nenhum outro vínculo esteja VERIFIED para o character;
+6. consome o challenge, marca VERIFIED com `verified_at` e audita.
+
+Resultado tipado: `VERIFIED`, `ALREADY_VERIFIED` (replay do mesmo challenge para o
+mesmo vínculo ainda VERIFIED, sem efeitos) ou `REJECTED` com `INVALID_CHALLENGE`,
+`EXPIRED_CHALLENGE`, `CHALLENGE_MISMATCH`, `PLAYER_UNAVAILABLE`,
+`SERVER_UNAVAILABLE` ou `CHARACTER_UNAVAILABLE`. Rejeições não alteram nada; um
+mismatch não consome o challenge. Perdedor de corrida no índice VERIFIED recebe
+`CHARACTER_UNAVAILABLE`. Nenhum fake existe em produção; só testes chamam o serviço.
+
+**Status da conta:** o guard bloqueia SUSPENDED/BANNED nas rotas; a confirmação
+relê o player e não verifica para contas bloqueadas. Suspender não revoga vínculos
+existentes (decisão administrativa futura).
+
+**Audit** (atômico com a mudança de estado; `resourceType = PLAYER_CHARACTER`,
+`resourceId = linkId`):
+
+| Action | Actor | Metadata |
+| --- | --- | --- |
+| `PLAYER_CHARACTER_LINK_REQUESTED` | PLAYER | linkId, gameServerId, characterExternalId, status, relink |
+| `PLAYER_CHARACTER_LINK_VERIFIED` | SYSTEM:AGENT | linkId, gameServerId, characterExternalId, playerId |
+| `PLAYER_CHARACTER_LINK_REVOKED` | PLAYER | linkId, gameServerId, characterExternalId, previousStatus |
+
+Nunca entram challenge, hash, providerSubject ou tokens.
+
+**Concorrência:** locks de linha no PostgreSQL (vínculo antes de challenge) e os
+índices únicos são a garantia: confirmações simultâneas do mesmo challenge geram
+um efeito; dois players no mesmo character geram um VERIFIED; pedidos simultâneos
+do mesmo player geram um vínculo e um challenge ativo; revoke e confirm
+concorrentes terminam em estado coerente.
 
 ### Professions
 
@@ -531,8 +639,8 @@ as decisões acima:
 
 | Tema | Subetapa |
 | --- | --- |
-| Efeito de SUSPENDED/BANNED em ownership, trade e marketplace (sessões já bloqueadas na 10.3) | 10.4 / 10.13 / 10.14 |
-| Mecanismo de confirmação de ownership com o Agent | 10.4 (contrato) / 11 (real) |
+| Efeito de SUSPENDED/BANNED em trade e marketplace; revogação administrativa de vínculos | 10.13 / 10.14 / futura |
+| Transporte autenticado do Agent chamando `confirmFromAgent` e digitação do challenge no jogo | 11 |
 | Campos de perfil e skills expostos pelo Agent | 10.5 |
 | Chaves de Player Settings | 10.16 |
 | Rate limiting distribuído, confiança em proxy e cotas por conta | Etapa 12 |

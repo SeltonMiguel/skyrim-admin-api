@@ -493,6 +493,13 @@ Configure `PLAYER_JWT_ACCESS_SECRET` e `PLAYER_JWT_REFRESH_SECRET` (obrigatória
 de `test`, distintas entre si e das secrets de staff) e, para habilitar o login,
 `DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET` e `DISCORD_REDIRECT_URIS`. Sem Discord
 configurado, o exchange responde 503. Tokens de staff e de player não são
-intercambiáveis. Character Ownership ainda não existe. A migration
-`1789910000000-PlayerSessions` completa doze migrations, 36 permissions e 93 grants. Consulte [arquitetura, decisões e roadmap da
+intercambiáveis. A migration `1789910000000-PlayerSessions` cria as sessões.
+
+A Subetapa 10.4 implementa Character Ownership: `POST /api/v1/player/character-links`
+abre um vínculo PENDING e devolve uma única vez um challenge para digitar no jogo;
+`GET .../:linkId` e `POST .../:linkId/revoke` operam só vínculos próprios. O vínculo
+só vira VERIFIED pela confirmação interna do Agent (`confirmFromAgent`, usada na
+Etapa 11); não há endpoint de Agent nem GameCommand. Um character fica VERIFIED
+para no máximo um player por servidor. A migration `1789920000000-PlayerCharacters`
+completa treze migrations, 36 permissions e 93 grants. Consulte [arquitetura, decisões e roadmap da
 Etapa 10](docs/player-services.md).

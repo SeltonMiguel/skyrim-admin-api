@@ -87,3 +87,11 @@ A Subetapa 10.3 adiciona `1789910000000-PlayerSessions`: cria somente
 formato, `expires_at > created_at`, índice por player). Não guarda tokens de
 provider, IP ou user agent e não se relaciona com `staff_sessions`. `down` remove a
 tabela e encerra todas as sessões de player. Detalhes em `docs/player-services.md`.
+
+A Subetapa 10.4 adiciona `1789920000000-PlayerCharacters`: cria `player_characters`
+(FKs para `players` e `game_servers`, `UNIQUE(player_id, game_server_id,
+character_external_id)`, índice único parcial de VERIFIED por servidor/character e
+check de lifecycle) e `player_character_link_challenges` (FK para o vínculo, hash
+único, índice único parcial de um challenge ativo por vínculo, checks de formato,
+exclusividade consumido/revogado e expiração). `down` remove as duas tabelas e o
+histórico de vínculos. Detalhes em `docs/player-services.md`.
