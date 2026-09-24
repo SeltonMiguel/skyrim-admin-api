@@ -517,6 +517,10 @@ A Subetapa 10.10 acrescenta, no mesmo padrão, `properties-query` (casas) e
 concede nem revoga propriedades ou holds; essas mutations continuam exclusivas da
 Admin API. Não há migration nova: continuam dezesseis.
 
+A Subetapa 10.11 acrescenta `horses-query` (cavalos/mounts), somente leitura,
+sobre o contrato existente `CHARACTER_HORSES_QUERY`. Dar, revogar, comprar ou
+chamar cavalos não é exposto ao player. Sem migration nova.
+
 A Subetapa 10.6 lista os characters do player em `GET /api/v1/player/me/characters`
 (paginado, VERIFIED antes de PENDING, sem REVOKED) e `GET .../:characterLinkId`.
 Retorna apenas identidade e servidor, sem character selecionado no servidor nem

@@ -76,7 +76,7 @@ domínio. A Player API nunca chama controllers administrativos. O prefixo
 | 10.8 Groups + Realtime Foundation | **Implementada.** Groups (party, invites), `RealtimeEventBus`, WebSocket em `/api/v1/realtime`; migration `1789940000000-PlayerGroups` |
 | 10.9 Guilds / Clans | **Implementada.** Guildas persistentes do character identity (MASTER/OFFICER/MEMBER, convites, limite provisório de 50), eventos no realtime da 10.8; migration `1789950000000-PlayerGuilds` |
 | 10.10 Properties / Houses / Holds | **Implementada.** `properties-query` e `holds-query` read-only sobre `CHARACTER_PROPERTIES_QUERY`/`CHARACTER_HOLDS_QUERY` existentes, por ownership VERIFIED; sem migration |
-| 10.11 Horses / Mounts | Leitura reutilizando contratos Character, por ownership |
+| 10.11 Horses / Mounts | **Implementada.** `horses-query` read-only sobre `CHARACTER_HORSES_QUERY` existente, por ownership VERIFIED; sem migration |
 | 10.12 Economy / Wallet | Ledger imutável e wallet derivada |
 | 10.13 Player Trade | Trade entre players com escrow; LEDGER_CURRENCY e GAME_ITEM |
 | 10.14 Marketplace | Listings sobre wallet/ledger/escrow, com as mesmas regras de custódia do Trade |
@@ -965,6 +965,31 @@ considerar apenas commands de autoria STAFF: uma query criada por Player não é
 uma operação Staff de Character Management (404 ali) e continua visível somente na
 view genérica e redigida `GET /api/v1/game-commands/:id`, sem payload nem
 resultado.
+
+#### Implementação (10.11)
+
+Horses/Mounts para o Player são **leitura do estado do Skyrim** pelo contrato da
+Etapa 05 `CHARACTER_HORSES_QUERY`, reutilizado sem alteração: payload
+`{ characterId }`, resultado `{ characterId, horses: [{ horseId, displayName? }] }`
+(até 512 entradas, `horseId` opaco, rejeição de mismatch de `characterId`), limites
+e lifecycle de GameCommand. "Mount" é só nomenclatura de UI: o backend continua no
+domínio Horses, sem segunda entidade técnica, tabela de mounts, snapshot ou
+read-model.
+
+- Rota: `POST /api/v1/player/game-servers/:gameServerId/characters/:characterId/horses-query`
+  (mesmo padrão da 10.5/10.10: `PlayerAuthGuard`, `Idempotency-Key`, body vazio,
+  202 + `Location`, ownership VERIFIED dentro da transação, ator PLAYER, scope
+  `PLAYER:<playerId>`, sem Audit, sem realtime).
+- `PLAYER_CHARACTER_QUERY_TYPES` passa a ter **5 tipos**: profile, skills,
+  properties, holds e horses. O detalhe
+  `GET /api/v1/player/character-operations/:operationId` apresenta
+  `CHARACTER_HORSES_QUERY` revalidado, só ao autor.
+- **Sem `CHARACTER_HORSE_GIVE`/`CHARACTER_HORSE_REVOKE` para o Player**: continuam
+  exclusivos da Admin API, com as mesmas permissions e o Audit existente. Compra de
+  cavalo depende de Economy (10.12); summon/call horse não existe no contrato atual
+  e não foi definido.
+- A decisão da 10.10 vale aqui: uma horses query criada por Player não aparece no
+  detalhe administrativo de Character Management, só na view genérica redigida.
 
 ### VIP
 
