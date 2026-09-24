@@ -7,10 +7,12 @@ export enum EconomyOwnerType {
   CHARACTER = 'CHARACTER',
   SYSTEM = 'SYSTEM',
 }
-// Closed; Trade/Marketplace (10.13/10.14) may add escrow keys with a migration.
+// Closed; each key is also in a PostgreSQL CHECK. TRADE_ESCROW holds GOLD
+// reserved by accepted trades (10.13); Marketplace may add its own key.
 export enum SystemAccountKey {
   MINT = 'MINT',
   BURN = 'BURN',
+  TRADE_ESCROW = 'TRADE_ESCROW',
 }
 export enum EconomyTransactionType {
   SYSTEM_CREDIT = 'SYSTEM_CREDIT',

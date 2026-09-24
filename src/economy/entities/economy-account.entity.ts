@@ -37,7 +37,7 @@ import type {
 @Check('economy_accounts_currency_check', `currency IN ('GOLD')`)
 @Check(
   'economy_accounts_owner_check',
-  `(owner_type = 'CHARACTER' AND character_external_id IS NOT NULL AND length(btrim(character_external_id)) > 0 AND system_key IS NULL) OR (owner_type = 'SYSTEM' AND character_external_id IS NULL AND system_key IN ('MINT', 'BURN'))`,
+  `(owner_type = 'CHARACTER' AND character_external_id IS NOT NULL AND length(btrim(character_external_id)) > 0 AND system_key IS NULL) OR (owner_type = 'SYSTEM' AND character_external_id IS NULL AND system_key IN ('MINT', 'BURN', 'TRADE_ESCROW'))`,
 )
 @Check(
   'economy_accounts_balance_check',

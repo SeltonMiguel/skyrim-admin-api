@@ -67,7 +67,8 @@ interface Prepared {
   fingerprint: string;
 }
 // Thrown inside the transaction to roll it back and report a rejection.
-class Rejection extends Error {
+// postWithin() lets it reach the calling domain, which rolls back too.
+export class LedgerRejectionError extends Error {
   constructor(readonly reason: LedgerRejection) {
     super(reason);
   }
@@ -106,7 +107,7 @@ export class EconomyLedgerService {
         this.apply(manager, prepared, hooks),
       );
     } catch (error) {
-      if (error instanceof Rejection)
+      if (error instanceof LedgerRejectionError)
         return { outcome: 'REJECTED', reason: error.reason };
       // A concurrent posting with the same key committed first.
       if (isUniqueViolation(error, 'economy_transactions_idempotency_key'))
@@ -118,6 +119,28 @@ export class EconomyLedgerService {
         );
       throw error;
     }
+  }
+  // Posts inside the caller's transaction (e.g. a trade state change), so
+  // the ledger and the domain commit or roll back together. Any rejection
+  // throws LedgerRejectionError; the caller must let it abort its work.
+  async postWithin(
+    manager: EntityManager,
+    posting: LedgerPosting,
+    hooks: LedgerHooks = {},
+  ): Promise<{ transactionId: string; replayed: boolean }> {
+    let prepared: Prepared;
+    try {
+      prepared = this.prepare(posting);
+    } catch {
+      throw new LedgerRejectionError('INVALID_INPUT');
+    }
+    const result = await this.apply(manager, prepared, hooks);
+    if (result.outcome === 'REJECTED')
+      throw new LedgerRejectionError(result.reason);
+    return {
+      transactionId: result.transactionId,
+      replayed: result.outcome === 'ALREADY_POSTED',
+    };
   }
   // Current balance of a character account; 0 when it does not exist yet.
   async characterBalance(
@@ -249,7 +272,7 @@ export class EconomyLedgerService {
     const server = await manager
       .getRepository<GameServer>('GameServer')
       .findOneBy({ id: posting.gameServerId });
-    if (!server) throw new Rejection('INVALID_INPUT');
+    if (!server) throw new LedgerRejectionError('INVALID_INPUT');
     const ids = new Map<string, string>();
     for (const leg of posting.legs)
       ids.set(
@@ -270,17 +293,17 @@ export class EconomyLedgerService {
     const replay = await this.replay(manager, prepared);
     if (replay) return replay;
     const rejection = await hooks.authorize?.(manager);
-    if (rejection) throw new Rejection(rejection);
+    if (rejection) throw new LedgerRejectionError(rejection);
     const accounts = new Map<string, LockedAccount>();
     for (const leg of posting.legs) {
       const id = ids.get(accountKey(leg.account))!;
       const balance = balances.get(id)! + leg.amount;
       if (leg.account.ownerType === EconomyOwnerType.CHARACTER) {
-        if (balance < 0) throw new Rejection('INSUFFICIENT_FUNDS');
+        if (balance < 0) throw new LedgerRejectionError('INSUFFICIENT_FUNDS');
         if (balance > MAX_CHARACTER_BALANCE)
-          throw new Rejection('BALANCE_LIMIT');
+          throw new LedgerRejectionError('BALANCE_LIMIT');
       } else if (Math.abs(balance) > MAX_SYSTEM_BALANCE_MAGNITUDE)
-        throw new Rejection('SYSTEM_LIMIT');
+        throw new LedgerRejectionError('SYSTEM_LIMIT');
       accounts.set(accountKey(leg.account), {
         id,
         ref: leg.account,

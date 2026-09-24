@@ -24,6 +24,13 @@ export const REALTIME_EVENT_TYPES = [
   'GUILD_MEMBER_ROLE_CHANGED',
   'GUILD_MASTER_TRANSFERRED',
   'GUILD_DISBANDED',
+  'TRADE_CREATED',
+  'TRADE_OFFER_UPDATED',
+  'TRADE_ACCEPTED',
+  'TRADE_AWAITING_GAME_CONFIRMATION',
+  'TRADE_COMPLETED',
+  'TRADE_CANCELLED',
+  'TRADE_FAILED',
 ] as const;
 export type RealtimeEventType = (typeof REALTIME_EVENT_TYPES)[number];
 export type RealtimeData = Record<string, string | number | boolean | null>;
