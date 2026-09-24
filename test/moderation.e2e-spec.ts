@@ -107,7 +107,7 @@ describeDatabase('Moderation with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(16);
+    expect(await database.runMigrations()).toHaveLength(17);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -178,6 +178,9 @@ describeDatabase('Moderation with real PostgreSQL', () => {
     expect(rows.map((r: { tablename: string }) => r.tablename)).toEqual([
       'audit_logs',
       'character_professions',
+      'economy_accounts',
+      'economy_entries',
+      'economy_transactions',
       'game_command_results',
       'game_commands',
       'game_connections',

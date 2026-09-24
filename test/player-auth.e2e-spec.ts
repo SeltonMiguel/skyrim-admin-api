@@ -80,7 +80,8 @@ describeDatabase('Player authentication with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(16);
+    expect(await database.runMigrations()).toHaveLength(17);
+    await database.undoLastMigration(); // Etapa 10.12 Economy
     await database.undoLastMigration(); // Etapa 10.9 Player Guilds
     await database.undoLastMigration(); // Etapa 10.8 Player Groups
     await database.undoLastMigration(); // Etapa 10.7 Professions
@@ -92,7 +93,7 @@ describeDatabase('Player authentication with real PostgreSQL', () => {
         [schema],
       ),
     ).toEqual([]);
-    expect(await database.runMigrations()).toHaveLength(5);
+    expect(await database.runMigrations()).toHaveLength(6);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -440,6 +441,8 @@ describeDatabase('Player authentication with real PostgreSQL', () => {
       '/api/v1/player/me/characters/{characterLinkId}',
       '/api/v1/player/me/characters/{characterLinkId}/guild',
       '/api/v1/player/me/characters/{characterLinkId}/profession',
+      '/api/v1/player/me/characters/{characterLinkId}/wallet',
+      '/api/v1/player/me/characters/{characterLinkId}/wallet/transactions',
     ]);
     expect(
       Object.keys(body.components.schemas.DiscordExchangeDto.properties).sort(),

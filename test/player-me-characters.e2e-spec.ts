@@ -107,7 +107,7 @@ describeDatabase('Player characters directory with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(16);
+    expect(await database.runMigrations()).toHaveLength(17);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
       .overrideProvider(DataSource)
@@ -156,7 +156,7 @@ describeDatabase('Player characters directory with real PostgreSQL', () => {
   });
 
   it('needs no migration and returns an empty page for a player without characters', async () => {
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(16);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(17);
     expect(await database.showMigrations()).toBe(false);
     expect(database.options.synchronize).toBe(false);
     const diff = await database.driver.createSchemaBuilder().log();
@@ -407,6 +407,12 @@ describeDatabase('Player characters directory with real PostgreSQL', () => {
       ],
       // 10.9: read-only guild of a character.
       ['/api/v1/player/me/characters/{characterLinkId}/guild', ['get']],
+      // 10.12: read-only wallet of a character.
+      ['/api/v1/player/me/characters/{characterLinkId}/wallet', ['get']],
+      [
+        '/api/v1/player/me/characters/{characterLinkId}/wallet/transactions',
+        ['get'],
+      ],
     ]);
     expect(
       Object.keys(body.components.schemas.PlayerCharacterDto.properties).sort(),

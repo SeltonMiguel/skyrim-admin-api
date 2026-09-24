@@ -84,7 +84,8 @@ describeDatabase('Game Bridge with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(16);
+    expect(await database.runMigrations()).toHaveLength(17);
+    await database.undoLastMigration(); // Etapa 10.12 Economy
     await database.undoLastMigration(); // Etapa 10.9 Player Guilds
     await database.undoLastMigration(); // Etapa 10.8 Player Groups
     await database.undoLastMigration(); // Etapa 10.7 Professions
@@ -111,7 +112,7 @@ describeDatabase('Game Bridge with real PostgreSQL', () => {
         [schema, 'game_%'],
       ),
     ).toEqual([]);
-    expect(await database.runMigrations()).toHaveLength(14);
+    expect(await database.runMigrations()).toHaveLength(15);
     expect(await database.runMigrations()).toHaveLength(0);
     gateway = new MockGameGateway();
     clock = new TestBridgeClock();
@@ -178,7 +179,7 @@ describeDatabase('Game Bridge with real PostgreSQL', () => {
         [schema, 'game_%'],
       ),
     ).toHaveLength(4);
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(16);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(17);
   });
   it('registers and locates servers and rejects duplicate code through the database', async () => {
     expect(await servers.get(serverId)).toMatchObject({ enabled: true });
