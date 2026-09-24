@@ -6,10 +6,12 @@ import { CommandStatus } from '../../game-bridge/command-state.js';
 import type { TerminalStatus } from '../../game-bridge/command-state.js';
 import {
   CharacterHoldsResultDto,
+  CharacterHorsesResultDto,
   CharacterPropertiesResultDto,
 } from '../../character-management/dto/operation.dto.js';
 import type {
   HoldsResult,
+  HorsesResult,
   PropertiesResult,
 } from '../../character-management/character-command.contracts.js';
 import { PLAYER_CHARACTER_QUERY_TYPES } from '../player-character-query.contracts.js';
@@ -85,12 +87,14 @@ export class PlayerCharacterOperationReferenceDto {
   status: CommandStatus;
   @ApiProperty({ format: 'date-time' }) createdAt: Date;
 }
-// Properties (houses) and holds reuse the Etapa 05 result shapes unchanged.
+// Properties (houses), holds and horses (mounts) reuse the Etapa 05 result
+// shapes unchanged.
 @ApiExtraModels(
   CharacterProfileDto,
   CharacterSkillsDto,
   CharacterPropertiesResultDto,
   CharacterHoldsResultDto,
+  CharacterHorsesResultDto,
 )
 export class PlayerCharacterOperationResultDto {
   @ApiProperty({
@@ -108,10 +112,16 @@ export class PlayerCharacterOperationResultDto {
       { $ref: getSchemaPath(CharacterSkillsDto) },
       { $ref: getSchemaPath(CharacterPropertiesResultDto) },
       { $ref: getSchemaPath(CharacterHoldsResultDto) },
+      { $ref: getSchemaPath(CharacterHorsesResultDto) },
     ],
     description: 'Validated Skyrim result; null for FAILED/TIMEOUT.',
   })
-  data: CharacterProfileResult | PropertiesResult | HoldsResult | null;
+  data:
+    | CharacterProfileResult
+    | PropertiesResult
+    | HoldsResult
+    | HorsesResult
+    | null;
   @ApiProperty({ type: String, nullable: true }) errorCode: string | null;
   @ApiProperty({ format: 'date-time' }) receivedAt: Date;
 }

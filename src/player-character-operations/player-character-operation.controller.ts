@@ -159,6 +159,23 @@ export class PlayerCharacterQueryController {
   ) {
     return this.accepted('CHARACTER_HOLDS_QUERY', route, key, auth, response);
   }
+  // Read-only: horses are presented as mounts. No give, revoke, purchase or
+  // summon is exposed to players.
+  @Post('horses-query')
+  @HttpCode(202)
+  @ApiPlayerQueryAccepted()
+  @ApiOperation({
+    summary: 'CHARACTER_HORSES_QUERY (mounts) for an owned character.',
+  })
+  horses(
+    @Param() route: PlayerCharacterRouteDto,
+    @Body() _body: EmptyPlayerQueryBodyDto,
+    @Headers('idempotency-key') key: string | undefined,
+    @CurrentPlayer() auth: AuthenticatedPlayer,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    return this.accepted('CHARACTER_HORSES_QUERY', route, key, auth, response);
+  }
 }
 @ApiTags('player-characters')
 @ApiBearerAuth()
