@@ -103,3 +103,11 @@ check inteiro de coerência nível/XP) e `profession_experience_events` (FKs par
 profissão e o servidor, `UNIQUE(game_server_id, external_event_id)`, checks de
 amount e id). `down` remove as duas tabelas e o progresso. Detalhes em
 `docs/player-services.md`.
+
+A Subetapa 10.8 adiciona `1789940000000-PlayerGroups`: cria `player_groups` (FK
+para `game_servers`, status e coerência de `disbanded_at`), `player_group_members`
+(FKs para group e vínculo, índices únicos parciais de uma membership ativa por
+vínculo e um leader ativo por group) e `player_group_invites` (FKs, status,
+`responded_at` nulo apenas em PENDING, índice único parcial de um convite pendente
+por group e target). `down` remove as três tabelas e o histórico de groups.
+Detalhes em `docs/player-services.md`.

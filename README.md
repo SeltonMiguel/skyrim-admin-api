@@ -522,5 +522,14 @@ BLACKSMITH, ALCHEMIST, CHARCOAL_BURNER, COOK): seleção única em
 `/api/v1/player/me/characters/:characterLinkId/profession` para vínculos VERIFIED
 e XP concedido apenas pelo serviço interno `grantFromAgent` (ator SYSTEM:AGENT,
 idempotente por evento). Nível = maior N com `100 * (N - 1)^2 <= XP`, máximo 100.
-A migration `1789930000000-Professions` completa catorze migrations. Consulte [arquitetura, decisões e roadmap da
+A migration `1789930000000-Professions` adiciona as profissões.
+
+A Subetapa 10.8 adiciona Groups (party de até 5 characters VERIFIED do mesmo
+servidor, com convites) em `/api/v1/player/groups` e `/api/v1/player/group-invites`,
+e a fundação realtime: WebSocket em `/api/v1/realtime` (biblioteca `ws`), com
+handshake por frame `AUTH` contendo o access token da superfície PLAYER ou STAFF,
+fechamento na expiração do token e fan-out decidido pelo servidor a partir do
+`RealtimeEventBus`. Realtime é best-effort e de processo único; o estado verdadeiro
+continua na API HTTP. A migration `1789940000000-PlayerGroups` completa quinze
+migrations. Consulte [arquitetura, decisões e roadmap da
 Etapa 10](docs/player-services.md).

@@ -73,7 +73,7 @@ domínio. A Player API nunca chama controllers administrativos. O prefixo
 | 10.5 Character Profile + Skills | **Implementada.** `CHARACTER_PROFILE_QUERY`, `CHARACTER_SKILLS_QUERY`, Player API 202 + operation detail; sem migration |
 | 10.6 Multiple Characters | **Implementada.** `GET /api/v1/player/me/characters` e detalhe; sem migration |
 | 10.7 Professions | **Implementada.** `character_professions`, `profession_experience_events`, seleção única pela Player API, `grantFromAgent` interno; migration `1789930000000-Professions` |
-| 10.8 Groups + Realtime Foundation | Infraestrutura WebSocket e barramento de eventos internos; party com leader, members e invites como primeiro domínio realtime |
+| 10.8 Groups + Realtime Foundation | **Implementada.** Groups (party, invites), `RealtimeEventBus`, WebSocket em `/api/v1/realtime`; migration `1789940000000-PlayerGroups` |
 | 10.9 Guilds / Clans | Guildas persistentes com membros, cargos e convites |
 | 10.10 Properties / Houses / Holds | Leitura reutilizando contratos Character, por ownership |
 | 10.11 Horses / Mounts | Leitura reutilizando contratos Character, por ownership |
@@ -578,6 +578,81 @@ Integração real do Agent (eventos de XP e seu transporte) fica para a Etapa 11
 - **Primeiro domínio a publicar e consumir eventos realtime** (10.8): convites,
   entrada/saída e troca de leader geram eventos internos entregues aos membros.
 
+#### Implementação (10.8)
+
+Módulo `src/player-groups/`. Group é uma party temporária do **ownership atual**:
+membros são vínculos `player_characters`, então um novo dono do character não
+herda o group anterior. Todos os membros estão no mesmo GameServer.
+
+| Tabela | Colunas e garantias |
+| --- | --- |
+| `player_groups` | `id`, `game_server_id` (FK), `status` ACTIVE/DISBANDED, `created_at`, `updated_at`, `disbanded_at` (presente sse DISBANDED) |
+| `player_group_members` | `id`, `group_id` (FK), `player_character_id` (FK), `role` LEADER/MEMBER, `joined_at`, `left_at`; índice único parcial de **uma membership ativa por vínculo** e de **um leader ativo por group**; histórico nunca apagado |
+| `player_group_invites` | `id`, `group_id`, `target_player_character_id`, `invited_by_player_character_id` (FKs), `status` PENDING/ACCEPTED/DECLINED/CANCELLED/EXPIRED, `expires_at`, `responded_at` (nulo sse PENDING), `created_at`; índice único parcial de um PENDING por group + target |
+
+- Máximo **provisório de 5 membros** (leader + 4) em `MAX_GROUP_MEMBERS`; a
+  capacidade é verificada sob o lock do group, então alterar o valor não exige
+  migration.
+- Convites valem `PLAYER_GROUP_INVITE_TTL` (padrão 10m, de 1m a 24h). A expiração é
+  detectada ao usar ou repetir o convite, que passa a EXPIRED.
+- O leader existe desde a criação (mesma transação) e sair como leader desfaz o
+  group; o banco garante no máximo um leader ativo.
+
+**Lifecycle:** create (ACTIVE + LEADER) → invites → accept/decline → leave/kick →
+disband (explícito ou saída do leader). Disband marca DISBANDED, fecha todas as
+memberships (`left_at`) e cancela convites PENDING.
+
+**Player API** (`PlayerAuthGuard`; o player vem do token; vínculos do ator precisam
+ser próprios e VERIFIED, senão 404 `Character not found`):
+
+| Rota | Regra |
+| --- | --- |
+| `POST /api/v1/player/groups` `{ characterLinkId }` | 201; character sem group ativo, servidor habilitado |
+| `GET /api/v1/player/groups/:groupId` | só membros ativos; outros → 404 |
+| `POST .../:groupId/invites` `{ actorCharacterLinkId, targetCharacterId }` | leader apenas (membro → 403, não membro → 404); target resolvido pelo servidor do group; não resolvido → 404 `Character not available`; já em group → 409 `Character unavailable`; group cheio → 409. Repetir convite pendente → 200 com o mesmo convite |
+| `GET /api/v1/player/group-invites` | convites PENDING e não expirados para characters próprios |
+| `POST /api/v1/player/group-invites/:inviteId/accept` | só o dono do target; PENDING, não expirado, group ACTIVE, vaga livre, target ainda sem group |
+| `POST .../:inviteId/decline` | só o dono do target |
+| `POST .../:groupId/leave` `{ characterLinkId }` | MEMBER sai; LEADER desfaz o group |
+| `POST .../:groupId/members/:memberId/kick` | leader apenas; não pode expulsar a si mesmo (400) |
+| `POST .../:groupId/disband` | leader apenas |
+
+**Identificação de outros characters:** internamente, memberships e convites usam
+`player_character_id` (FK para o vínculo de ownership). Esse UUID é privado: a
+Player API referencia characters de outros players apenas pelo
+`characterExternalId` (id opaco do jogo), escopado pelo servidor. No convite, o
+body traz `targetCharacterId`; o servidor vem do group, e o backend procura o
+vínculo VERIFIED com `game_server_id` + `character_external_id`, usando o id
+encontrado só internamente. Character inexistente, PENDING, REVOKED ou de outro
+servidor responde o mesmo 404. `targetCharacterLinkId`, `targetPlayerId` e
+`gameServerId` no body → 400. **Conhecer um `characterExternalId` não é prova de
+ownership** nem dá acesso a APIs protegidas.
+
+O group retornado lista os membros ativos como `{ memberId, characterId, role,
+joinedAt, characterLinkId }`, em que `characterId` é o `characterExternalId` e
+`characterLinkId` só é preenchido para characters do próprio player (null para os
+demais). O convite é `{ inviteId, groupId, gameServerId, targetCharacterId,
+invitedByCharacterId, status, expiresAt, createdAt, respondedAt }`, sem FKs
+internas. Eventos realtime seguem a mesma regra (`targetCharacterId`). Nenhum
+`playerId` ou identidade de provider aparece.
+
+**Concorrência:** ordem de locks group → vínculos → memberships/convites. Criação
+trava o vínculo; accept trava group, convite e vínculo alvo; capacidade é contada
+sob o lock do group. Os índices parciais são a garantia final: criações simultâneas
+geram um group, dois accepts pela última vaga admitem um, um character não entra
+em dois groups e accept × disband termina em estado coerente.
+
+**Audit** (actor PLAYER, `resourceType = PLAYER_GROUP`, metadata com `groupId`,
+`gameServerId` e ids de vínculo/membro/convite): `PLAYER_GROUP_CREATED`,
+`PLAYER_GROUP_INVITED`, `PLAYER_GROUP_INVITE_ACCEPTED`,
+`PLAYER_GROUP_INVITE_DECLINED`, `PLAYER_GROUP_MEMBER_LEFT`,
+`PLAYER_GROUP_MEMBER_KICKED`, `PLAYER_GROUP_DISBANDED`. Convite repetido não audita.
+
+**Ownership revogada:** leituras e ações exigem ownership atual VERIFIED; o dono
+revogado perde acesso e deixa de receber eventos. A membership não é transferida
+nem removida automaticamente (continua ocupando a vaga); limpeza automática ao
+revogar ownership fica como evolução futura.
+
 ### Guilds / Clans
 
 - Domínio persistente próprio.
@@ -656,6 +731,53 @@ implementa a integração real necessária para o settlement de GAME_ITEM.
   tipados, e a camada realtime os transporta aos destinatários autorizados.
 - Realtime não é fonte de verdade: o estado vive nos serviços de domínio e o
   cliente consegue reconstruí-lo pela API HTTP.
+
+#### Implementação (10.8)
+
+**Domain events:** `RealtimeEventBus` (`src/realtime-events/`, global, sem
+dependência de WebSocket). Domínios chamam `publish(type, data, { playerIds })`
+**depois do commit**; o bus gera o envelope `{ eventId, type, occurredAt, data }`,
+aceita em `data` apenas valores primitivos (nenhuma entidade TypeORM) e deduplica
+destinatários. Tipos iniciais: `GROUP_CREATED`, `GROUP_INVITE_CREATED`,
+`GROUP_INVITE_ACCEPTED`, `GROUP_INVITE_DECLINED`, `GROUP_MEMBER_JOINED`,
+`GROUP_MEMBER_LEFT`, `GROUP_MEMBER_KICKED`, `GROUP_DISBANDED`.
+
+**Transporte:** `src/realtime/`, com a biblioteca `ws` acoplada ao servidor HTTP do
+Nest (sem Socket.IO) em `ws(s)://<host>/api/v1/realtime`. Caminho diferente ou
+qualquer query string é rejeitado no handshake (400): tokens nunca vão na URL.
+
+**Handshake:**
+
+1. o socket conecta e fica AUTHENTICATING;
+2. o primeiro frame deve ser exatamente
+   `{ "type": "AUTH", "surface": "PLAYER" | "STAFF", "token": "<access token>" }`
+   dentro de `REALTIME_AUTH_TIMEOUT_MS` (padrão 5000);
+3. PLAYER é verificado pelo `PlayerAuthService` e STAFF pelo `AuthService`, cada um
+   com seus secrets/issuer/audience, sessão e status; refresh tokens e tokens da
+   outra superfície falham;
+4. sucesso → `{ "type": "AUTHENTICATED", "surface", "expiresAt" }` e registro da
+   conexão por identidade (`PLAYER:<id>` ou `STAFF:<id>`).
+
+Códigos de fechamento: 4000 `AUTH_TIMEOUT`, 4001 `UNAUTHORIZED`, 4002
+`TOKEN_EXPIRED`, 4003 `PROTOCOL_ERROR` (frame inválido, campos extras, frame
+binário ou qualquer mensagem após autenticar), 1001 no desligamento. Frames até
+16 KiB.
+
+**Expiração:** o socket é fechado (4002) quando o `exp` do access JWT chega; o
+cliente reconecta com um novo access token. Não há refresh via WebSocket. Logout
+ou suspensão durante a conexão só têm efeito na expiração ou reconexão (o HTTP
+continua bloqueando imediatamente).
+
+**Fan-out:** o servidor escolhe os destinatários; o cliente não entra em rooms nem
+informa player/group. Eventos de Group vão aos donos atuais (VERIFIED) dos membros
+ativos e ao dono do target do convite, em todas as conexões do player. Conexões
+STAFF são autenticadas mas ainda não recebem eventos. O fechamento remove a
+conexão do registry.
+
+**Limitação:** entrega em memória, best-effort e de processo único: sem Redis,
+broker ou outbox. Um evento pode se perder (queda, reconexão); o cliente refaz o
+GET HTTP. Entrega entre múltiplas instâncias e garantias de entrega ficam para a
+Etapa 12.
 
 ### Properties / Houses / Holds e Horses / Mounts
 
@@ -808,7 +930,7 @@ Detalhes que não bloqueiam a fundação e podem ser fixados na subetapa do dom�
 | Tema | Subetapa |
 | --- | --- |
 | Regras de troca de profissão e origem dos eventos de XP no jogo | pós-definição de produto / Etapa 11 |
-| Tamanho máximo de group | 10.8 |
+| Tamanho definitivo de group (hoje 5, provisório) e limpeza de memberships de ownership revogada | pós-definição de produto |
 | Cargos de guild e suas capacidades | 10.9 |
 | Taxas de marketplace | 10.14 |
 | Retenção de chat | 10.15 |
