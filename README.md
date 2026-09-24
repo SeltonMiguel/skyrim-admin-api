@@ -3,7 +3,7 @@
 Backend administrativo do Skyrim Brasil / SkyMP. Foundation (Etapa 00),
 autenticação/RBAC (Etapa 01), auditoria administrativa (Etapa 02) e infraestrutura
 de Game Bridge/Commands (Etapa 03), consultas administrativas (Etapa 04) e
-Character Management assíncrono (Etapa 05) e Moderation (Etapa 06).
+Character Management assíncrono (Etapa 05), Moderation (Etapa 06) e World Management (Etapa 07).
 O transporte real para Skyrim continua
 reservado a uma etapa futura.
 
@@ -241,8 +241,8 @@ explícita de campos seguros em cada nova ação.
 A Etapa 03 adiciona GameServer, GameConnection, GameCommand e GameCommandResult,
 com migration explícita e serviços internos exportados por GameBridgeModule.
 BRIDGE_PING permanece disponível; a Etapa 05 acrescenta 17 comandos tipados de
-Character Management e a Etapa 06 acrescenta oito de Moderation, totalizando 26
-tipos fechados. GameGateway usa DisconnectedGameGateway em produção:
+Character Management, a Etapa 06 acrescenta oito de Moderation e a Etapa 07 quatro
+de World Management, totalizando 30 tipos fechados. GameGateway usa DisconnectedGameGateway em produção:
 nunca simula execução bem-sucedida. O MockGameGateway existe somente nos testes.
 
 Commands usam idempotência por servidor/chave, correlationId próprio, requestId
@@ -413,3 +413,20 @@ test/                 # Suítes HTTP e PostgreSQL real
 ```
 
 Dependências e artefatos (`node_modules`, `dist`, coverage e `.env`) ficam fora do Git.
+
+## World Management
+
+A Etapa 07 adiciona WORLD_STATE_QUERY, WORLD_TIME_SET, WORLD_WEATHER_SET e
+WORLD_ENTITY_SPAWN via `POST /api/v1/game-servers/:serverId/world/` nos sufixos
+`state/query`, `time`, `weather` e `spawn`. Todas exigem Idempotency-Key, retornam
+202 + Location e usam AdministrativeCommandService. Query não gera Audit;
+mutations persistem Command + Audit atomicamente, antes de qualquer dispatch.
+
+Coordinator/General Chief têm as quatro permissions World; Admin somente WORLD_READ;
+Moderator/Support/DEV nenhuma. `GET /api/v1/world-operations/:commandId` exige a
+permission dinâmica do tipo persistido; o endpoint genérico continua redacted.
+Spawn usa exclusivamente o staff autenticado, IDs opacos e quantidade de 1 a 10.
+
+A migration incremental WorldPermissions adiciona quatro permissions e nove grants:
+35 permissions, 92 grants, sete migrations, sem tabelas locais World. Consulte
+[contratos, matriz, validação e decisões](docs/world-management.md).
