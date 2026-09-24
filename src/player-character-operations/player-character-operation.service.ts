@@ -3,16 +3,16 @@ import { isUUID } from 'class-validator';
 import { DataSource, In } from 'typeorm';
 import { ActorCommandService } from '../actor-operations/actor-command.service.js';
 import type { PlayerActor } from '../actors/actor.contracts.js';
-import { commandResult } from '../game-bridge/command-contract.js';
+import {
+  commandPayload,
+  commandResult,
+} from '../game-bridge/command-contract.js';
 import type { SubmitCommand } from '../game-bridge/command-contract.js';
 import type { GameCommand } from '../game-bridge/entities/game-command.entity.js';
 import type { GameCommandResult } from '../game-bridge/entities/game-command-result.entity.js';
 import { CharacterOwnershipService } from '../player-characters/character-ownership.service.js';
-import {
-  CHARACTER_PROFILE_COMMAND_TYPES,
-  characterProfilePayload,
-} from './character-profile.contracts.js';
-import type { CharacterProfileCommandType } from './character-profile.contracts.js';
+import { PLAYER_CHARACTER_QUERY_TYPES } from './player-character-query.contracts.js';
+import type { PlayerCharacterQueryType } from './player-character-query.contracts.js';
 import type {
   PlayerCharacterOperationDto,
   PlayerCharacterOperationReferenceDto,
@@ -21,7 +21,7 @@ import type {
 type CommandWithResult = GameCommand & { result: GameCommandResult | null };
 const notFound = () => new NotFoundException('Character operation not found');
 
-// Player-facing queries over the shared actor-aware pipeline: ownership is
+// Player-facing read-only queries over the shared actor-aware pipeline: ownership is
 // checked inside the command transaction, the actor is PLAYER and idempotency
 // is scoped to PLAYER:<playerId>. Queries are not audited, as for staff.
 @Injectable()
@@ -33,7 +33,7 @@ export class PlayerCharacterOperationService {
   ) {}
   async request(
     actor: PlayerActor,
-    type: CharacterProfileCommandType,
+    type: PlayerCharacterQueryType,
     route: { gameServerId: string; characterId: string },
     idempotencyKey: string,
   ): Promise<PlayerCharacterOperationReferenceDto> {
@@ -41,9 +41,8 @@ export class PlayerCharacterOperationService {
       {
         gameServerId: route.gameServerId,
         type,
-        payload: characterProfilePayload(type, {
-          characterId: route.characterId,
-        }),
+        // The existing contract of the type builds and validates the payload.
+        payload: commandPayload(type, { characterId: route.characterId }),
         idempotencyKey,
       } as SubmitCommand,
       actor,
@@ -78,7 +77,7 @@ export class PlayerCharacterOperationService {
       .andWhere('command.requestedByPlayerId = :playerId', {
         playerId: actor.playerId,
       })
-      .andWhere({ type: In([...CHARACTER_PROFILE_COMMAND_TYPES]) })
+      .andWhere({ type: In([...PLAYER_CHARACTER_QUERY_TYPES]) })
       .getOne();
     if (!command) throw notFound();
     const result = command.result;
@@ -92,7 +91,7 @@ export class PlayerCharacterOperationService {
               result.result === null
                 ? null
                 : commandResult(
-                    command.type as CharacterProfileCommandType,
+                    command.type as PlayerCharacterQueryType,
                     result.result,
                     command.payload,
                   ),
@@ -105,12 +104,12 @@ export class PlayerCharacterOperationService {
 }
 // Allowlist: no attribution, scope, key, correlation, lease or deadlines.
 function reference(command: GameCommand): PlayerCharacterOperationReferenceDto {
-  const type = command.type as CharacterProfileCommandType;
+  const type = command.type as PlayerCharacterQueryType;
   return {
     operationId: command.id,
     type,
     gameServerId: command.gameServerId,
-    characterId: characterProfilePayload(type, command.payload).characterId,
+    characterId: commandPayload(type, command.payload).characterId,
     status: command.status,
     createdAt: command.createdAt,
   };

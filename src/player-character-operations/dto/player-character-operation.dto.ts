@@ -5,7 +5,16 @@ import { externalId } from '../../game-bridge/command-validation.js';
 import { CommandStatus } from '../../game-bridge/command-state.js';
 import type { TerminalStatus } from '../../game-bridge/command-state.js';
 import {
-  CHARACTER_PROFILE_COMMAND_TYPES,
+  CharacterHoldsResultDto,
+  CharacterPropertiesResultDto,
+} from '../../character-management/dto/operation.dto.js';
+import type {
+  HoldsResult,
+  PropertiesResult,
+} from '../../character-management/character-command.contracts.js';
+import { PLAYER_CHARACTER_QUERY_TYPES } from '../player-character-query.contracts.js';
+import type { PlayerCharacterQueryType } from '../player-character-query.contracts.js';
+import {
   CHARACTER_SEXES,
   MAX_ATTRIBUTE_VALUE,
   MAX_CHARACTER_LEVEL,
@@ -14,7 +23,6 @@ import {
   SKILL_NAMES,
 } from '../character-profile.contracts.js';
 import type {
-  CharacterProfileCommandType,
   CharacterProfileResult,
   CharacterSex,
 } from '../character-profile.contracts.js';
@@ -66,8 +74,8 @@ export class CharacterSkillsDto {
 }
 export class PlayerCharacterOperationReferenceDto {
   @ApiProperty({ format: 'uuid' }) operationId: string;
-  @ApiProperty({ enum: CHARACTER_PROFILE_COMMAND_TYPES })
-  type: CharacterProfileCommandType;
+  @ApiProperty({ enum: PLAYER_CHARACTER_QUERY_TYPES })
+  type: PlayerCharacterQueryType;
   @ApiProperty({ format: 'uuid' }) gameServerId: string;
   @ApiProperty() characterId: string;
   @ApiProperty({
@@ -77,7 +85,13 @@ export class PlayerCharacterOperationReferenceDto {
   status: CommandStatus;
   @ApiProperty({ format: 'date-time' }) createdAt: Date;
 }
-@ApiExtraModels(CharacterProfileDto, CharacterSkillsDto)
+// Properties (houses) and holds reuse the Etapa 05 result shapes unchanged.
+@ApiExtraModels(
+  CharacterProfileDto,
+  CharacterSkillsDto,
+  CharacterPropertiesResultDto,
+  CharacterHoldsResultDto,
+)
 export class PlayerCharacterOperationResultDto {
   @ApiProperty({
     enum: [
@@ -92,10 +106,12 @@ export class PlayerCharacterOperationResultDto {
     oneOf: [
       { $ref: getSchemaPath(CharacterProfileDto) },
       { $ref: getSchemaPath(CharacterSkillsDto) },
+      { $ref: getSchemaPath(CharacterPropertiesResultDto) },
+      { $ref: getSchemaPath(CharacterHoldsResultDto) },
     ],
     description: 'Validated Skyrim result; null for FAILED/TIMEOUT.',
   })
-  data: CharacterProfileResult | null;
+  data: CharacterProfileResult | PropertiesResult | HoldsResult | null;
   @ApiProperty({ type: String, nullable: true }) errorCode: string | null;
   @ApiProperty({ format: 'date-time' }) receivedAt: Date;
 }

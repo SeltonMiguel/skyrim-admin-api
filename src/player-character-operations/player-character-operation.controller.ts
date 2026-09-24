@@ -32,7 +32,7 @@ import {
 } from '../player-auth/player-auth.guard.js';
 import type { AuthenticatedPlayer } from '../player-auth/player-auth.types.js';
 import { PlayerCharacterOperationService } from './player-character-operation.service.js';
-import type { CharacterProfileCommandType } from './character-profile.contracts.js';
+import type { PlayerCharacterQueryType } from './player-character-query.contracts.js';
 import {
   EmptyPlayerQueryBodyDto,
   PlayerCharacterOperationDto,
@@ -79,7 +79,7 @@ function ApiPlayerQueryAccepted() {
 export class PlayerCharacterQueryController {
   constructor(private readonly operations: PlayerCharacterOperationService) {}
   private async accepted(
-    type: CharacterProfileCommandType,
+    type: PlayerCharacterQueryType,
     route: PlayerCharacterRouteDto,
     key: string | undefined,
     auth: AuthenticatedPlayer,
@@ -122,6 +122,42 @@ export class PlayerCharacterQueryController {
     @Res({ passthrough: true }) response: Response,
   ) {
     return this.accepted('CHARACTER_SKILLS_QUERY', route, key, auth, response);
+  }
+  // Read-only: properties are the player's houses. No purchase, sale, grant
+  // or revoke is exposed to players.
+  @Post('properties-query')
+  @HttpCode(202)
+  @ApiPlayerQueryAccepted()
+  @ApiOperation({
+    summary: 'CHARACTER_PROPERTIES_QUERY (houses) for an owned character.',
+  })
+  properties(
+    @Param() route: PlayerCharacterRouteDto,
+    @Body() _body: EmptyPlayerQueryBodyDto,
+    @Headers('idempotency-key') key: string | undefined,
+    @CurrentPlayer() auth: AuthenticatedPlayer,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    return this.accepted(
+      'CHARACTER_PROPERTIES_QUERY',
+      route,
+      key,
+      auth,
+      response,
+    );
+  }
+  @Post('holds-query')
+  @HttpCode(202)
+  @ApiPlayerQueryAccepted()
+  @ApiOperation({ summary: 'CHARACTER_HOLDS_QUERY for an owned character.' })
+  holds(
+    @Param() route: PlayerCharacterRouteDto,
+    @Body() _body: EmptyPlayerQueryBodyDto,
+    @Headers('idempotency-key') key: string | undefined,
+    @CurrentPlayer() auth: AuthenticatedPlayer,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    return this.accepted('CHARACTER_HOLDS_QUERY', route, key, auth, response);
   }
 }
 @ApiTags('player-characters')

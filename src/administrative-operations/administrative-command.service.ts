@@ -6,7 +6,7 @@ import {
 import { DataSource } from 'typeorm';
 import type { AuthenticatedStaff } from '../auth/auth.types.js';
 import type { Permission } from '../rbac/permissions.js';
-import { staffActor } from '../actors/actor.contracts.js';
+import { ActorType, staffActor } from '../actors/actor.contracts.js';
 import { ActorCommandService } from '../actor-operations/actor-command.service.js';
 import type {
   ActorSubmission,
@@ -48,8 +48,12 @@ export class AdministrativeCommandService {
   ): Promise<OperationCommand> {
     const repository =
       this.database.getRepository<OperationCommand>('GameCommand');
+    // Staff domain details present staff-authored operations only; PLAYER and
+    // SYSTEM commands of a shared type (e.g. a player's properties query)
+    // are not staff Character operations and stay behind the generic,
+    // redacted game-commands view.
     const metadata = await repository.findOne({
-      where: { id },
+      where: { id, actorType: ActorType.STAFF },
       select: { id: true, type: true },
     });
     const permission = metadata && permissionForType(metadata.type);
