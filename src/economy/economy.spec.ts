@@ -101,7 +101,7 @@ describe('Economy ledger validation', () => {
           {
             account: {
               ownerType: O.SYSTEM,
-              systemKey: 'TRADE_ESCROW' as SystemAccountKey,
+              systemKey: 'MARKET_ESCROW' as SystemAccountKey,
             },
             amount: -1,
           },
@@ -161,7 +161,11 @@ describe('Economy ledger validation', () => {
       Number.MAX_SAFE_INTEGER,
     );
     expect(Object.values(Currency)).toEqual(['GOLD']);
-    expect(Object.values(SystemAccountKey)).toEqual(['MINT', 'BURN']);
+    expect(Object.values(SystemAccountKey)).toEqual([
+      'MINT',
+      'BURN',
+      'TRADE_ESCROW',
+    ]);
     expect(Object.values(T)).toEqual([
       'SYSTEM_CREDIT',
       'SYSTEM_DEBIT',

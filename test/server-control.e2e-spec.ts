@@ -83,7 +83,7 @@ describeDatabase('Server Control with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(17);
+    expect(await database.runMigrations()).toHaveLength(18);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -138,7 +138,7 @@ describeDatabase('Server Control with real PostgreSQL', () => {
     expect(
       (await database.driver.createSchemaBuilder().log()).upQueries,
     ).toEqual([]);
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(17);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(18);
     expect(await database.query('SELECT * FROM permissions')).toHaveLength(36);
     expect(await database.query('SELECT * FROM role_permissions')).toHaveLength(
       93,
@@ -180,6 +180,12 @@ describeDatabase('Server Control with real PostgreSQL', () => {
       'player_guilds',
       'player_identities',
       'player_sessions',
+      'player_trade_currency_escrows',
+      'player_trade_items',
+      'player_trade_offers',
+      'player_trade_requests',
+      'player_trade_settlement_events',
+      'player_trades',
       'players',
       'profession_experience_events',
       'role_permissions',
@@ -618,6 +624,7 @@ describeDatabase('Server Control with real PostgreSQL', () => {
     expect(await count()).toBe(0);
   });
   it('reverts only the operation table and reapplies cleanly', async () => {
+    await database.undoLastMigration(); // Etapa 10.13 Player Trades
     await database.undoLastMigration(); // Etapa 10.12 Economy
     await database.undoLastMigration(); // Etapa 10.9 Player Guilds
     await database.undoLastMigration(); // Etapa 10.8 Player Groups
@@ -637,7 +644,7 @@ describeDatabase('Server Control with real PostgreSQL', () => {
     expect(await database.query('SELECT * FROM role_permissions')).toHaveLength(
       93,
     );
-    expect(await database.runMigrations()).toHaveLength(9);
+    expect(await database.runMigrations()).toHaveLength(10);
     expect(await database.runMigrations()).toHaveLength(0);
     expect(
       (await database.driver.createSchemaBuilder().log()).upQueries,

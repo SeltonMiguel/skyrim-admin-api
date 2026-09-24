@@ -73,7 +73,8 @@ describeDatabase('Auth + RBAC with real PostgreSQL', () => {
     });
     await database.initialize();
     // Exercise migration, rollback, reproducibility and no-op rerun in an isolated schema.
-    expect(await database.runMigrations()).toHaveLength(17);
+    expect(await database.runMigrations()).toHaveLength(18);
+    await database.undoLastMigration(); // Etapa 10.13 Player Trades
     await database.undoLastMigration(); // Etapa 10.12 Economy
     await database.undoLastMigration(); // Etapa 10.9 Player Guilds
     await database.undoLastMigration(); // Etapa 10.8 Player Groups
@@ -97,7 +98,7 @@ describeDatabase('Auth + RBAC with real PostgreSQL', () => {
         [schema],
       ),
     ).toHaveLength(0);
-    expect(await database.runMigrations()).toHaveLength(17);
+    expect(await database.runMigrations()).toHaveLength(18);
     expect(await database.runMigrations()).toHaveLength(0);
     const bootstrap = new BootstrapCoordinatorService(
       database,
@@ -144,7 +145,7 @@ describeDatabase('Auth + RBAC with real PostgreSQL', () => {
         `SELECT tablename FROM pg_tables WHERE schemaname = $1`,
         [schema],
       ),
-    ).toHaveLength(29);
+    ).toHaveLength(35);
   });
   it('seeds the six roles and complete permission catalog', async () => {
     const roles: { name: string }[] = await database.query(

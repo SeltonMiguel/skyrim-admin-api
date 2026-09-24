@@ -49,7 +49,7 @@ describeDatabase('Player accounts with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(17);
+    expect(await database.runMigrations()).toHaveLength(18);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -76,7 +76,7 @@ describeDatabase('Player accounts with real PostgreSQL', () => {
     const diff = await database.driver.createSchemaBuilder().log();
     expect(diff.upQueries).toEqual([]);
     expect(diff.downQueries).toEqual([]);
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(17);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(18);
     expect(await database.query('SELECT * FROM permissions')).toHaveLength(36);
     expect(await database.query('SELECT * FROM role_permissions')).toHaveLength(
       93,
@@ -111,7 +111,8 @@ describeDatabase('Player accounts with real PostgreSQL', () => {
       [schema, 'players', 'player_identities'],
     );
     // Later subetapas reference players: game_commands (10.2), sessions (10.3),
-    // characters (10.4) and economy transaction attribution (10.12).
+    // characters (10.4), economy transaction attribution (10.12) and trade
+    // idempotency records (10.13).
     expect(
       foreignKeys.sort((a: { source: string }, b: { source: string }) =>
         a.source.localeCompare(b.source),
@@ -122,6 +123,7 @@ describeDatabase('Player accounts with real PostgreSQL', () => {
       { source: 'player_characters', target: 'players' },
       { source: 'player_identities', target: 'players' },
       { source: 'player_sessions', target: 'players' },
+      { source: 'player_trade_requests', target: 'players' },
     ]);
     expect(
       await database.query(
@@ -364,6 +366,7 @@ describeDatabase('Player accounts with real PostgreSQL', () => {
     ).toEqual([]);
   });
   it('reverts only the player tables and reapplies cleanly', async () => {
+    await database.undoLastMigration(); // Etapa 10.13 Player Trades
     await database.undoLastMigration(); // Etapa 10.12 Economy
     await database.undoLastMigration(); // Etapa 10.9 Player Guilds
     await database.undoLastMigration(); // Etapa 10.8 Player Groups
@@ -387,7 +390,7 @@ describeDatabase('Player accounts with real PostgreSQL', () => {
       { tablename: 'server_control_operations' },
       { tablename: 'staff_users' },
     ]);
-    expect(await database.runMigrations()).toHaveLength(8);
+    expect(await database.runMigrations()).toHaveLength(9);
     expect(await database.runMigrations()).toHaveLength(0);
     expect(
       (await database.driver.createSchemaBuilder().log()).upQueries,

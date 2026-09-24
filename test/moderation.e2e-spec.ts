@@ -107,7 +107,7 @@ describeDatabase('Moderation with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(17);
+    expect(await database.runMigrations()).toHaveLength(18);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -197,6 +197,12 @@ describeDatabase('Moderation with real PostgreSQL', () => {
       'player_guilds',
       'player_identities',
       'player_sessions',
+      'player_trade_currency_escrows',
+      'player_trade_items',
+      'player_trade_offers',
+      'player_trade_requests',
+      'player_trade_settlement_events',
+      'player_trades',
       'players',
       'profession_experience_events',
       'role_permissions',

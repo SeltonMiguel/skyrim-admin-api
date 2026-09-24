@@ -112,14 +112,19 @@ describe('Realtime and group boundaries', () => {
   const imports = (source: string) =>
     [...source.matchAll(/from '([^']+)'/g)].map((m) => m[1]);
   it('keeps domains and the event bus independent of the WebSocket transport', () => {
-    for (const dir of ['player-groups', 'player-guilds', 'realtime-events'])
+    for (const dir of [
+      'player-groups',
+      'player-guilds',
+      'player-trades',
+      'realtime-events',
+    ])
       for (const source of sources(dir))
         for (const module of imports(source))
           expect(module).not.toMatch(/^ws$|\/realtime\/|socket\.io|electron/i);
     for (const source of sources('realtime'))
       for (const module of imports(source))
         expect(module).not.toMatch(
-          /player-groups|player-guilds|player-characters|socket\.io|electron/i,
+          /player-groups|player-guilds|player-trades|player-characters|socket\.io|electron/i,
         );
   });
   it('keeps the provisional group size centralized', () => {
