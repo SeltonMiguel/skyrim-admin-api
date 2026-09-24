@@ -10,6 +10,8 @@ describe('Database options shared by Nest and CLI', () => {
       ...parse(readFileSync('.env.example')),
       JWT_ACCESS_SECRET: randomBytes(48).toString('hex'),
       JWT_REFRESH_SECRET: randomBytes(48).toString('hex'),
+      PLAYER_JWT_ACCESS_SECRET: randomBytes(48).toString('hex'),
+      PLAYER_JWT_REFRESH_SECRET: randomBytes(48).toString('hex'),
     });
     const options = createDatabaseOptions(config);
     expect(options).toMatchObject({

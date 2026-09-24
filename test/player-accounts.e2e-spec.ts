@@ -49,7 +49,7 @@ describeDatabase('Player accounts with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(11);
+    expect(await database.runMigrations()).toHaveLength(12);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -76,7 +76,7 @@ describeDatabase('Player accounts with real PostgreSQL', () => {
     const diff = await database.driver.createSchemaBuilder().log();
     expect(diff.upQueries).toEqual([]);
     expect(diff.downQueries).toEqual([]);
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(11);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(12);
     expect(await database.query('SELECT * FROM permissions')).toHaveLength(36);
     expect(await database.query('SELECT * FROM role_permissions')).toHaveLength(
       93,
@@ -110,7 +110,7 @@ describeDatabase('Player accounts with real PostgreSQL', () => {
            OR $3 IN (conrelid::regclass::text, confrelid::regclass::text))`,
       [schema, 'players', 'player_identities'],
     );
-    // 10.2 adds game_commands → players for PLAYER-originated commands.
+    // 10.2 adds game_commands → players; 10.3 adds player_sessions → players.
     expect(
       foreignKeys.sort((a: { source: string }, b: { source: string }) =>
         a.source.localeCompare(b.source),
@@ -118,6 +118,7 @@ describeDatabase('Player accounts with real PostgreSQL', () => {
     ).toEqual([
       { source: 'game_commands', target: 'players' },
       { source: 'player_identities', target: 'players' },
+      { source: 'player_sessions', target: 'players' },
     ]);
     expect(
       await database.query(
@@ -346,8 +347,8 @@ describeDatabase('Player accounts with real PostgreSQL', () => {
     for (const path of [
       '/api/v1/players',
       `/api/v1/players/${randomUUID()}`,
-      '/api/v1/player/me',
       '/api/v1/player/login',
+      '/api/v1/player/accounts',
     ]) {
       await http().get(path).expect(404);
       await http().post(path).send({ displayName: 'x' }).expect(404);
@@ -355,10 +356,12 @@ describeDatabase('Player accounts with real PostgreSQL', () => {
     const { body } = await http().get('/docs-json').expect(200);
     // Moderation's staff routes (game-servers/:id/players/:playerId/...) are unrelated.
     expect(
-      Object.keys(body.paths).filter((p) => /^\/api\/v1\/players?\b/.test(p)),
+      // Player auth (10.3) lives under /player/auth; no account CRUD exists.
+      Object.keys(body.paths).filter((p) => /^\/api\/v1\/players\b/.test(p)),
     ).toEqual([]);
   });
   it('reverts only the player tables and reapplies cleanly', async () => {
+    await database.undoLastMigration(); // Etapa 10.3 Player Sessions
     await database.undoLastMigration(); // Etapa 10.2 Generic Actor
     await database.undoLastMigration();
     expect(
@@ -376,7 +379,7 @@ describeDatabase('Player accounts with real PostgreSQL', () => {
       { tablename: 'server_control_operations' },
       { tablename: 'staff_users' },
     ]);
-    expect(await database.runMigrations()).toHaveLength(2);
+    expect(await database.runMigrations()).toHaveLength(3);
     expect(await database.runMigrations()).toHaveLength(0);
     expect(
       (await database.driver.createSchemaBuilder().log()).upQueries,

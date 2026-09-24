@@ -95,8 +95,9 @@ describeDatabase(
         extra: { ...options.extra, options: `-c search_path=${schema},public` },
       });
       await database.initialize();
-      expect(await database.runMigrations()).toHaveLength(11);
-      // Write pre-10.2 history, then re-apply the migration over it.
+      expect(await database.runMigrations()).toHaveLength(12);
+      // Write pre-10.2 history, then re-apply the migrations over it.
+      await database.undoLastMigration(); // Etapa 10.3 Player Sessions
       await database.undoLastMigration();
       await database.query(
         "INSERT INTO staff_users(id, username, display_name, password_hash, role_name) VALUES ($1, 'legacy', 'Legacy', 'x', 'COORDINATOR')",
@@ -125,7 +126,7 @@ describeDatabase(
           randomUUID(),
         ],
       );
-      expect(await database.runMigrations()).toHaveLength(1);
+      expect(await database.runMigrations()).toHaveLength(2);
       expect(await database.runMigrations()).toHaveLength(0);
       const { AppModule } = await import('../src/app.module.js');
       const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -653,7 +654,10 @@ describeDatabase(
           .set('Idempotency-Key', randomUUID())
           .send({ gameHour: 1, ...extra })
           .expect(400);
-      for (const path of ['/api/v1/player/me', '/api/v1/player/commands'])
+      for (const path of [
+        '/api/v1/player/commands',
+        '/api/v1/player/characters',
+      ])
         await http().get(path).expect(404);
     });
     it('refuses to revert while PLAYER or SYSTEM data exists, without losing it', async () => {
@@ -661,7 +665,10 @@ describeDatabase(
         { ...ping(), idempotencyKey: randomUUID() },
         systemActor(SystemSource.AGENT),
       );
+      // 10.3 reverts cleanly; 10.2 then refuses to drop PLAYER/SYSTEM data.
+      await database.undoLastMigration();
       await expect(database.undoLastMigration()).rejects.toThrow();
+      expect(await database.runMigrations()).toHaveLength(1);
       expect(await database.showMigrations()).toBe(false);
       expect(
         await commands().countBy({ actorType: ActorType.SYSTEM }),
