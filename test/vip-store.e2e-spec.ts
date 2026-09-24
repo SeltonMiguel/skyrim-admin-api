@@ -64,7 +64,8 @@ describeDatabase('VIP Store with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(8);
+    expect(await database.runMigrations()).toHaveLength(9);
+    await database.undoLastMigration(); // Etapa 09 Server Control
     await database.undoLastMigration();
     expect(await database.query('SELECT * FROM permissions')).toHaveLength(35);
     expect(await database.query('SELECT * FROM role_permissions')).toHaveLength(
@@ -83,7 +84,7 @@ describeDatabase('VIP Store with real PostgreSQL', () => {
     ).toEqual([
       { role_name: 'COORDINATOR', permission_name: 'VIP_STORE_WRITE' },
     ]);
-    expect(await database.runMigrations()).toHaveLength(1);
+    expect(await database.runMigrations()).toHaveLength(2);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
