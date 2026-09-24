@@ -77,7 +77,8 @@ describeDatabase('Audit with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(10);
+    expect(await database.runMigrations()).toHaveLength(11);
+    await database.undoLastMigration(); // Etapa 10.2 Generic Actor
     await database.undoLastMigration(); // Etapa 10.1 Player Accounts
     await database.undoLastMigration(); // Etapa 09 Server Control
     await database.undoLastMigration(); // Etapa 08 VIP Store
@@ -99,7 +100,7 @@ describeDatabase('Audit with real PostgreSQL', () => {
         [schema, 'reject_audit_log_mutation'],
       ),
     ).toEqual([]);
-    expect(await database.runMigrations()).toHaveLength(9);
+    expect(await database.runMigrations()).toHaveLength(10);
     expect(await database.runMigrations()).toHaveLength(0);
     bootstrap = new BootstrapCoordinatorService(
       database,
@@ -165,7 +166,7 @@ describeDatabase('Audit with real PostgreSQL', () => {
       'SELECT indexname FROM pg_indexes WHERE schemaname = $1 AND tablename = $2',
       [schema, 'audit_logs'],
     );
-    expect(indexes).toHaveLength(7);
+    expect(indexes).toHaveLength(8);
   });
   it.each([
     'UPDATE audit_logs SET outcome = outcome',

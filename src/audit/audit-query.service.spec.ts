@@ -38,7 +38,8 @@ describe('Audit queries', () => {
   it('paginates with stable descending order and default limits', async () => {
     const f = fixture();
     expect(await f.service.list(new AuditQueryDto())).toEqual({
-      items: [{ id: 'entry' }],
+      // Entries without a stored actor and without actorStaffId have no actor.
+      items: [{ id: 'entry', actorType: null }],
       total: 41,
       page: 1,
       limit: 20,
@@ -92,7 +93,10 @@ describe('Audit queries', () => {
         }),
       ),
     ).rejects.toThrow('from must not be after to');
-    expect(await f.service.get('entry')).toEqual({ id: 'entry' });
+    expect(await f.service.get('entry')).toEqual({
+      id: 'entry',
+      actorType: null,
+    });
     f.findOneBy.mockResolvedValue(null);
     await expect(f.service.get('missing')).rejects.toThrow(
       'Audit entry not found',

@@ -73,7 +73,8 @@ describeDatabase('Auth + RBAC with real PostgreSQL', () => {
     });
     await database.initialize();
     // Exercise migration, rollback, reproducibility and no-op rerun in an isolated schema.
-    expect(await database.runMigrations()).toHaveLength(10);
+    expect(await database.runMigrations()).toHaveLength(11);
+    await database.undoLastMigration(); // Etapa 10.2 Generic Actor
     await database.undoLastMigration(); // Etapa 10.1 Player Accounts
     await database.undoLastMigration(); // Etapa 09 Server Control
     await database.undoLastMigration(); // Etapa 08 VIP Store
@@ -90,7 +91,7 @@ describeDatabase('Auth + RBAC with real PostgreSQL', () => {
         [schema],
       ),
     ).toHaveLength(0);
-    expect(await database.runMigrations()).toHaveLength(10);
+    expect(await database.runMigrations()).toHaveLength(11);
     expect(await database.runMigrations()).toHaveLength(0);
     const bootstrap = new BootstrapCoordinatorService(
       database,
