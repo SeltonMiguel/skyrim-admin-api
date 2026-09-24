@@ -551,5 +551,13 @@ autoriza o Player atual, e membership e cargo sobrevivem a uma troca de dono.
 Cargos MASTER/OFFICER/MEMBER, limite provisório de 50 membros, convites com TTL
 `PLAYER_GUILD_INVITE_TTL` (padrão 7d) e eventos `GUILD_*` no realtime da 10.8.
 Sem GameCommand nem integração com o jogo. A migration `1789950000000-PlayerGuilds`
-completa dezesseis migrations. Consulte [arquitetura, decisões e roadmap da
-Etapa 10](docs/player-services.md).
+completa dezesseis migrations.
+
+A Subetapa 10.12 cria a economia backend-owned: ledger de partidas dobradas
+imutável em GOLD (unidades inteiras), por character identity, com balances como
+projeção mantida pelo banco, idempotência por ator e crédito/débito SYSTEM e
+transfer apenas internos. O player lê a wallet e o histórico em
+`/api/v1/player/me/characters/:characterLinkId/wallet[/transactions]`; nenhuma
+rota altera saldo e o gold do Skyrim não é sincronizado. A migration
+`1789960000000-Economy` completa dezessete migrations. Consulte [arquitetura,
+decisões e roadmap da Etapa 10](docs/player-services.md).

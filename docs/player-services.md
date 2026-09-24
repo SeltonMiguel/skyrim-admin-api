@@ -77,7 +77,7 @@ domínio. A Player API nunca chama controllers administrativos. O prefixo
 | 10.9 Guilds / Clans | **Implementada.** Guildas persistentes do character identity (MASTER/OFFICER/MEMBER, convites, limite provisório de 50), eventos no realtime da 10.8; migration `1789950000000-PlayerGuilds` |
 | 10.10 Properties / Houses / Holds | **Implementada.** `properties-query` e `holds-query` read-only sobre `CHARACTER_PROPERTIES_QUERY`/`CHARACTER_HOLDS_QUERY` existentes, por ownership VERIFIED; sem migration |
 | 10.11 Horses / Mounts | **Implementada.** `horses-query` read-only sobre `CHARACTER_HORSES_QUERY` existente, por ownership VERIFIED; sem migration |
-| 10.12 Economy / Wallet | Ledger imutável e wallet derivada |
+| 10.12 Economy / Wallet | **Implementada.** Ledger de partidas dobradas imutável (GOLD inteiro) do character identity, balances como projeção, credit/debit SYSTEM e transfer internos, wallet read-only; migration `1789960000000-Economy` |
 | 10.13 Player Trade | Trade entre players com escrow; LEDGER_CURRENCY e GAME_ITEM |
 | 10.14 Marketplace | Listings sobre wallet/ledger/escrow, com as mesmas regras de custódia do Trade |
 | 10.15 Chat | Chat event-driven sobre a infraestrutura realtime da 10.8 |
@@ -804,6 +804,92 @@ aos membros que a guild tinha). Rollback não publica.
   é consequência de uma operação de domínio (trade, marketplace, SYSTEM) que gera
   lançamentos.
 
+#### Implementação (10.12)
+
+Módulo `src/economy/`. O **ledger do backend é a fonte de verdade**; o gold do
+inventário do Skyrim não é lido nem sincronizado, e não há GameCommand, evento de
+Agent ou realtime nesta etapa (HTTP basta; `WALLET_BALANCE_CHANGED` pode vir com
+Trade/Marketplace se houver consumidor).
+
+**Moeda:** `GOLD` fechada, em **unidades inteiras** (sem float nem decimais). O
+schema já tem `currency` explícita em accounts, transactions e entries; outra
+moeda exige migration (CHECK).
+
+**A wallet pertence ao character identity** (`game_server_id` +
+`character_external_id`), não ao vínculo `player_characters`. A ownership VERIFIED
+só autoriza o Player atual a ler; se o dono mudar, saldo e histórico ficam com o
+character (sem segunda account).
+
+| Tabela | Colunas e garantias |
+| --- | --- |
+| `economy_accounts` | `id`, `game_server_id` (FK), `currency`, `owner_type` CHARACTER/SYSTEM, `character_external_id` (só CHARACTER), `system_key` MINT/BURN (só SYSTEM), `balance` bigint, `created_at`, `updated_at`; CHECK do shape do owner; índices únicos parciais por `(server, currency, character)` e `(server, currency, system_key)`; CHARACTER 0..1.000.000.000.000, SYSTEM ±9·10¹⁵ |
+| `economy_transactions` | `id`, `game_server_id`, `currency`, `type` SYSTEM_CREDIT/SYSTEM_DEBIT/TRANSFER, ator do Generic Actor (`actor_type`, `actor_player_id`, `actor_staff_id`, `actor_system_source`) com o mesmo CHECK de scope de `game_commands`, `idempotency_scope`, `idempotency_key`, `request_fingerprint` (sha256 do conteúdo), `reference_type`/`reference_id` (ambos ou nenhum), `created_at`; `UNIQUE(game_server_id, idempotency_scope, idempotency_key)`; SYSTEM_* só com ator SYSTEM |
+| `economy_entries` | `id`, `transaction_id`, `account_id`, `game_server_id`, `currency`, `amount` bigint com sinal (≠ 0), `created_at`; FKs compostas `(id, server, currency)` para a transaction e para a account (a entry nunca cruza servidor/moeda); uma entry por account por transaction |
+
+**Partidas dobradas, garantidas no PostgreSQL:**
+
+- constraint triggers `DEFERRABLE INITIALLY DEFERRED` em transactions e entries
+  recusam o COMMIT de uma transaction sem pelo menos duas entries ou com soma ≠ 0;
+- transactions e entries são **append-only** (UPDATE/DELETE/TRUNCATE → erro, como
+  `audit_logs`); FKs sem cascade impedem apagar o ledger indiretamente;
+- `balance` é uma **projeção**: um trigger de entry soma `amount` à account na
+  mesma transação; UPDATE direto de balance, mudança de identidade da account,
+  INSERT com saldo ≠ 0 e DELETE/TRUNCATE de accounts são recusados; o CHECK impede
+  saldo de character negativo mesmo numa posting balanceada;
+- `down` da migration recusa reverter com ledger não vazio.
+
+Exemplos: credit 500 = `MINT −500 / CHARACTER +500`; debit 200 =
+`CHARACTER −200 / BURN +200`; transfer 100 = `A −100 / B +100`.
+
+**Núcleo `EconomyLedgerService.post()`** (interno, reutilizável por 10.13/10.14;
+não autoriza Player): valida a posting (≥ 2 legs, soma zero, inteiros seguros,
+accounts distintas, moeda, tipo, ator e key), cria accounts preguiçosamente
+(`INSERT … ON CONFLICT DO NOTHING`), trava todas **em ordem crescente de id**
+(`FOR UPDATE`), confere a idempotência de novo sob os locks, roda o `authorize`
+do domínio, valida fundos e limites, insere transaction e entries e roda o hook
+`posted` (Audit) — tudo numa transação. Rejeições (`INSUFFICIENT_FUNDS`,
+`BALANCE_LIMIT`, `SYSTEM_LIMIT`, `IDEMPOTENCY_CONFLICT`, `PLAYER_UNAVAILABLE`,
+`INVALID_INPUT`) fazem rollback completo, inclusive das accounts recém-criadas.
+
+**Idempotência:** scopes do Generic Actor (`STAFF`, `PLAYER:<id>`,
+`SYSTEM:<source>`), nunca expostos. Mesmo scope + key + conteúdo → a mesma
+transaction (`ALREADY_POSTED`, sem lançamento nem Audit extra); mesma key com
+conteúdo diferente → `IDEMPOTENCY_CONFLICT`. O `UNIQUE` é a autoridade final.
+
+**Movimentos internos** (`EconomyService`, sem rota HTTP):
+
+- `creditFromSystem` (MINT → character) e `debitFromSystem` (character → BURN), ator
+  SYSTEM com source da allowlist existente; debit sem saldo é rejeitado sem
+  alterar nada. Mesma regra de status de Professions: se o character tem dono
+  VERIFIED SUSPENDED/BANNED → `PLAYER_UNAVAILABLE`; sem dono VERIFIED o movimento
+  ocorre (a wallet é do character). Auditados como `ECONOMY_SYSTEM_CREDITED` /
+  `ECONOMY_SYSTEM_DEBITED` (ator SYSTEM, `resourceType = ECONOMY_TRANSACTION`,
+  metadata `gameServerId`, `characterExternalId`, `currency`, `amount`,
+  `transactionId`; sem key, ids de account ou saldos), na mesma transação.
+- `transfer` (character → character, `from ≠ to`, amount > 0, qualquer ator) é
+  infraestrutura para Trade e **não gera Audit genérico**: o domínio chamador
+  (10.13) audita sua ação de negócio.
+
+**Concorrência:** locks ordenados serializam postings sobre as mesmas accounts sem
+deadlock (inclusive transfers em sentidos opostos); retries simultâneos convergem
+numa transaction; débitos concorrentes nunca deixam saldo negativo. Sem mutex em
+memória. As accounts MINT/BURN de cada servidor são um ponto de serialização para
+credits/debits.
+
+**Reconciliação:** `EconomyReconciliationService` (interno, sem endpoint) lista
+accounts com `balance ≠ SUM(entries)` e transactions desbalanceadas.
+
+**Player API (somente leitura):**
+
+| Rota | Retorno |
+| --- | --- |
+| `GET /api/v1/player/me/characters/:characterLinkId/wallet` | `{ characterLinkId, currency: "GOLD", balance }`; 0 sem ledger, sem criar account |
+| `GET /api/v1/player/me/characters/:characterLinkId/wallet/transactions?page&limit` | página (padrão existente) de `{ transactionId, type, amount, direction: CREDIT/DEBIT, referenceType, referenceId, createdAt }`, mais recentes primeiro |
+
+Vínculo próprio e VERIFIED (senão 404); o histórico só mostra a perna do
+character (magnitude + direção), sem accounts, contrapartes, system accounts,
+atribuição ou idempotência. Não existe rota que credite, debite ou transfira.
+
 ### Trade
 
 Dois tipos de ativo são suportados arquiteturalmente: **LEDGER_CURRENCY** e
@@ -1139,7 +1225,7 @@ Detalhes que não bloqueiam a fundação e podem ser fixados na subetapa do dom�
 | Limite definitivo de guild (hoje 50, provisório), relação com VIP e representação no jogo | pós-definição de produto / Etapa 11 |
 | Taxas de marketplace | 10.14 |
 | Retenção de chat | 10.15 |
-| Moeda/denominação apresentada ao jogador | 10.12 |
+| Moedas além de GOLD e contas de escrow | 10.13 / 10.14 |
 
 Pontos de implementação a fixar no início da subetapa correspondente, sem alterar
 as decisões acima:

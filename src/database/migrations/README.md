@@ -122,3 +122,14 @@ e `player_guild_invites` (FK composta, status, `responded_at` nulo apenas em
 PENDING, índice único parcial de um convite pendente por guild e target). `down`
 remove as três tabelas e o histórico de guildas. Detalhes em
 `docs/player-services.md`.
+
+A Subetapa 10.12 adiciona `1789960000000-Economy`: cria `economy_accounts` (FK para
+`game_servers`, CHECK de moeda GOLD, shape CHARACTER/SYSTEM e limites de saldo,
+índices únicos parciais por character e por system key), `economy_transactions`
+(Generic Actor com CHECK de scope, `UNIQUE(game_server_id, idempotency_scope,
+idempotency_key)`, SYSTEM_* só por ator SYSTEM) e `economy_entries` (FKs compostas
+`(id, game_server_id, currency)` para transaction e account, amount ≠ 0). Triggers:
+ledger append-only, balanço (soma zero, ≥ 2 legs) verificado no COMMIT por
+constraint triggers deferred, balance projetado a partir das entries e protegido
+contra escrita direta e remoção. `down` recusa reverter se o ledger não estiver
+vazio. Detalhes em `docs/player-services.md`.
