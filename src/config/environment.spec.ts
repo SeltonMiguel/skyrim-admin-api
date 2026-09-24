@@ -317,3 +317,19 @@ describe('Player groups and realtime environment validation', () => {
       ).toThrow('REALTIME_AUTH_TIMEOUT_MS');
   });
 });
+
+describe('Player guilds environment validation', () => {
+  it('defaults the guild invite TTL to 7 days within 1 hour to 30 days', () => {
+    expect(validateEnvironment(example).playerGuilds).toEqual({
+      inviteTtl: 7 * 86400,
+    });
+    expect(
+      validateEnvironment({ ...example, PLAYER_GUILD_INVITE_TTL: '1h' })
+        .playerGuilds.inviteTtl,
+    ).toBe(3600);
+    for (const value of ['59m', '31d', '0d', 'x'])
+      expect(() =>
+        validateEnvironment({ ...example, PLAYER_GUILD_INVITE_TTL: value }),
+      ).toThrow('PLAYER_GUILD_INVITE_TTL');
+  });
+});

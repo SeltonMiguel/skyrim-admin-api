@@ -49,7 +49,7 @@ describeDatabase('Player accounts with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(15);
+    expect(await database.runMigrations()).toHaveLength(16);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -76,7 +76,7 @@ describeDatabase('Player accounts with real PostgreSQL', () => {
     const diff = await database.driver.createSchemaBuilder().log();
     expect(diff.upQueries).toEqual([]);
     expect(diff.downQueries).toEqual([]);
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(15);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(16);
     expect(await database.query('SELECT * FROM permissions')).toHaveLength(36);
     expect(await database.query('SELECT * FROM role_permissions')).toHaveLength(
       93,
@@ -362,6 +362,7 @@ describeDatabase('Player accounts with real PostgreSQL', () => {
     ).toEqual([]);
   });
   it('reverts only the player tables and reapplies cleanly', async () => {
+    await database.undoLastMigration(); // Etapa 10.9 Player Guilds
     await database.undoLastMigration(); // Etapa 10.8 Player Groups
     await database.undoLastMigration(); // Etapa 10.7 Professions
     await database.undoLastMigration(); // Etapa 10.4 Player Characters
@@ -383,7 +384,7 @@ describeDatabase('Player accounts with real PostgreSQL', () => {
       { tablename: 'server_control_operations' },
       { tablename: 'staff_users' },
     ]);
-    expect(await database.runMigrations()).toHaveLength(6);
+    expect(await database.runMigrations()).toHaveLength(7);
     expect(await database.runMigrations()).toHaveLength(0);
     expect(
       (await database.driver.createSchemaBuilder().log()).upQueries,

@@ -153,7 +153,7 @@ describeDatabase(
         extra: { ...options.extra, options: `-c search_path=${schema},public` },
       });
       await database.initialize();
-      expect(await database.runMigrations()).toHaveLength(15);
+      expect(await database.runMigrations()).toHaveLength(16);
       const { AppModule } = await import('../src/app.module.js');
       const module = await Test.createTestingModule({ imports: [AppModule] })
         .overrideProvider(DataSource)
@@ -209,7 +209,7 @@ describeDatabase(
 
     it('needs no migration: thirteen migrations and no schema diff', async () => {
       expect(await database.showMigrations()).toBe(false);
-      expect(await database.query('SELECT * FROM migrations')).toHaveLength(15);
+      expect(await database.query('SELECT * FROM migrations')).toHaveLength(16);
       expect(
         (await database.driver.createSchemaBuilder().log()).upQueries,
       ).toEqual([]);

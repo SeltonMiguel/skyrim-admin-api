@@ -80,7 +80,8 @@ describeDatabase('Player authentication with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(15);
+    expect(await database.runMigrations()).toHaveLength(16);
+    await database.undoLastMigration(); // Etapa 10.9 Player Guilds
     await database.undoLastMigration(); // Etapa 10.8 Player Groups
     await database.undoLastMigration(); // Etapa 10.7 Professions
     await database.undoLastMigration(); // Etapa 10.4 Player Characters
@@ -91,7 +92,7 @@ describeDatabase('Player authentication with real PostgreSQL', () => {
         [schema],
       ),
     ).toEqual([]);
-    expect(await database.runMigrations()).toHaveLength(4);
+    expect(await database.runMigrations()).toHaveLength(5);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -420,9 +421,21 @@ describeDatabase('Player authentication with real PostgreSQL', () => {
       '/api/v1/player/groups/{groupId}/invites',
       '/api/v1/player/groups/{groupId}/leave',
       '/api/v1/player/groups/{groupId}/members/{memberId}/kick',
+      '/api/v1/player/guild-invites',
+      '/api/v1/player/guild-invites/{inviteId}/accept',
+      '/api/v1/player/guild-invites/{inviteId}/decline',
+      '/api/v1/player/guilds',
+      '/api/v1/player/guilds/{guildId}',
+      '/api/v1/player/guilds/{guildId}/disband',
+      '/api/v1/player/guilds/{guildId}/invites',
+      '/api/v1/player/guilds/{guildId}/leave',
+      '/api/v1/player/guilds/{guildId}/members/{memberId}/kick',
+      '/api/v1/player/guilds/{guildId}/members/{memberId}/role',
+      '/api/v1/player/guilds/{guildId}/members/{memberId}/transfer-master',
       '/api/v1/player/me',
       '/api/v1/player/me/characters',
       '/api/v1/player/me/characters/{characterLinkId}',
+      '/api/v1/player/me/characters/{characterLinkId}/guild',
       '/api/v1/player/me/characters/{characterLinkId}/profession',
     ]);
     expect(
