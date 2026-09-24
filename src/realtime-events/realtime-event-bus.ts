@@ -31,6 +31,12 @@ export const REALTIME_EVENT_TYPES = [
   'TRADE_COMPLETED',
   'TRADE_CANCELLED',
   'TRADE_FAILED',
+  'MARKETPLACE_LISTING_ACTIVE',
+  'MARKETPLACE_LISTING_CANCELLED',
+  'MARKETPLACE_LISTING_RESERVED',
+  'MARKETPLACE_LISTING_SOLD',
+  'MARKETPLACE_LISTING_FAILED',
+  'MARKETPLACE_PURCHASE_FAILED',
 ] as const;
 export type RealtimeEventType = (typeof REALTIME_EVENT_TYPES)[number];
 export type RealtimeData = Record<string, string | number | boolean | null>;

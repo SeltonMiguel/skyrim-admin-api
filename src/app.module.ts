@@ -4,6 +4,7 @@ import { PlayerGroupsModule } from './player-groups/player-groups.module.js';
 import { PlayerGuildsModule } from './player-guilds/player-guilds.module.js';
 import { EconomyModule } from './economy/economy.module.js';
 import { PlayerTradesModule } from './player-trades/player-trades.module.js';
+import { PlayerMarketplaceModule } from './player-marketplace/player-marketplace.module.js';
 import { ProfessionsModule } from './professions/professions.module.js';
 import { PlayerCharacterOperationsModule } from './player-character-operations/player-character-operations.module.js';
 import { PlayerCharactersModule } from './player-characters/player-characters.module.js';
@@ -51,6 +52,7 @@ import { HealthModule } from './health/health.module.js';
     PlayerGuildsModule,
     EconomyModule,
     PlayerTradesModule,
+    PlayerMarketplaceModule,
     RealtimeModule,
   ],
 })

@@ -8,11 +8,13 @@ export enum EconomyOwnerType {
   SYSTEM = 'SYSTEM',
 }
 // Closed; each key is also in a PostgreSQL CHECK. TRADE_ESCROW holds GOLD
-// reserved by accepted trades (10.13); Marketplace may add its own key.
+// reserved by accepted trades (10.13), MARKET_ESCROW GOLD reserved by
+// marketplace purchases (10.14).
 export enum SystemAccountKey {
   MINT = 'MINT',
   BURN = 'BURN',
   TRADE_ESCROW = 'TRADE_ESCROW',
+  MARKET_ESCROW = 'MARKET_ESCROW',
 }
 export enum EconomyTransactionType {
   SYSTEM_CREDIT = 'SYSTEM_CREDIT',

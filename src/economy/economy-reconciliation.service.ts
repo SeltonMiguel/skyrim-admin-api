@@ -1,5 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { DataSource } from 'typeorm';
+import { Currency } from './economy.contracts.js';
+import type { SystemAccountKey } from './economy.contracts.js';
 
 export interface AccountMismatch {
   accountId: string;
@@ -39,5 +41,21 @@ export class EconomyReconciliationService {
       [gameServerId ?? null],
     );
     return rows.map((r) => r.id);
+  }
+  // Balance of one system account on every server (0 while it does not
+  // exist), for the escrow checks of Trade and Marketplace.
+  async systemBalances(
+    systemKey: SystemAccountKey,
+    currency: Currency = Currency.GOLD,
+  ): Promise<Map<string, number>> {
+    const rows: { server: string; balance: string }[] =
+      await this.database.query(
+        `SELECT s.id AS server, coalesce(a.balance, 0) AS balance
+           FROM game_servers s
+           LEFT JOIN economy_accounts a
+             ON a.game_server_id = s.id AND a.currency = $1 AND a.owner_type = 'SYSTEM' AND a.system_key = $2`,
+        [currency, systemKey],
+      );
+    return new Map(rows.map((r) => [r.server, Number(r.balance)]));
   }
 }
