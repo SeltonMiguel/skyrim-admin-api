@@ -3,8 +3,8 @@ import { Permission as P } from './permissions.js';
 import { RoleName as R } from './roles.js';
 
 describe('Explicit role permission matrix', () => {
-  it('grants all 35 permissions to coordinator without duplicates', () => {
-    expect(Object.values(P)).toHaveLength(35);
+  it('grants all 36 permissions to coordinator without duplicates', () => {
+    expect(Object.values(P)).toHaveLength(36);
     expect(new Set(ROLE_PERMISSIONS[R.COORDINATOR])).toEqual(
       new Set(Object.values(P)),
     );
