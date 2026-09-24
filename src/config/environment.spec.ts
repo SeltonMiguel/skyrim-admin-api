@@ -301,3 +301,19 @@ describe('Player character environment validation', () => {
       ).toThrow('PLAYER_LINK_CHALLENGE_TTL');
   });
 });
+
+describe('Player groups and realtime environment validation', () => {
+  it('defaults the invite TTL to 10 minutes and the AUTH timeout to 5 seconds', () => {
+    const config = validateEnvironment(example);
+    expect(config.playerGroups).toEqual({ inviteTtl: 600 });
+    expect(config.realtime).toEqual({ authTimeoutMs: 5000 });
+    for (const value of ['30s', '2d'])
+      expect(() =>
+        validateEnvironment({ ...example, PLAYER_GROUP_INVITE_TTL: value }),
+      ).toThrow('PLAYER_GROUP_INVITE_TTL');
+    for (const value of ['50', '60001', 'x'])
+      expect(() =>
+        validateEnvironment({ ...example, REALTIME_AUTH_TIMEOUT_MS: value }),
+      ).toThrow('REALTIME_AUTH_TIMEOUT_MS');
+  });
+});

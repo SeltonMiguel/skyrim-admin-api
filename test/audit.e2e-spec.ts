@@ -77,7 +77,8 @@ describeDatabase('Audit with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(14);
+    expect(await database.runMigrations()).toHaveLength(15);
+    await database.undoLastMigration(); // Etapa 10.8 Player Groups
     await database.undoLastMigration(); // Etapa 10.7 Professions
     await database.undoLastMigration(); // Etapa 10.4 Player Characters
     await database.undoLastMigration(); // Etapa 10.3 Player Sessions
@@ -103,7 +104,7 @@ describeDatabase('Audit with real PostgreSQL', () => {
         [schema, 'reject_audit_log_mutation'],
       ),
     ).toEqual([]);
-    expect(await database.runMigrations()).toHaveLength(13);
+    expect(await database.runMigrations()).toHaveLength(14);
     expect(await database.runMigrations()).toHaveLength(0);
     bootstrap = new BootstrapCoordinatorService(
       database,

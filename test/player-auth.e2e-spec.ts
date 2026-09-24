@@ -80,7 +80,8 @@ describeDatabase('Player authentication with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(14);
+    expect(await database.runMigrations()).toHaveLength(15);
+    await database.undoLastMigration(); // Etapa 10.8 Player Groups
     await database.undoLastMigration(); // Etapa 10.7 Professions
     await database.undoLastMigration(); // Etapa 10.4 Player Characters
     await database.undoLastMigration();
@@ -90,7 +91,7 @@ describeDatabase('Player authentication with real PostgreSQL', () => {
         [schema],
       ),
     ).toEqual([]);
-    expect(await database.runMigrations()).toHaveLength(3);
+    expect(await database.runMigrations()).toHaveLength(4);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -410,6 +411,15 @@ describeDatabase('Player authentication with real PostgreSQL', () => {
       '/api/v1/player/character-operations/{operationId}',
       '/api/v1/player/game-servers/{gameServerId}/characters/{characterId}/profile-query',
       '/api/v1/player/game-servers/{gameServerId}/characters/{characterId}/skills-query',
+      '/api/v1/player/group-invites',
+      '/api/v1/player/group-invites/{inviteId}/accept',
+      '/api/v1/player/group-invites/{inviteId}/decline',
+      '/api/v1/player/groups',
+      '/api/v1/player/groups/{groupId}',
+      '/api/v1/player/groups/{groupId}/disband',
+      '/api/v1/player/groups/{groupId}/invites',
+      '/api/v1/player/groups/{groupId}/leave',
+      '/api/v1/player/groups/{groupId}/members/{memberId}/kick',
       '/api/v1/player/me',
       '/api/v1/player/me/characters',
       '/api/v1/player/me/characters/{characterLinkId}',
