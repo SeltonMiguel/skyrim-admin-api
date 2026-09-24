@@ -68,7 +68,7 @@ domínio. A Player API nunca chama controllers administrativos. O prefixo
 | 10.0 Player Architecture Decisions | Este documento |
 | 10.1 Player Account Model | **Implementada.** `players`, `player_identities`, status, migration `1789890000000-PlayerAccounts` |
 | 10.2 Generic Actor + Player-safe Idempotency | **Implementada.** Ator STAFF/PLAYER/SYSTEM em Audit e GameCommand; idempotency scope; `ActorCommandService`; migration `1789900000000-GenericActor` |
-| 10.3 Player Authentication | Discord OAuth2, sessões, tokens, guard, `GET /api/v1/player/me` |
+| 10.3 Player Authentication | **Implementada.** Discord OAuth2, auto-provisioning, `player_sessions`, tokens, `PlayerAuthGuard`, `GET /api/v1/player/me`; migration `1789910000000-PlayerSessions` |
 | 10.4 Character Ownership | Vínculo PENDING/VERIFIED/REVOKED e contrato de confirmação pelo Agent |
 | 10.5 Character Profile + Skills | Contratos de GameCommand para perfil e skills; leitura pela Player API |
 | 10.6 Multiple Characters | Listagem e gestão dos vínculos 1:N do player |
@@ -105,6 +105,95 @@ realtime; Chat (10.15) e os eventos de Guilds, Trade e Marketplace a reutilizam.
 - Autorização na Player API é por ownership e status da conta, não por roles.
 - **Login e posse de character são problemas separados.** Autenticar prova quem é
   o player; não prova que um character pertence a ele.
+
+#### Implementação (10.3)
+
+Módulo `src/player-auth/`, independente de `AuthModule`: não importa staff, RBAC,
+`JwtAuthGuard`, `TokenService` ou `staff_sessions`.
+
+**Fluxo Discord**
+
+```text
+Electron ── abre authorize (identify, state, PKCE opcional) ──► Discord
+Electron ◄── callback com code; valida state (Etapa 11)
+Electron ── POST /api/v1/player/auth/discord/exchange { authorizationCode, redirectUri, codeVerifier? }
+Backend  ── POST oauth2/token com client_secret server-side ──► Discord
+Backend  ── GET users/@me com o access token (descartado) ──► Discord
+Backend  ── provisiona/encontra player, cria player_sessions, emite tokens
+```
+
+- `PlayerIdentityProvider` é a abstração; `DiscordIdentityProvider` a primeira
+  implementação. O adapter devolve somente `provider`, `providerSubject` (id do
+  usuário Discord) e `displayName` (`global_name` ou `username`, saneado e limitado
+  a 64). Resposta bruta, e-mail, avatar e tokens do Discord nunca saem do adapter
+  nem são persistidos.
+- `redirectUri` precisa coincidir exatamente com uma entrada de
+  `DISCORD_REDIRECT_URIS`; caso contrário, 401 antes de contatar o Discord.
+- `codeVerifier` (RFC 7636, 43–128 caracteres) é repassado ao token endpoint como
+  `code_verifier` quando enviado. O suporte do Discord deve ser confirmado na
+  integração do Electron (Etapa 11).
+- Grant rejeitado (4xx) → 401; falha de rede/5xx/resposta inválida → 503; Discord
+  não configurado → 503. Mensagens de erro são fixas, sem corpo do provider.
+- `DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET` e `DISCORD_REDIRECT_URIS` são
+  opcionais em conjunto; configuração parcial ou URI inválida falha na
+  inicialização. O client secret nunca é enviado ao Electron.
+- **Fronteira Electron/OAuth:** gerar e validar `state`, abrir o navegador,
+  receber o callback e gerar o PKCE são responsabilidade do Electron (Etapa 11).
+  O backend só redime o code.
+
+**Auto-provisioning:** o primeiro login válido procura a identidade
+`(DISCORD, subject)`; se não existir, `createPlayer` cria player ACTIVE e identity
+na mesma transação (10.1). Logins concorrentes da mesma identidade convergem: o
+perdedor recebe 409 da UNIQUE e relê o vencedor. Não exige e-mail.
+
+**Sessões e tokens**
+
+| Item | Valor |
+| --- | --- |
+| Tabela | `player_sessions` (`id`, `player_id` FK, `refresh_token_hash`, `expires_at`, `revoked_at`, `last_used_at`, `created_at`) |
+| Hash | SHA-256 hex do refresh token atual (check `^[0-9a-f]{64}$`); sem IP, user agent ou token de provider |
+| Access JWT | HS256, `PLAYER_JWT_ACCESS_SECRET`, issuer `skyrim-player-api`, audience `skyrim-player-access`, `PLAYER_JWT_ACCESS_TTL` (padrão 15m, máx. 1h) |
+| Refresh JWT | `PLAYER_JWT_REFRESH_SECRET`, audience `skyrim-player-refresh`, `PLAYER_JWT_REFRESH_TTL` (padrão 30d, máx. 90d) |
+| Expiração | Absoluta, definida no login; refresh nunca a estende |
+
+As secrets de player são obrigatórias fora de `test`, têm no mínimo 32 caracteres
+e não podem ser iguais entre si nem às secrets de staff; não há fallback. Refresh
+rotaciona: o hash é substituído sob lock, então o token anterior (inclusive um
+replay concorrente) recebe 401, como no Staff Auth. Logout revoga a sessão atual.
+
+**Status:** o `PlayerAuthGuard` aceita apenas access JWT de player, valida
+issuer/audience/assinatura e relê sessão e player a cada request. ACTIVE é
+obrigatório em login, refresh e em toda request autenticada; SUSPENDED e BANNED
+recebem 403 (`Player account unavailable`), inclusive com access token ainda não
+expirado. Sessão revogada, expirada ou token inválido → 401. O guard expõe
+`{ player, sessionId, actor: PlayerActor }` em slot próprio da request, sem roles
+ou permissions.
+
+**Rotas**
+
+| Rota | Auth | Resposta |
+| --- | --- | --- |
+| `POST /api/v1/player/auth/discord/exchange` | pública, rate limited | 200 tokens + `player` |
+| `POST /api/v1/player/auth/refresh` | refresh token no body, rate limited | 200 tokens + `player` |
+| `POST /api/v1/player/auth/logout` | access player | 204 |
+| `GET /api/v1/player/me` | access player | `{ id, displayName, status, identities: [{ provider, linkedAt }] }` |
+
+`/player/me` deriva sempre do token; qualquer query (por exemplo `playerId`)
+retorna 400. Nenhuma resposta inclui `providerSubject`, dados de sessão ou hashes.
+Respostas de auth usam `Cache-Control: no-store`.
+
+**Rate limiting:** janela fixa de 60 s por rota e IP (`request.ip`), com
+`PLAYER_AUTH_RATE_LIMIT_PER_MINUTE` (padrão 20); excedente → 429 com
+`Retry-After`. É em memória e por processo, sem Redis. Limite distribuído entre
+instâncias, confiança em proxies e cotas por conta serão endurecidos na Etapa 12.
+
+**Audit:** login, refresh e logout de player não são auditados. O Audit é a trilha
+administrativa append-only; os eventos de sessão têm volume alto e a própria
+`player_sessions` registra criação, uso e revogação. Assim nenhum dado de provider
+chega ao Audit. Mutations futuras do player serão auditadas com ator PLAYER (10.2).
+
+**Fora desta subetapa:** Character Ownership (10.4). Um player autenticado ainda
+não tem acesso a nenhum character.
 
 ### Account
 
@@ -442,10 +531,8 @@ as decisões acima:
 
 | Tema | Subetapa |
 | --- | --- |
-| Escopos do Discord OAuth2 e fluxo no Electron (ex.: authorization code com PKCE) | 10.3 |
-| Criação de conta no primeiro login ou cadastro explícito; TTL/revogação de sessão | 10.3 |
-| Efeito de SUSPENDED/BANNED em sessões, ownership, trade e marketplace | 10.3 |
+| Efeito de SUSPENDED/BANNED em ownership, trade e marketplace (sessões já bloqueadas na 10.3) | 10.4 / 10.13 / 10.14 |
 | Mecanismo de confirmação de ownership com o Agent | 10.4 (contrato) / 11 (real) |
 | Campos de perfil e skills expostos pelo Agent | 10.5 |
 | Chaves de Player Settings | 10.16 |
-| Rate limiting e cotas da Player API | 10.3 |
+| Rate limiting distribuído, confiança em proxy e cotas por conta | Etapa 12 |

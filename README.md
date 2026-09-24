@@ -15,7 +15,8 @@ Requisitos: Node.js 22 ou superior (validado com Node 24), npm e Docker com Comp
 
 ```bash
 cp .env.example .env
-# Configure JWT_ACCESS_SECRET e JWT_REFRESH_SECRET antes de continuar (veja abaixo).
+# Configure JWT_ACCESS_SECRET, JWT_REFRESH_SECRET, PLAYER_JWT_ACCESS_SECRET e
+# PLAYER_JWT_REFRESH_SECRET antes de continuar (veja abaixo).
 docker compose up -d
 npm install
 npm run migration:run
@@ -477,13 +478,21 @@ A Etapa 10 foi iniciada. A Subetapa 10.1 implementa o Player Account Model:
 rotas HTTP novas. Player e Staff são identidades separadas, sem FK ou coluna
 compartilhada, e nenhum token OAuth, senha ou e-mail é armazenado.
 
-**Player Auth ainda não existe**: não há login, JWT, sessões ou guard de jogador,
-e os status SUSPENDED/BANNED ainda não têm efeito. A migration
-`1789890000000-PlayerAccounts` adiciona as duas tabelas.
+A migration `1789890000000-PlayerAccounts` adiciona as duas tabelas.
 
 A Subetapa 10.2 torna Audit e GameCommand actor-aware (STAFF, PLAYER, SYSTEM) e
 isola a idempotência por scope (`STAFF` compartilhado, `PLAYER:<id>`,
 `SYSTEM:<source>`), sem alterar as APIs staff nem reescrever o Audit histórico.
-A migration `1789900000000-GenericActor` completa onze migrations, 36 permissions
-e 93 grants. Consulte [arquitetura, decisões e roadmap da
+A migration `1789900000000-GenericActor` adiciona o ator genérico.
+
+A Subetapa 10.3 implementa Player Auth em `/api/v1/player/auth` (Discord
+`discord/exchange`, `refresh`, `logout`) e `GET /api/v1/player/me`, com
+`player_sessions`, tokens e `PlayerAuthGuard` próprios. O primeiro login Discord
+cria o player; SUSPENDED/BANNED são bloqueados inclusive com access token válido.
+Configure `PLAYER_JWT_ACCESS_SECRET` e `PLAYER_JWT_REFRESH_SECRET` (obrigatórias fora
+de `test`, distintas entre si e das secrets de staff) e, para habilitar o login,
+`DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET` e `DISCORD_REDIRECT_URIS`. Sem Discord
+configurado, o exchange responde 503. Tokens de staff e de player não são
+intercambiáveis. Character Ownership ainda não existe. A migration
+`1789910000000-PlayerSessions` completa doze migrations, 36 permissions e 93 grants. Consulte [arquitetura, decisões e roadmap da
 Etapa 10](docs/player-services.md).

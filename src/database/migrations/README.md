@@ -81,3 +81,9 @@ append-only permanece. Em `game_commands`, `actor_type` e `idempotency_scope`
 `UNIQUE(game_server_id, idempotency_scope, idempotency_key)`. `down` recusa
 reverter se existirem dados PLAYER/SYSTEM; caso contrário restaura a constraint
 global e remove as colunas. Detalhes em `docs/player-services.md`.
+
+A Subetapa 10.3 adiciona `1789910000000-PlayerSessions`: cria somente
+`player_sessions` (FK para `players`, digest SHA-256 do refresh token com check de
+formato, `expires_at > created_at`, índice por player). Não guarda tokens de
+provider, IP ou user agent e não se relaciona com `staff_sessions`. `down` remove a
+tabela e encerra todas as sessões de player. Detalhes em `docs/player-services.md`.
