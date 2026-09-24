@@ -55,3 +55,10 @@ Não cria tabelas nem altera grants ou migrations anteriores. `down` restaura 40
 se houver resultados maiores, falha atomicamente, preservando os dados e o check
 de 65536. Não trunca nem remove resultados. Testes exercitam rollback/reaplicação,
 recusa de downgrade com dados grandes e ausência de diferenças schema/entities.
+
+A Etapa 09 adiciona `1789880000000-ServerControl`: cria somente
+`server_control_operations` (FKs para `game_servers` e `staff_users`, unicidade
+`(game_server_id, idempotency_key)` e `correlation_id`, checks de tipo, status,
+timestamps e erro, três índices). Permissions `SERVER_*` e grants já existiam
+desde AuthRbac; nada é alterado neles. `down` remove a tabela e o histórico de
+operações. Detalhes em `docs/server-control.md`.

@@ -4,7 +4,7 @@ Backend administrativo do Skyrim Brasil / SkyMP. Foundation (Etapa 00),
 autenticação/RBAC (Etapa 01), auditoria administrativa (Etapa 02) e infraestrutura
 de Game Bridge/Commands (Etapa 03), consultas administrativas (Etapa 04) e
 Character Management assíncrono (Etapa 05), Moderation (Etapa 06), World Management
-(Etapa 07) e catálogo VIP Store (Etapa 08).
+(Etapa 07), catálogo VIP Store (Etapa 08) e Server Control (Etapa 09).
 O transporte real para Skyrim continua
 reservado a uma etapa futura.
 
@@ -407,6 +407,7 @@ src/
     migrations/
   game-bridge/        # Servidores, conexões, comandos e gateway interno
   health/             # Consulta real de disponibilidade
+  server-control/     # Start/pause/restart e gateway abstrato do Agent
   app.module.ts
   main.ts
   setup-app.ts
@@ -447,3 +448,20 @@ ser consumido futuramente pelo Electron, sem dependência dele no backend.
 A migration incremental `1789870000000-VipStore` acrescenta a tabela e o grant de
 leitura: oito migrations, 36 permissions e 93 grants. Consulte
 [contratos, endpoints, auditoria e decisões](docs/vip-store.md).
+
+## Server Control
+
+A Etapa 09 aceita solicitações `SERVER_START`, `SERVER_PAUSE` e `SERVER_RESTART`
+em `/api/v1/game-servers/:serverId/control/{start|pause|restart}`, somente para
+COORDINATOR e DEV (permissions existentes desde a Etapa 01). Não usa o
+GameCommandBus: as operações ficam em `server_control_operations` e seguem por um
+`ServerControlGateway` abstrato, destinado ao futuro Agent. Em produção o gateway é
+Disconnected, então a solicitação recebe 202 e termina `FAILED/AGENT_UNAVAILABLE`,
+sem sucesso simulado. Idempotency-Key obrigatório, Audit atômico e dispatch
+at-most-once após o commit; detalhe em `/api/v1/server-control-operations/:id`.
+
+Configuration de servidor não foi implementada: o modelo atual não tem campos
+administráveis além do registro (`code`, `name`, `enabled`). A migration
+`1789880000000-ServerControl` adiciona apenas a tabela: nove migrations,
+36 permissions e 93 grants. Consulte [operações, estados, gateway e
+pendências](docs/server-control.md).
