@@ -1,3 +1,4 @@
+import { ModerationModule } from './moderation/moderation.module.js';
 import { CharacterManagementModule } from './character-management/character-management.module.js';
 import { AdminQueriesModule } from './admin-queries/admin-queries.module.js';
 import { GameBridgeModule } from './game-bridge/game-bridge.module.js';
@@ -22,6 +23,7 @@ import { HealthModule } from './health/health.module.js';
     GameBridgeModule,
     AdminQueriesModule,
     CharacterManagementModule,
+    ModerationModule,
   ],
 })
 export class AppModule {}
