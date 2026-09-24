@@ -1,6 +1,7 @@
 import { RealtimeEventsModule } from './realtime-events/realtime-events.module.js';
 import { RealtimeModule } from './realtime/realtime.module.js';
 import { PlayerGroupsModule } from './player-groups/player-groups.module.js';
+import { PlayerGuildsModule } from './player-guilds/player-guilds.module.js';
 import { ProfessionsModule } from './professions/professions.module.js';
 import { PlayerCharacterOperationsModule } from './player-character-operations/player-character-operations.module.js';
 import { PlayerCharactersModule } from './player-characters/player-characters.module.js';
@@ -45,6 +46,7 @@ import { HealthModule } from './health/health.module.js';
     ProfessionsModule,
     RealtimeEventsModule,
     PlayerGroupsModule,
+    PlayerGuildsModule,
     RealtimeModule,
   ],
 })

@@ -13,6 +13,17 @@ export const REALTIME_EVENT_TYPES = [
   'GROUP_MEMBER_LEFT',
   'GROUP_MEMBER_KICKED',
   'GROUP_DISBANDED',
+  'GUILD_CREATED',
+  'GUILD_INVITE_CREATED',
+  'GUILD_INVITE_ACCEPTED',
+  'GUILD_INVITE_DECLINED',
+  'GUILD_INVITE_CANCELLED',
+  'GUILD_MEMBER_JOINED',
+  'GUILD_MEMBER_LEFT',
+  'GUILD_MEMBER_KICKED',
+  'GUILD_MEMBER_ROLE_CHANGED',
+  'GUILD_MASTER_TRANSFERRED',
+  'GUILD_DISBANDED',
 ] as const;
 export type RealtimeEventType = (typeof REALTIME_EVENT_TYPES)[number];
 export type RealtimeData = Record<string, string | number | boolean | null>;
