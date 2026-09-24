@@ -29,6 +29,11 @@ import { PlayerTokenService } from './player-token.service.js';
     { provide: PROVIDER_FETCH, useValue: globalThis.fetch.bind(globalThis) },
   ],
   controllers: [PlayerAuthController, PlayerMeController],
-  exports: [PlayerAuthService, PlayerAuthGuard],
+  exports: [
+    PlayerAuthService,
+    PlayerAuthGuard,
+    PlayerAuthRateLimiter,
+    PlayerAuthRateLimitGuard,
+  ],
 })
 export class PlayerAuthModule {}

@@ -33,6 +33,7 @@ export interface ApplicationConfig {
       redirectUris: string[];
     } | null;
   };
+  playerCharacters: { challengeTtl: number };
   bootstrap: { username?: string; displayName?: string; password?: string };
   database: {
     host: string;
@@ -66,6 +67,7 @@ interface Environment {
   PLAYER_JWT_ACCESS_TTL: string;
   PLAYER_JWT_REFRESH_TTL: string;
   PLAYER_AUTH_RATE_LIMIT_PER_MINUTE: number;
+  PLAYER_LINK_CHALLENGE_TTL: string;
   DISCORD_CLIENT_ID?: string;
   DISCORD_CLIENT_SECRET?: string;
   DISCORD_REDIRECT_URIS?: string;
@@ -173,6 +175,7 @@ const schema = Joi.object<Environment>({
     .min(1)
     .max(1000)
     .default(20),
+  PLAYER_LINK_CHALLENGE_TTL: ttl('10m'),
   DISCORD_CLIENT_ID: Joi.string().trim().allow('').max(128),
   DISCORD_CLIENT_SECRET: Joi.string().allow('').max(256),
   DISCORD_REDIRECT_URIS: Joi.string().allow('').max(4096),
@@ -212,7 +215,11 @@ export function validateEnvironment(
       'Invalid environment variables: PLAYER_JWT_ACCESS_TTL, PLAYER_JWT_REFRESH_TTL',
     );
   }
+  const challengeTtl = ttlSeconds(value.PLAYER_LINK_CHALLENGE_TTL);
+  if (challengeTtl < 60 || challengeTtl > 3600)
+    throw new Error('Invalid environment variables: PLAYER_LINK_CHALLENGE_TTL');
   return {
+    playerCharacters: { challengeTtl },
     playerAuth: {
       accessSecret: value.PLAYER_JWT_ACCESS_SECRET || testPlayerAccessSecret,
       refreshSecret: value.PLAYER_JWT_REFRESH_SECRET || testPlayerRefreshSecret,
