@@ -3,7 +3,8 @@
 Backend administrativo do Skyrim Brasil / SkyMP. Foundation (Etapa 00),
 autenticação/RBAC (Etapa 01), auditoria administrativa (Etapa 02) e infraestrutura
 de Game Bridge/Commands (Etapa 03), consultas administrativas (Etapa 04) e
-Character Management assíncrono (Etapa 05), Moderation (Etapa 06) e World Management (Etapa 07).
+Character Management assíncrono (Etapa 05), Moderation (Etapa 06), World Management
+(Etapa 07) e catálogo VIP Store (Etapa 08).
 O transporte real para Skyrim continua
 reservado a uma etapa futura.
 
@@ -430,3 +431,19 @@ Spawn usa exclusivamente o staff autenticado, IDs opacos e quantidade de 1 a 10.
 A migration incremental WorldPermissions adiciona quatro permissions e nove grants:
 35 permissions, 92 grants, sete migrations, sem tabelas locais World. Consulte
 [contratos, matriz, validação e decisões](docs/world-management.md).
+
+## VIP Store
+
+A Etapa 08 persiste ofertas em `vip_offers`. Somente Coordinator administra o
+catálogo em `/api/v1/admin/vip-store/offers`, com `VIP_STORE_READ` e a permission
+`VIP_STORE_WRITE` já existente. Mutations e Audit são atômicos; mudanças de preço
+registram valores anterior e novo. Preços são centavos inteiros em BRL.
+
+O catálogo público `/api/v1/vip-store/offers` expõe somente ofertas ativas, com
+DTO próprio, paginação e ordenação determinística. Rewards aceitos: ITEM, HORSE,
+TITLE e SPELL, sem entrega automática, compra ou pagamento. O contrato HTTP pode
+ser consumido futuramente pelo Electron, sem dependência dele no backend.
+
+A migration incremental `1789870000000-VipStore` acrescenta a tabela e o grant de
+leitura: oito migrations, 36 permissions e 93 grants. Consulte
+[contratos, endpoints, auditoria e decisões](docs/vip-store.md).
