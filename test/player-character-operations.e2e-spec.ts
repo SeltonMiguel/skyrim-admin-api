@@ -65,6 +65,38 @@ describeDatabase(
       characterId,
       skills: Object.fromEntries(SKILL_NAMES.map((name) => [name, 15])),
     });
+    const propertiesOf = (characterId: string) => ({
+      characterId,
+      properties: [
+        { propertyId: 'BreezehomeLocation', displayName: 'Breezehome' },
+        { propertyId: 'HoneysideLocation' },
+      ],
+    });
+    const holdsOf = (characterId: string) => ({
+      characterId,
+      holds: [{ holdId: 'WhiterunHold', displayName: 'Whiterun' }],
+    });
+    type Kind = 'profile' | 'skills' | 'properties' | 'holds';
+    const KINDS = ['profile', 'skills', 'properties', 'holds'] as const;
+    const TYPES = {
+      profile: 'CHARACTER_PROFILE_QUERY',
+      skills: 'CHARACTER_SKILLS_QUERY',
+      properties: 'CHARACTER_PROPERTIES_QUERY',
+      holds: 'CHARACTER_HOLDS_QUERY',
+    } as const;
+    const staffCharacter = (
+      path: string,
+      characterId: string,
+      body: object = {},
+      token = staffToken,
+    ) =>
+      http()
+        .post(
+          `/api/v1/game-servers/${server.id}/characters/${encodeURIComponent(characterId)}/${path}`,
+        )
+        .auth(token, { type: 'bearer' })
+        .set('Idempotency-Key', randomUUID())
+        .send(body);
     const login = async (): Promise<Session> => {
       const code = `code-${randomUUID()}`;
       discord.codes.set(code, {
@@ -97,7 +129,7 @@ describeDatabase(
     };
     const query = (
       session: Session,
-      kind: 'profile' | 'skills',
+      kind: Kind,
       characterId: string,
       key: string | null = randomUUID(),
       gameServerId = server.id,
@@ -207,7 +239,7 @@ describeDatabase(
       }
     });
 
-    it('needs no migration: thirteen migrations and no schema diff', async () => {
+    it('needs no migration: sixteen migrations and no schema diff', async () => {
       expect(await database.showMigrations()).toBe(false);
       expect(await database.query('SELECT * FROM migrations')).toHaveLength(16);
       expect(
@@ -217,6 +249,8 @@ describeDatabase(
     it.each([
       ['profile', 'CHARACTER_PROFILE_QUERY'],
       ['skills', 'CHARACTER_SKILLS_QUERY'],
+      ['properties', 'CHARACTER_PROPERTIES_QUERY'],
+      ['holds', 'CHARACTER_HOLDS_QUERY'],
     ] as const)(
       'accepts a %s query as a PLAYER-scoped command without Audit or dispatch',
       async (kind, type) => {
@@ -276,7 +310,7 @@ describeDatabase(
         [a, charB],
         [b, charA],
       ] as const)
-        for (const kind of ['profile', 'skills'] as const) {
+        for (const kind of KINDS) {
           const response = await query(session, kind, characterId).expect(404);
           expect(response.body.message).toBe('Character not available');
         }
@@ -292,7 +326,7 @@ describeDatabase(
         [server.id],
       );
       try {
-        await query(a, 'profile', charA).expect(409);
+        for (const kind of KINDS) await query(a, kind, charA).expect(409);
       } finally {
         await database.query(
           'UPDATE game_servers SET enabled = true WHERE id = $1',
@@ -322,7 +356,27 @@ describeDatabase(
         { characterId: charB },
         { actorType: 'SYSTEM' },
       ])
-        await query(a, 'profile', charA).send(body).expect(400);
+        for (const kind of KINDS)
+          await query(a, kind, charA).send(body).expect(400);
+      for (const body of [
+        { characterLinkId: randomUUID() },
+        { permission: 'CHARACTER_PROPERTY_WRITE' },
+        { type: 'CHARACTER_PROPERTY_GRANT' },
+        { propertyId: 'BreezehomeLocation' },
+        { holdId: 'WhiterunHold' },
+      ])
+        for (const kind of ['properties', 'holds'] as const)
+          await query(a, kind, charA).send(body).expect(400);
+      for (const kind of ['properties', 'holds'] as const)
+        await http()
+          .post(
+            `/api/v1/player/game-servers/${server.id}/characters/${charA}/${kind}-query`,
+          )
+          .auth(staffToken, { type: 'bearer' })
+          .set('Idempotency-Key', randomUUID())
+          .expect(401);
+      await query(a, 'properties', charA, null).expect(400);
+      await query(a, 'holds', charA, null).expect(400);
       await query(a, 'skills', charA, null).expect(400);
       for (const key of ['', 'a b', 'x'.repeat(129)])
         await query(a, 'skills', charA, key).expect(400);
@@ -490,9 +544,247 @@ describeDatabase(
         .auth(staffToken, { type: 'bearer' })
         .expect(404);
     });
+    it('isolates properties and holds idempotency per player and per content', async () => {
+      const key = randomUUID();
+      const first = (await query(a, 'properties', charA, key).expect(202)).body;
+      expect(
+        (await query(a, 'properties', ` ${charA} `, key).expect(202)).body,
+      ).toEqual(first);
+      await query(a, 'holds', charA, key).expect(409);
+      await query(a, 'properties', await verified(a), key).expect(409);
+      const fromB = (await query(b, 'properties', charB, key).expect(202)).body;
+      expect(fromB.operationId).not.toBe(first.operationId);
+      const race = randomUUID();
+      const responses = await Promise.all(
+        Array.from({ length: 8 }, () => query(a, 'holds', charA, race)),
+      );
+      expect(responses.map((r) => r.status)).toEqual(Array(8).fill(202));
+      expect(new Set(responses.map((r) => r.body.operationId)).size).toBe(1);
+      expect(
+        await database.query(
+          'SELECT count(*)::int AS n, min(idempotency_scope) AS scope FROM game_commands WHERE idempotency_key = $1',
+          [race],
+        ),
+      ).toEqual([{ n: 1, scope: `PLAYER:${a.player.id}` }]);
+    });
+    it('reports properties (houses) and holds through PENDING, DISPATCHED and validated SUCCEEDED', async () => {
+      for (const [kind, result] of [
+        ['properties', propertiesOf(charA)],
+        ['holds', holdsOf(charA)],
+        ['properties', { characterId: charA, properties: [] }],
+      ] as const) {
+        const { operationId } = (await query(a, kind, charA).expect(202)).body;
+        expect((await detail(a, operationId).expect(200)).body).toMatchObject({
+          type: TYPES[kind],
+          status: 'PENDING',
+          result: null,
+        });
+        const sent = await dispatched(operationId);
+        expect(gateway.sends.at(-1)).toMatchObject({
+          envelope: {
+            commandId: operationId,
+            type: TYPES[kind],
+            payload: { characterId: charA },
+          },
+        });
+        expect((await detail(a, operationId).expect(200)).body.status).toBe(
+          'DISPATCHED',
+        );
+        await receiver.result(message(sent, result));
+        expect((await detail(a, operationId).expect(200)).body).toEqual({
+          operationId,
+          type: TYPES[kind],
+          gameServerId: server.id,
+          characterId: charA,
+          status: 'SUCCEEDED',
+          createdAt: expect.any(String),
+          completedAt: expect.any(String),
+          result: {
+            outcome: 'SUCCEEDED',
+            data: result,
+            errorCode: null,
+            receivedAt: expect.any(String),
+          },
+        });
+      }
+    });
+    it('reports FAILED and TIMEOUT for properties and holds without data', async () => {
+      const failed = (await query(a, 'properties', charA).expect(202)).body
+        .operationId;
+      const sent = await dispatched(failed);
+      await receiver.result({
+        ...message(sent, null),
+        outcome: S.FAILED,
+        errorCode: 'BRIDGE_ERROR',
+      } as ResultMessage);
+      expect((await detail(a, failed).expect(200)).body).toMatchObject({
+        type: 'CHARACTER_PROPERTIES_QUERY',
+        status: 'FAILED',
+        result: { outcome: 'FAILED', data: null, errorCode: 'BRIDGE_ERROR' },
+      });
+      const late = (await query(a, 'holds', charA).expect(202)).body
+        .operationId;
+      await dispatched(late);
+      clock.advance(86400000);
+      await receiver.expireCommands();
+      expect((await detail(a, late).expect(200)).body).toMatchObject({
+        type: 'CHARACTER_HOLDS_QUERY',
+        status: 'TIMEOUT',
+        result: { outcome: 'TIMEOUT', data: null },
+      });
+    });
+    it('rejects invalid properties and holds results without completing the command', async () => {
+      for (const [kind, invalid] of [
+        ['properties', { ...propertiesOf(charA), characterId: charB }],
+        ['properties', { ...propertiesOf(charA), owner: a.player.id }],
+        [
+          'properties',
+          { characterId: charA, properties: [{ propertyId: 'x', price: 1 }] },
+        ],
+        [
+          'properties',
+          { characterId: charA, properties: [{ propertyId: '' }] },
+        ],
+        [
+          'properties',
+          {
+            characterId: charA,
+            properties: Array.from({ length: 513 }, (_, i) => ({
+              propertyId: `p${i}`,
+            })),
+          },
+        ],
+        ['holds', { ...holdsOf(charA), characterId: charB }],
+        ['holds', { characterId: charA, holds: 'Whiterun' }],
+        ['holds', propertiesOf(charA)],
+        ['holds', { characterId: charA, holds: [{ holdId: 'a\u0000b' }] }],
+      ] as const) {
+        const { operationId } = (await query(a, kind, charA).expect(202)).body;
+        const sent = await dispatched(operationId);
+        await expect(receiver.result(message(sent, invalid))).rejects.toThrow();
+        expect((await command(operationId)).status).toBe(S.DISPATCHED);
+        expect(
+          (await detail(a, operationId).expect(200)).body.result,
+        ).toBeNull();
+      }
+    });
+    it('keeps property and hold mutations staff-only and separates player and staff operations', async () => {
+      const before = await commandCount();
+      // No player route mutates properties or holds.
+      for (const path of [
+        'properties-grant',
+        'properties-revoke',
+        'holds-grant',
+        'holds-revoke',
+        'properties/grant',
+        'holds/revoke',
+      ])
+        await http()
+          .post(
+            `/api/v1/player/game-servers/${server.id}/characters/${charA}/${path}`,
+          )
+          .auth(a.accessToken, { type: 'bearer' })
+          .set('Idempotency-Key', randomUUID())
+          .send({ propertyId: 'BreezehomeLocation' })
+          .expect(404);
+      // Player tokens never reach the staff Character Management routes.
+      for (const [path, body] of [
+        ['properties/grant', { propertyId: 'BreezehomeLocation' }],
+        ['properties/revoke', { propertyId: 'BreezehomeLocation' }],
+        ['holds/grant', { holdId: 'WhiterunHold' }],
+        ['holds/revoke', { holdId: 'WhiterunHold' }],
+        ['properties/query', {}],
+        ['holds/query', {}],
+      ] as const)
+        await staffCharacter(path, charA, body, a.accessToken).expect(401);
+      expect(await commandCount()).toBe(before);
+      const { body: docs } = await http().get('/docs-json').expect(200);
+      expect(
+        Object.keys(docs.paths).filter(
+          (p) =>
+            p.startsWith('/api/v1/player/game-servers/') &&
+            /grant|revoke|give|add|remove/.test(p),
+        ),
+      ).toEqual([]);
+      // Staff APIs keep working, with Audit only for staff mutations.
+      const grant = (
+        await staffCharacter('properties/grant', charA, {
+          propertyId: 'BreezehomeLocation',
+        }).expect(202)
+      ).body;
+      const staffQuery = (
+        await staffCharacter('properties/query', charA).expect(202)
+      ).body;
+      const staffHolds = (
+        await staffCharacter('holds/query', charA).expect(202)
+      ).body;
+      for (const id of [
+        grant.commandId,
+        staffQuery.commandId,
+        staffHolds.commandId,
+      ]) {
+        await http()
+          .get(`/api/v1/character-operations/${id}`)
+          .auth(staffToken, { type: 'bearer' })
+          .expect(200);
+        // Staff commands of the same types are invisible to the player API.
+        await detail(a, id).expect(404);
+      }
+      expect(
+        (
+          await database.query(
+            'SELECT action FROM audit_logs WHERE resource_id = $1',
+            [charA],
+          )
+        ).map((r: { action: string }) => r.action),
+      ).toEqual(['CHARACTER_PROPERTY_GRANT_REQUESTED']);
+      // A player's query is not a staff Character operation; the generic
+      // admin view stays redacted.
+      const own = (await query(a, 'properties', charA).expect(202)).body;
+      const sent = await dispatched(own.operationId);
+      await receiver.result(message(sent, propertiesOf(charA)));
+      await http()
+        .get(`/api/v1/character-operations/${own.operationId}`)
+        .auth(staffToken, { type: 'bearer' })
+        .expect(404);
+      const generic = await http()
+        .get(`/api/v1/game-commands/${own.operationId}`)
+        .auth(staffToken, { type: 'bearer' })
+        .expect(200);
+      expect(generic.body).toMatchObject({
+        type: 'CHARACTER_PROPERTIES_QUERY',
+        status: 'SUCCEEDED',
+      });
+      expect(generic.body).not.toHaveProperty('payload');
+      expect(generic.text).not.toMatch(
+        /idempotency|scope|PLAYER:|Breezehome|Honeyside|propertyId|"properties"/i,
+      );
+      expect(generic.text).not.toContain(a.player.id);
+      // Player detail never shows operational internals.
+      const stored = await command(own.operationId);
+      const text = (await detail(a, own.operationId).expect(200)).text;
+      for (const secret of [
+        stored.idempotencyKey,
+        stored.idempotencyScope,
+        stored.correlationId,
+        a.player.id,
+        stored.dispatchedConnectionId!,
+      ])
+        expect(text).not.toContain(secret);
+      expect(text).not.toMatch(
+        /requestedBy|idempotency|scope|lease|dispatchAttempts|deadline|correlation|payload|actorType/i,
+      );
+      await detail(b, own.operationId).expect(404);
+      expect(
+        await database.query(
+          'SELECT id FROM audit_logs WHERE resource_id = $1',
+          [own.operationId],
+        ),
+      ).toEqual([]);
+    });
     it('documents the player query routes with required Idempotency-Key and 202 Location', async () => {
       const { body } = await http().get('/docs-json').expect(200);
-      for (const kind of ['profile', 'skills']) {
+      for (const kind of KINDS) {
         const route =
           body.paths[
             `/api/v1/player/game-servers/{gameServerId}/characters/{characterId}/${kind}-query`
