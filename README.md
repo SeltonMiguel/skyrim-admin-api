@@ -570,5 +570,16 @@ trades só de GOLD completam na hora; com GAME_ITEM ficam em
 AWAITING_GAME_CONFIRMATION até a confirmação interna do Agent (Etapa 11), que
 só pode pedir SETTLED com os itens sob custódia reversível; se o ledger recusar a
 liquidação, o trade continua aguardando. A
-migration `1789970000000-PlayerTrades` completa dezoito migrations. Consulte [arquitetura,
-decisões e roadmap da Etapa 10](docs/player-services.md).
+migration `1789970000000-PlayerTrades` completa dezoito migrations.
+
+A Subetapa 10.14 adiciona o Marketplace: um character lista um GAME_ITEM
+(`itemId`, `quantity`, `priceGold`) em `/api/v1/player/marketplace/listings`; a
+listing nasce PENDING_CUSTODY e só fica ACTIVE (pública e comprável) quando o
+Agent confirma a custódia do item pelo contrato interno
+`MarketplaceCustodyService`. A compra reserva o GOLD do buyer em `MARKET_ESCROW`
+(listing RESERVED, purchase AWAITING_GAME_CONFIRMATION) e o Agent liquida pelo
+`MarketplaceSettlementService` (SOLD e seller pago, ou FAILED com estorno). O
+player lê as próprias listings e compras em
+`/api/v1/player/me/characters/:characterLinkId/marketplace/{listings,purchases}`.
+A migration `1789980000000-PlayerMarketplace` completa dezenove migrations.
+Consulte [arquitetura, decisões e roadmap da Etapa 10](docs/player-services.md).

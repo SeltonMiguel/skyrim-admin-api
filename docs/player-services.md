@@ -79,7 +79,7 @@ domínio. A Player API nunca chama controllers administrativos. O prefixo
 | 10.11 Horses / Mounts | **Implementada.** `horses-query` read-only sobre `CHARACTER_HORSES_QUERY` existente, por ownership VERIFIED; sem migration |
 | 10.12 Economy / Wallet | **Implementada.** Ledger de partidas dobradas imutável (GOLD inteiro) do character identity, balances como projeção, credit/debit SYSTEM e transfer internos, wallet read-only; migration `1789960000000-Economy` |
 | 10.13 Player Trade | **Implementada.** Trade entre character identities com ofertas versionadas, escrow de GOLD em TRADE_ESCROW, settlement só de GOLD imediato e GAME_ITEM aguardando o Agent (contrato interno); migration `1789970000000-PlayerTrades` |
-| 10.14 Marketplace | Listings sobre wallet/ledger/escrow, com as mesmas regras de custódia do Trade |
+| 10.14 Marketplace | **Implementada.** Listing de um GAME_ITEM por GOLD que só fica ACTIVE com custódia confirmada pelo Agent, compra com GOLD reservado em MARKET_ESCROW, settlement/falha pelo Agent (contratos internos); migration `1789980000000-PlayerMarketplace` |
 | 10.15 Chat | Chat event-driven sobre a infraestrutura realtime da 10.8 |
 | 10.16 Player Settings | Preferências de conta com allowlist explícita |
 | 10.17 VIP Player Integration | Integração do catálogo existente na superfície do player |
@@ -1068,6 +1068,162 @@ não publica. Realtime não é fonte de verdade.
 - **Nenhuma duplicação de saldo ou item por retries**: toda mutation é idempotente
   por ator e liquidada uma única vez.
 
+#### Implementação (10.14)
+
+Módulo `src/player-marketplace/`. Modelo inicial: o **SELLER** (character
+identity) lista **um** GAME_ITEM (`itemExternalId` + `quantity`) por um preço em
+GOLD; o **BUYER** (character identity do mesmo servidor) paga GOLD no ledger. Fora
+de escopo: barter, listing de GOLD, leilão/lance, múltiplas moedas ou itens por
+listing, taxa do marketplace e busca textual por item (não há fonte confiável de
+nome/descrição; nada visual do cliente é armazenado).
+
+| Tabela | Colunas e garantias |
+| --- | --- |
+| `player_marketplace_listings` | `id`, `game_server_id` (FK), `seller_character_id`, `item_external_id` (validador padrão), `quantity` 1..10.000, `price_gold` 1..10¹² (sem listing gratuita), `status`, `custody_event_id`, `reserved_by_character_id` (≠ seller), `reserved_at`, `sold_at`, `cancelled_at`, `failed_at`, `created_at`, `updated_at`; CHECK de coerência por status (ACTIVE/RESERVED/SOLD/FAILED exigem `custody_event_id`); trigger: termos imutáveis, custódia e buyer gravados uma vez, só transições para frente, sem DELETE/TRUNCATE |
+| `player_marketplace_purchases` | `id`, `listing_id` (`UNIQUE`: uma compra efetiva por listing), `buyer_character_id`, `status` AWAITING_GAME_CONFIRMATION/COMPLETED/FAILED, `created_at`, `updated_at`, `completed_at`, `failed_at`; só AWAITING → COMPLETED/FAILED |
+| `player_marketplace_currency_escrows` | `purchase_id` (`UNIQUE`: uma reserva por purchase), `game_server_id`, `currency`, `buyer_character_id`, `seller_character_id`, `amount`, `status` RESERVED/RELEASED/SETTLED, `reservation_transaction_id` e `resolution_transaction_id` (FKs para o ledger); só RESERVED → RELEASED/SETTLED, uma vez |
+| `player_marketplace_requests` | idempotência Player: scope `PLAYER:<playerId>`, `idempotency_key`, `operation` CREATE/CANCEL/PURCHASE, `request_fingerprint`, `listing_id` (FK deferred); append-only |
+| `player_marketplace_custody_events` | `custody_event_id` (`UNIQUE` por servidor), `listing_id` (`UNIQUE`), `outcome` CUSTODIED/FAILED; append-only |
+| `player_marketplace_settlement_events` | `settlement_event_id` (`UNIQUE` por servidor), `purchase_id` (`UNIQUE`), `outcome` SETTLED/FAILED; append-only |
+
+A migration amplia os system keys da economia com **`MARKET_ESCROW`** (as da 10.12
+e 10.13 não mudam). O `down` recusa reverter se existir listing ou account
+MARKET_ESCROW.
+
+**Lifecycle da listing:**
+
+```
+PENDING_CUSTODY ──custódia do Agent──▶ ACTIVE ──compra──▶ RESERVED ──SETTLED──▶ SOLD
+      │  └──falha de custódia──▶ FAILED    │                  └──FAILED──▶ FAILED
+      └──cancel──▶ CANCELLED ◀──cancel─────┘
+```
+
+SOLD, CANCELLED e FAILED são terminais e nunca reabrem (trigger no banco).
+
+**Custódia:** uma listing **nunca** fica ACTIVE só porque o player declarou ter o
+item; o backend não consulta inventário. Contrato interno, sem rota HTTP:
+`MarketplaceCustodyService.confirmFromAgent({ listingId, custodyEventId, outcome })`,
+ator SYSTEM:AGENT. `CUSTODIED` significa que o Agent validou item e quantidade,
+retirou/reservou o item de forma durável, consegue mantê-lo sob custódia,
+devolvê-lo ao seller se a listing for cancelada e entregá-lo ao buyer de forma
+retryable: PENDING_CUSTODY → ACTIVE. `FAILED`: PENDING_CUSTODY → FAILED. Mesmo id e
+conteúdo → `ALREADY_APPLIED`; mesmo id com outro conteúdo (outcome ou listing) →
+`EVENT_CONFLICT`; listing que já não está PENDING_CUSTODY (ex.: cancelada
+enquanto o Agent agia) → `LISTING_NOT_PENDING`, e o Agent deve devolver o item.
+
+**Player API** (`PlayerAuthGuard`; `Idempotency-Key` obrigatório nas mutations):
+
+| Rota | Regra |
+| --- | --- |
+| `POST /api/v1/player/marketplace/listings` `{ characterLinkId, itemId, quantity, priceGold }` | 201, nasce PENDING_CUSTODY; link próprio VERIFIED, servidor habilitado; nada é debitado e o item não é presumido; `status`, `sellerCharacterId`, `gameServerId`, nome do item etc. → 400 |
+| `GET /api/v1/player/marketplace/listings?page&limit&gameServerId&minPrice&maxPrice` | só ACTIVE, de GameServer habilitado e com seller disponível (dono VERIFIED com conta ACTIVE), isto é, só o que uma compra aceitaria agora; `createdAt DESC, id DESC`; `minPrice > maxPrice` → 400; sem busca textual |
+| `GET /api/v1/player/marketplace/listings/:listingId` | ACTIVE e disponível (mesma regra, inclusive servidor habilitado) para qualquer player autenticado; qualquer outro caso → 404 |
+| `POST /api/v1/player/marketplace/listings/:listingId/purchase` `{ characterLinkId }` | 201 com a purchase; ver abaixo |
+| `POST /api/v1/player/marketplace/listings/:listingId/cancel` `{ characterLinkId }` | só o dono atual do seller (senão 404); PENDING_CUSTODY/ACTIVE → CANCELLED; CANCELLED de novo → 200 no-op; RESERVED → 409; SOLD/FAILED → 409 |
+| `GET /api/v1/player/me/characters/:characterLinkId/marketplace/listings?page&limit` | "minhas listings" em qualquer status, mais recentes primeiro |
+| `GET /api/v1/player/me/characters/:characterLinkId/marketplace/purchases?page&limit` | compras do character, mais recentes primeiro (estado autoritativo para o buyer) |
+
+**Compra:** numa única transação: claim da key, lock da listing, link do buyer
+próprio VERIFIED, listing ACTIVE (senão 409 `Listing is not available`), mesmo
+servidor (senão 409), buyer ≠ seller (409 `Cannot buy your own listing`; outro
+character do mesmo player pode comprar), servidor habilitado, seller com dono
+VERIFIED e conta ACTIVE (senão 409 `Seller unavailable`), GOLD do buyer →
+`SYSTEM:MARKET_ESCROW` por `postWithin` (saldo insuficiente → 409 `Insufficient
+funds` e nada muda), linha de escrow RESERVED, purchase AWAITING_GAME_CONFIRMATION
+e listing RESERVED. Postings com `reference_type = PLAYER_MARKETPLACE` e chave por
+fase (`market:<purchaseId>:reserve|settle|release`).
+
+**Settlement (contrato interno, sem rota HTTP):**
+`MarketplaceSettlementService.confirmFromAgent({ purchaseId, settlementEventId, outcome })`,
+ator SYSTEM:AGENT, idempotente por `settlementEventId` (replay/conflito como na
+custódia; purchase não AWAITING → `PURCHASE_NOT_AWAITING`).
+
+- `SETTLED` só pode ser pedido com o item sob custódia durável/reversível; **não**
+  significa que o item já apareceu no inventário final. O backend: MARKET_ESCROW →
+  seller, escrow SETTLED, purchase COMPLETED, listing SOLD. **Depois do commit
+  econômico, o Agent tem a obrigação durável e retryable de entregar o item.**
+- `FAILED`: MARKET_ESCROW → buyer, escrow RELEASED, purchase FAILED, listing FAILED.
+  O Agent devolve/libera o item ao seller.
+- Se o ledger recusar (ex.: teto de saldo do recebedor): retorno
+  `LEDGER_REJECTED` com `ledgerReason` interno e log de aviso; tudo é desfeito —
+  purchase continua AWAITING_GAME_CONFIRMATION, listing e escrow continuam
+  RESERVED, o evento **não** fica consumido, sem Audit de settlement nem realtime
+  SOLD; retry posterior é permitido. Não há reserva de capacidade de recebimento.
+
+**GameServer desabilitado:** bloqueia novas operações econômicas — create e
+purchase → 409 `Game server disabled`, sem listing, purchase, escrow, débito,
+Audit ou realtime — e tira as listings do catálogo público (browse e detail).
+Não bloqueia cleanup nem obrigações já criadas: o seller continua vendo as
+próprias listings e pode cancelar PENDING_CUSTODY/ACTIVE (RESERVED continua 409),
+e o Agent continua liquidando (SETTLED) ou estornando (FAILED) purchases RESERVED,
+para que GOLD e itens nunca fiquem presos em custódia.
+
+**Fronteira backend × Agent:** o backend é dono do GOLD, dos estados e da
+autoridade do commit; o Agent é dono do item físico (custódia, devolução,
+entrega). Nenhuma GameCommand, `CHARACTER_ITEM_GIVE/REMOVE` ou inventário vindo do
+Electron é usado. O transporte real do Agent é da Etapa 11.
+
+**Ownership:** a listing é do character seller e a purchase dos character
+identities; a ownership VERIFIED só autoriza o player atual. Se a ownership do
+seller muda, o antigo dono perde acesso na hora e o novo dono VERIFIED vê a
+listing existente (com o próprio `characterLinkId`) e pode cancelá-la; sem dono
+disponível, a listing some da vitrine e a compra é recusada. Se a ownership do
+buyer muda enquanto RESERVED, a identidade econômica continua o mesmo character:
+o settlement paga o seller character e o estorno volta ao buyer character, quem
+quer que seja o dono.
+
+**DTO/privacidade:** listing pública: `listingId`, `gameServer`,
+`sellerCharacterId`, `itemId`, `quantity`, `priceGold`, `status`, `createdAt`.
+"Minhas listings" acrescenta `characterLinkId` próprio, `buyerCharacterId` e os
+timestamps de lifecycle. Purchase: `purchaseId`, `listing`, `buyerCharacterId`,
+`status` e timestamps. Nunca: player ids, `characterLinkId` do seller em views
+públicas, accounts, transactions, escrows, eventos de custódia/settlement ou
+idempotência.
+
+**Idempotência:** create, cancel e purchase exigem `Idempotency-Key`, persistida
+em `player_marketplace_requests` na mesma transação (scope `PLAYER:<id>`). Mesma
+key + mesmo request → mesmo efeito (o estado atual, sem Audit/evento extra e sem
+segundo débito); outro conteúdo ou operação → 409. Um replay só responde a quem
+ainda é dono do character. Custódia e settlement têm idempotência própria por
+event id.
+
+**Concorrência:** ordem de locks: claim da key → listing `FOR UPDATE` → purchase
+`FOR UPDATE` → vínculos → escrow → accounts da economia (ordem crescente de id, no
+ledger). Tudo que muda uma listing trava sua linha; o PostgreSQL (locks, `UNIQUE`,
+triggers) é a garantia final, sem mutex em memória. Cobertos: create repetido,
+replay de custódia, cancel × custódia, dois buyers na mesma listing, purchase ×
+cancel, duas compras disputando o mesmo GOLD, settlement repetido e concorrente,
+ledger recusado + retry, estorno repetido e compra concorrente com trade do mesmo
+character — sem double-spend, double-sale ou deadlock.
+
+**Audit** (`resourceType = PLAYER_MARKETPLACE`, `resourceId = listingId`, na mesma
+transação): `PLAYER_MARKETPLACE_LISTING_CREATED`, `_LISTING_CANCELLED`,
+`_PURCHASE_CREATED` (ator PLAYER) e `_LISTING_CUSTODIED`, `_LISTING_CUSTODY_FAILED`,
+`_PURCHASE_SETTLED`, `_PURCHASE_FAILED` (SYSTEM:AGENT). Metadata: `listingId`,
+`purchaseId`, `gameServerId`, `sellerCharacterId`, `buyerCharacterId`,
+`itemExternalId`, `quantity`, `priceGold`, `status`/`purchaseStatus`,
+`previousStatus` (cancel) e o event id do Agent; sem accounts, player ids, payload
+bruto ou idempotency key. Replays e no-ops não auditam.
+
+**Realtime** (mesmo `RealtimeEventBus`, após o commit, para os donos VERIFIED
+atuais; nunca estranhos, Staff ou broadcast global):
+
+| Evento | Destinatários |
+| --- | --- |
+| `MARKETPLACE_LISTING_ACTIVE`, `MARKETPLACE_LISTING_CANCELLED`, `MARKETPLACE_LISTING_FAILED` | seller |
+| `MARKETPLACE_LISTING_RESERVED`, `MARKETPLACE_LISTING_SOLD`, `MARKETPLACE_PURCHASE_FAILED` | seller e buyer |
+
+Payload: `listingId`, `gameServerId`, `status`, `sellerCharacterId`, `itemId`,
+`quantity`, `priceGold` e, quando há compra, `purchaseId`, `buyerCharacterId`,
+`purchaseStatus`. Rollback não publica. A vitrine pública continua só via HTTP.
+
+**Reconciliação** (interna, sem rota): `MarketEscrowService.mismatches()` confere
+que o saldo de MARKET_ESCROW (via `EconomyReconciliationService.systemBalances`)
+é a soma dos escrows RESERVED por servidor; `inconsistencies()` confere o trio
+listing/purchase/escrow (RESERVED ↔ AWAITING ↔ RESERVED, SOLD ↔ COMPLETED ↔
+SETTLED, FAILED ↔ FAILED ↔ RELEASED, com partes e valor iguais). Não há estado
+transitório: reserva e resolução commitam junto com a listing e a purchase.
+
 ### Chat
 
 - Faz parte do MVP.
@@ -1134,7 +1290,9 @@ GET HTTP. Entrega entre múltiplas instâncias e garantias de entrega ficam para
 Etapa 12.
 
 A 10.9 adiciona os eventos `GUILD_*` ao mesmo bus e gateway; fan-out e regras de
-privacidade seguem o mesmo modelo (donos VERIFIED atuais, sem Staff).
+privacidade seguem o mesmo modelo (donos VERIFIED atuais, sem Staff). A 10.13
+adiciona `TRADE_*` e a 10.14 `MARKETPLACE_*`, com o mesmo modelo; o Marketplace
+não faz broadcast de listings (a vitrine pública é só HTTP).
 
 ### Properties / Houses / Holds e Horses / Mounts
 
@@ -1359,16 +1517,16 @@ Detalhes que não bloqueiam a fundação e podem ser fixados na subetapa do dom�
 | Regras de troca de profissão e origem dos eventos de XP no jogo | pós-definição de produto / Etapa 11 |
 | Tamanho definitivo de group (hoje 5, provisório) e limpeza de memberships de ownership revogada | pós-definição de produto |
 | Limite definitivo de guild (hoje 50, provisório), relação com VIP e representação no jogo | pós-definição de produto / Etapa 11 |
-| Taxas de marketplace | 10.14 |
+| Taxas de marketplace, leilão, busca por item com metadata confiável | pós-definição de produto / Etapa 11 |
 | Retenção de chat | 10.15 |
-| Moedas além de GOLD e escrow de Marketplace | 10.14 |
+| Moedas além de GOLD | pós-definição de produto |
 
 Pontos de implementação a fixar no início da subetapa correspondente, sem alterar
 as decisões acima:
 
 | Tema | Subetapa |
 | --- | --- |
-| Efeito de SUSPENDED/BANNED em marketplace; revogação administrativa de vínculos; expiração de trades | 10.14 / futura |
+| Revogação administrativa de vínculos; expiração de trades e de listings; limite de listings por character | futura |
 | Transporte autenticado do Agent chamando `confirmFromAgent` e digitação do challenge no jogo | 11 |
 | Implementação real de perfil e skills pelo Agent, conforme os contratos da 10.5 | 11 |
 | Chaves de Player Settings | 10.16 |

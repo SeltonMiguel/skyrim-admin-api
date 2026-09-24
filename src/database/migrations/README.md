@@ -146,3 +146,17 @@ player, FK de trade deferred) e `player_trade_settlement_events` (evento único 
 servidor e por trade). Triggers congelam offers/items fora de NEGOTIATING e tornam
 requests/eventos append-only. `down` recusa reverter com trades ou TRADE_ESCROW
 existentes. Detalhes em `docs/player-services.md`.
+
+A Subetapa 10.14 adiciona `1789980000000-PlayerMarketplace`: amplia
+`economy_accounts_owner_check` com o system key `MARKET_ESCROW` (as migrations da
+10.12 e da 10.13 não mudam) e cria `player_marketplace_listings` (termos
+imutáveis, sem listing gratuita, CHECK de lifecycle, ACTIVE exige evento de
+custódia, trigger de transições só para frente e sem DELETE),
+`player_marketplace_purchases` (`UNIQUE(listing_id)`: uma compra efetiva por
+listing), `player_marketplace_currency_escrows` (`UNIQUE(purchase_id)`, FKs para
+as transactions de reserva e resolução, resolução única),
+`player_marketplace_requests` (idempotência por scope de player, FK de listing
+deferred) e `player_marketplace_custody_events`/`player_marketplace_settlement_events`
+(evento único por servidor e por listing/purchase, append-only). `down` recusa
+reverter com listings ou MARKET_ESCROW existentes. Detalhes em
+`docs/player-services.md`.
