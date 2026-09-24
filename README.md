@@ -479,6 +479,11 @@ compartilhada, e nenhum token OAuth, senha ou e-mail é armazenado.
 
 **Player Auth ainda não existe**: não há login, JWT, sessões ou guard de jogador,
 e os status SUSPENDED/BANNED ainda não têm efeito. A migration
-`1789890000000-PlayerAccounts` adiciona as duas tabelas: dez migrations,
-36 permissions e 93 grants. Consulte [arquitetura, decisões e roadmap da
+`1789890000000-PlayerAccounts` adiciona as duas tabelas.
+
+A Subetapa 10.2 torna Audit e GameCommand actor-aware (STAFF, PLAYER, SYSTEM) e
+isola a idempotência por scope (`STAFF` compartilhado, `PLAYER:<id>`,
+`SYSTEM:<source>`), sem alterar as APIs staff nem reescrever o Audit histórico.
+A migration `1789900000000-GenericActor` completa onze migrations, 36 permissions
+e 93 grants. Consulte [arquitetura, decisões e roadmap da
 Etapa 10](docs/player-services.md).

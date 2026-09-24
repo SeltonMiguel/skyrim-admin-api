@@ -67,7 +67,7 @@ domínio. A Player API nunca chama controllers administrativos. O prefixo
 | --- | --- |
 | 10.0 Player Architecture Decisions | Este documento |
 | 10.1 Player Account Model | **Implementada.** `players`, `player_identities`, status, migration `1789890000000-PlayerAccounts` |
-| 10.2 Generic Actor + Player-safe Idempotency | Ator STAFF/PLAYER/SYSTEM em Audit e GameCommand; idempotência por ator; núcleo de operações desacoplado de `AuthenticatedStaff` |
+| 10.2 Generic Actor + Player-safe Idempotency | **Implementada.** Ator STAFF/PLAYER/SYSTEM em Audit e GameCommand; idempotency scope; `ActorCommandService`; migration `1789900000000-GenericActor` |
 | 10.3 Player Authentication | Discord OAuth2, sessões, tokens, guard, `GET /api/v1/player/me` |
 | 10.4 Character Ownership | Vínculo PENDING/VERIFIED/REVOKED e contrato de confirmação pelo Agent |
 | 10.5 Character Profile + Skills | Contratos de GameCommand para perfil e skills; leitura pela Player API |
@@ -331,6 +331,64 @@ Audit e GameCommand suportam o ator genérico **sem quebrar dados Staff existent
 - cada linha identifica exatamente um tipo de ator, verificado por constraint;
 - metadata continua allowlist; nenhum dado pessoal do provider entra no Audit.
 
+### Implementação (10.2)
+
+Contrato interno fechado em `src/actors/actor.contracts.ts`:
+
+```ts
+type Actor =
+  | { type: 'STAFF'; id; username; displayName; roleName } // snapshot da sessão staff
+  | { type: 'PLAYER'; playerId }                          // UUID de players, minúsculo
+  | { type: 'SYSTEM'; source: 'AGENT' | 'PROFESSION' | 'VIP_DELIVERY' };
+```
+
+`actor()` valida e copia com campos fechados por tipo: PLAYER não aceita role,
+permissions ou source; SYSTEM só aceita a allowlist. Nenhum endpoint recebe actor:
+STAFF vem da sessão autenticada, PLAYER virá da sessão de player (10.3) e SYSTEM
+somente de código do servidor. Nova source exige alteração do enum e das CHECKs.
+
+**GameCommand** (colunas novas):
+
+| Coluna | Regra |
+| --- | --- |
+| `actor_type` | NOT NULL, default `STAFF` |
+| `requested_by_staff_id` | existente, FK `staff_users`, nullable (commands internos sem autoria) |
+| `requested_by_player_id` | nullable, FK `game_commands_player_fkey` → `players(id)`, índice `game_commands_player_idx` |
+| `requested_by_system_source` | nullable, allowlist |
+| `idempotency_scope` | NOT NULL, default `STAFF`; interno |
+
+`game_commands_actor_check` exige exatamente uma forma:
+STAFF (sem player/source, scope `STAFF`), PLAYER (player, sem staff/source, scope
+`PLAYER:<player_id>`) ou SYSTEM (source da allowlist, sem staff/player, scope
+`SYSTEM:<source>`). O scope é derivado do ator e conferido pelo banco; não pode
+divergir da autoria.
+
+**Audit** (colunas novas, todas nullable, sem FK — como `actor_staff_id`, o
+histórico sobrevive às linhas de origem): `actor_type`, `actor_player_id` (índice
+`audit_logs_actor_player_idx`) e `actor_system_source`.
+`audit_logs_actor_check` aceita:
+
+- `actor_type` NULL sem player/source: linhas históricas (STAFF quando
+  `actor_staff_id` existe) e eventos sem ator;
+- STAFF com `actor_staff_id`;
+- PLAYER somente com `actor_player_id` — `actor_role`, username, displayName e
+  staff id obrigatoriamente NULL;
+- SYSTEM somente com `actor_system_source` da allowlist.
+
+Linhas antigas não foram reescritas: a migration só adiciona colunas nullable e
+constraints, o trigger `audit_logs_immutable` continua ALWAYS. Novas linhas staff
+gravam `actor_type = STAFF`. A API de Audit expõe `actorType` (derivado para
+linhas históricas), `actorPlayerId` e `actorSystemSource`; `actorRole` é sempre
+null fora de STAFF. Nenhum dado de `player_identities` entra no Audit.
+
+**Serviço compartilhado:** `ActorCommandService.create(input, actor, audit?)`
+(`src/actor-operations/`) concentra lock do servidor, 409 para servidor
+desabilitado, insert idempotente com scope, Audit atômico com o ator e retorno
+`{ command, created }`. Não concede nada: autorização (RBAC ou ownership) é do
+chamador. `AdministrativeCommandService` virou wrapper Staff (permission →
+`staffActor`) com a mesma API; Character, Moderation e World não conhecem Player.
+O dispatch continua separado, após o commit.
+
 ## Idempotência
 
 - **Idempotência de Player é isolada por ator.** A chave de um player só pode
@@ -343,6 +401,27 @@ Audit e GameCommand suportam o ator genérico **sem quebrar dados Staff existent
 - Ledger, trade e marketplace aplicam a mesma regra: um retry nunca gera segundo
   lançamento, segunda reserva ou segunda liquidação.
 - A semântica atual entre staff permanece inalterada.
+
+### Idempotency scope (10.2)
+
+`UNIQUE (game_server_id, idempotency_scope, idempotency_key)` substitui a
+constraint global (mesmo nome, `game_commands_idempotency_key`).
+
+| Ator | Scope | Efeito |
+| --- | --- | --- |
+| STAFF (todos) e submits internos sem autoria | `STAFF` | Compartilhado, como antes: replay equivalente de outro staff devolve o mesmo command e preserva a autoria original |
+| PLAYER | `PLAYER:<playerId>` | Isolado: outro player com a mesma chave cria command independente, sem 409 nem leitura cruzada |
+| SYSTEM | `SYSTEM:<source>` | Isolado por source |
+
+Commands existentes receberam `actor_type = STAFF` e `idempotency_scope = STAFF`
+pelo default das colunas, sem perda ou recriação de histórico. Todas as buscas de
+replay usam `(servidor, scope, chave)`. O scope nunca aparece em respostas HTTP;
+`/game-commands` segue com o mesmo allowlist de campos. O envelope do bridge não
+mudou: o Agent deve deduplicar por `commandId`, como já documentado.
+
+`down` da migration recusa a reversão se houver commands ou Audit PLAYER/SYSTEM
+(chaves isoladas colidiriam na constraint antiga e a autoria seria perdida);
+nada é apagado.
 
 ## Decisões ainda abertas
 
@@ -366,7 +445,6 @@ as decisões acima:
 | Escopos do Discord OAuth2 e fluxo no Electron (ex.: authorization code com PKCE) | 10.3 |
 | Criação de conta no primeiro login ou cadastro explícito; TTL/revogação de sessão | 10.3 |
 | Efeito de SUSPENDED/BANNED em sessões, ownership, trade e marketplace | 10.3 |
-| Forma da idempotência por ator (constraint vs tabela) e representação do ator | 10.2 |
 | Mecanismo de confirmação de ownership com o Agent | 10.4 (contrato) / 11 (real) |
 | Campos de perfil e skills expostos pelo Agent | 10.5 |
 | Chaves de Player Settings | 10.16 |

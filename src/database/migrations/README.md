@@ -70,3 +70,14 @@ provider_subject)`; provider DISCORD/STEAM; subject não vazio; índice por
 player). Não há relação com `staff_users`/`staff_sessions` nem alteração de
 permissions, grants ou migrations anteriores. `down` remove `player_identities`
 e `players`, com perda desses dados. Detalhes em `docs/player-services.md`.
+
+A Subetapa 10.2 adiciona `1789900000000-GenericActor`. Em `audit_logs`, somente
+colunas nullable (`actor_type`, `actor_player_id`, `actor_system_source`), o check
+`audit_logs_actor_check` e um índice: nenhuma linha é atualizada e o trigger
+append-only permanece. Em `game_commands`, `actor_type` e `idempotency_scope`
+(NOT NULL, default `STAFF`, preenchendo o histórico sem reescrita),
+`requested_by_player_id` com FK para `players`, `requested_by_system_source`,
+`game_commands_actor_check` e a troca de `game_commands_idempotency_key` para
+`UNIQUE(game_server_id, idempotency_scope, idempotency_key)`. `down` recusa
+reverter se existirem dados PLAYER/SYSTEM; caso contrário restaura a constraint
+global e remove as colunas. Detalhes em `docs/player-services.md`.
