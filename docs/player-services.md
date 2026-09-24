@@ -71,7 +71,7 @@ domínio. A Player API nunca chama controllers administrativos. O prefixo
 | 10.3 Player Authentication | **Implementada.** Discord OAuth2, auto-provisioning, `player_sessions`, tokens, `PlayerAuthGuard`, `GET /api/v1/player/me`; migration `1789910000000-PlayerSessions` |
 | 10.4 Character Ownership | **Implementada.** `player_characters`, challenges de vínculo, Player API mínima, `CharacterOwnershipService`, `confirmFromAgent` interno; migration `1789920000000-PlayerCharacters` |
 | 10.5 Character Profile + Skills | **Implementada.** `CHARACTER_PROFILE_QUERY`, `CHARACTER_SKILLS_QUERY`, Player API 202 + operation detail; sem migration |
-| 10.6 Multiple Characters | Listagem e gestão dos vínculos 1:N do player |
+| 10.6 Multiple Characters | **Implementada.** `GET /api/v1/player/me/characters` e detalhe; sem migration |
 | 10.7 Professions | Profissão ativa por character, XP e nível persistidos |
 | 10.8 Groups + Realtime Foundation | Infraestrutura WebSocket e barramento de eventos internos; party com leader, members e invites como primeiro domínio realtime |
 | 10.9 Guilds / Clans | Guildas persistentes com membros, cargos e convites |
@@ -322,7 +322,7 @@ ativo anterior na mesma transação.
 Erros: servidor inexistente 404; desabilitado 409; character VERIFIED por outro
 player → 409 `Character unavailable` (sem revelar o dono); vínculo próprio já
 VERIFIED → 409. Body não aceita `playerId`, `status` ou `challenge`. A listagem de
-characters (`/player/me/characters`) pertence à 10.6.
+characters (`/player/me/characters`) é da 10.6.
 
 **Relink:** um vínculo REVOKED do mesmo player volta a PENDING (`verified_at` e
 `revoked_at` zerados) com novo challenge. Ownership nunca é transferida
@@ -435,6 +435,40 @@ para eles.
   `idempotencyKey`, `correlationId`, lease, deadlines, tentativas, conexão e payload.
   `/game-commands` (admin) continua com seu allowlist, sem payload nem resultado.
 - Queries não geram Audit, como no padrão staff; o GameCommand é a trilha.
+
+### Multiple Characters (10.6)
+
+Um player possui N characters (1:N), cada um identificado por `gameServerId` +
+`characterExternalId`. Não há limite de slots; as constraints da 10.4 continuam
+sendo a garantia de unicidade. **Não existe character "selecionado" ou "ativo"
+no servidor:** toda operação indica explicitamente o character, e o Electron
+escolhe localmente um VERIFIED para consultar profile/skills (10.5).
+
+| Rota | Resposta |
+| --- | --- |
+| `GET /api/v1/player/me/characters?page&limit` | `{ items, total, page, limit, totalPages }` |
+| `GET /api/v1/player/me/characters/:characterLinkId` | um item |
+
+Item: `{ id, gameServer: { id, code, name, enabled }, characterId, status,
+verifiedAt, createdAt }`, em que `id` é o id do vínculo e `enabled` é apenas o flag
+administrativo do servidor (sem health ou conexão).
+
+- Somente vínculos do player do token, com status PENDING ou VERIFIED. REVOKED não
+  aparece na listagem nem no detalhe e permanece no banco como histórico.
+  Detalhe de outro player, REVOKED ou inexistente → 404 `Character not found`.
+- PENDING aparece, mas continua rejeitado por `requireVerifiedOwnership` e pelas
+  queries da 10.5.
+- Um character de servidor desabilitado continua listado: `disabled` não encerra
+  ownership.
+- Ordenação: VERIFIED antes de PENDING, depois `createdAt` ASC e `id` ASC.
+- Paginação: o mesmo contrato `page` (padrão 1) / `limit` (padrão 20, máximo 100)
+  das consultas administrativas. Qualquer outro parâmetro (por exemplo `playerId`
+  ou `status`) → 400.
+- Uma consulta com join em `game_servers`, sem N+1. Leitura pura: nenhuma
+  GameCommand, lock ou Audit.
+- Não retorna `playerId`, `revokedAt`, challenge, hash, identidade do provider,
+  dados de GameCommand nem dados de runtime (nome, nível, raça, atributos, skills,
+  inventário, propriedades, profissão), que não são persistidos no backend.
 
 ### Professions
 

@@ -509,5 +509,10 @@ VERIFIED: `POST /api/v1/player/game-servers/:gameServerId/characters/:characterI
 `profile-query` e `skills-query` (Idempotency-Key obrigatório, 202 + Location) e
 `GET /api/v1/player/character-operations/:operationId`, visível só para o próprio
 player. Os commands usam ator PLAYER e scope de idempotência próprio; o resultado
-vem do Skyrim, validado, sem snapshot. Não há migration nova. Consulte [arquitetura, decisões e roadmap da
+vem do Skyrim, validado, sem snapshot. Não há migration nova.
+
+A Subetapa 10.6 lista os characters do player em `GET /api/v1/player/me/characters`
+(paginado, VERIFIED antes de PENDING, sem REVOKED) e `GET .../:characterLinkId`.
+Retorna apenas identidade e servidor, sem character selecionado no servidor nem
+dados de runtime. Também não tem migration: continuam treze. Consulte [arquitetura, decisões e roadmap da
 Etapa 10](docs/player-services.md).
