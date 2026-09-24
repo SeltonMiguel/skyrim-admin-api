@@ -16,6 +16,7 @@ export const ROLE_PERMISSIONS: Readonly<
     Permission.STAFF_READ,
     Permission.STAFF_WRITE,
     Permission.VIP_STORE_WRITE,
+    Permission.VIP_STORE_READ,
     Permission.SERVER_START,
     Permission.SERVER_PAUSE,
     Permission.SERVER_RESTART,
