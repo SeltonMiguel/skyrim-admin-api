@@ -6,6 +6,11 @@ export const ROLE_PERMISSIONS: Readonly<
   Record<RoleName, readonly Permission[]>
 > = {
   [RoleName.COORDINATOR]: [
+    Permission.WORLD_READ,
+    Permission.WORLD_TIME_WRITE,
+    Permission.WORLD_WEATHER_WRITE,
+    Permission.WORLD_ENTITY_SPAWN,
+
     Permission.DASHBOARD_READ,
     Permission.GAME_BRIDGE_READ,
     Permission.STAFF_READ,
@@ -39,6 +44,11 @@ export const ROLE_PERMISSIONS: Readonly<
     Permission.PLAYER_TELEPORT_TO_STAFF,
   ],
   [RoleName.GENERAL_CHIEF]: [
+    Permission.WORLD_READ,
+    Permission.WORLD_TIME_WRITE,
+    Permission.WORLD_WEATHER_WRITE,
+    Permission.WORLD_ENTITY_SPAWN,
+
     Permission.DASHBOARD_READ,
     Permission.GAME_BRIDGE_READ,
     Permission.CHARACTER_INVENTORY_READ,
@@ -66,6 +76,8 @@ export const ROLE_PERMISSIONS: Readonly<
     Permission.PLAYER_TELEPORT_TO_STAFF,
   ],
   [RoleName.ADMIN]: [
+    Permission.WORLD_READ,
+
     Permission.DASHBOARD_READ,
     Permission.GAME_BRIDGE_READ,
     Permission.PLAYER_BAN,
