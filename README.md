@@ -612,3 +612,13 @@ revoga direitos internamente (STAFF/SYSTEM, idempotente, auditado). O player só
 Não há pagamento, checkout nem entrega pelo Agent (Etapa 11). A migration
 `1790010000000-VipEntitlements` completa vinte e duas migrations.
 Consulte [arquitetura, decisões e roadmap da Etapa 10](docs/player-services.md).
+
+## Integração (Etapa 11)
+
+A Subetapa 11.0 é somente discovery e contratos: não há transporte real do Agent,
+autenticação de Agent, endpoint ou migration novos, e os gateways de produção
+continuam Disconnected. O inventário do que já espera o Agent, a decisão de
+transporte (WebSocket persistente iniciado pelo Agent), o modelo de credencial,
+o envelope versionado, as garantias de entrega, a matriz Electron, a failure
+matrix e o roadmap 11.1–11.6 estão em
+[arquitetura de integração](docs/integration-architecture.md).
