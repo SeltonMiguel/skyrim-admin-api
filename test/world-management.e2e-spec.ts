@@ -107,7 +107,7 @@ describeDatabase('World with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(21);
+    expect(await database.runMigrations()).toHaveLength(22);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -213,6 +213,7 @@ describeDatabase('World with real PostgreSQL', () => {
       'player_trade_requests',
       'player_trade_settlement_events',
       'player_trades',
+      'player_vip_entitlements',
       'players',
       'profession_experience_events',
       'role_permissions',
@@ -220,6 +221,7 @@ describeDatabase('World with real PostgreSQL', () => {
       'server_control_operations',
       'staff_sessions',
       'staff_users',
+      'vip_entitlement_requests',
       'vip_offers',
     ]);
   });
@@ -496,6 +498,7 @@ describeDatabase('World with real PostgreSQL', () => {
         .expect(404);
   });
   it('reverses only the four permissions and nine grants and reapplies cleanly', async () => {
+    await database.undoLastMigration(); // Etapa 10.17 VIP Entitlements
     await database.undoLastMigration(); // Etapa 10.16 Player Settings
     await database.undoLastMigration(); // Etapa 10.15 Player Chat
     await database.undoLastMigration(); // Etapa 10.14 Player Marketplace
@@ -520,7 +523,7 @@ describeDatabase('World with real PostgreSQL', () => {
         "SELECT * FROM permissions WHERE name LIKE 'WORLD_%'",
       ),
     ).toEqual([]);
-    expect(await database.runMigrations()).toHaveLength(15);
+    expect(await database.runMigrations()).toHaveLength(16);
     expect(await database.runMigrations()).toHaveLength(0);
     expect(
       await database.query(
