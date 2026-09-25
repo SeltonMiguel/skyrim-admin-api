@@ -64,6 +64,15 @@ staleness, fecha a conexão como STALE e retorna false; não ressuscita sessões
 `disconnect` registra REQUESTED; repetir retorna false. Não se apaga histórico.
 Servidor disabled impede connect, heartbeat válido e novo dispatch.
 
+**Etapa 11.1:** `game_connections` passa a representar a sessão do Host Agent,
+aberta pelo HELLO de `/api/v1/agent` (credencial, capabilities, estado do processo
+e prontidão do SKSE; `bridge_version` guarda a versão do Agent). `connect` ganhou
+`connectInTransaction` e `heartbeat` aceita o snapshot de runtime; os motivos de
+encerramento passam a ser `SUPERSEDED`, `STALE`, `REQUESTED`, `CLOSED`,
+`CREDENTIAL_REVOKED`, `SHUTDOWN` e `BACKEND_RESTART`, com CHECK. Nada disso
+altera dispatch, ACK ou RESULT (11.2). Ver
+[arquitetura de integração](integration-architecture.md) §4.
+
 ## Command envelope
 
 ```json

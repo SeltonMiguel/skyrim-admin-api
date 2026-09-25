@@ -615,10 +615,32 @@ Consulte [arquitetura, decisões e roadmap da Etapa 10](docs/player-services.md)
 
 ## Integração (Etapa 11)
 
-A Subetapa 11.0 é somente discovery e contratos: não há transporte real do Agent,
-autenticação de Agent, endpoint ou migration novos, e os gateways de produção
-continuam Disconnected. O inventário do que já espera o Agent, a decisão de
-transporte (WebSocket persistente iniciado pelo Agent), o modelo de credencial,
-o envelope versionado, as garantias de entrega, a matriz Electron, a failure
-matrix e o roadmap 11.1–11.6 estão em
+A Subetapa 11.0 definiu os contratos de integração: inventário do que espera o
+Agent, transporte, credencial, envelope versionado, garantias de entrega, matriz
+Electron, failure matrix e roadmap 11.1–11.6, em
 [arquitetura de integração](docs/integration-architecture.md).
+
+A Subetapa 11.1 implementa o transporte e a autenticação do **Host Agent**:
+
+- WebSocket próprio em `/api/v1/agent`, separado do realtime Player/Staff. Um
+  único roteador de upgrade decide a superfície; outro path ou query string → 400.
+- Credencial por GameServer: segredo de 256 bits gerado pelo backend, exibido uma
+  vez, armazenado só como SHA-256; até duas ACTIVE (rotação); revogação fecha a
+  sessão na hora. Staff API em
+  `/api/v1/admin/game-servers/:gameServerId/agent-credentials` (GET, POST e
+  `POST …/:credentialId/revoke`), permission `GAME_AGENT_CREDENTIAL_MANAGE`
+  (COORDINATOR e DEV), com Audit.
+- Primeiro frame `HELLO` (protocolVersion `"1"`), resposta `AUTHENTICATED`,
+  `HEARTBEAT` com estado do processo e prontidão do SKSE; uma sessão por servidor
+  (a nova substitui a anterior), timeout de heartbeat e reconciliação no startup.
+  Agent conectado não significa jogo pronto.
+
+Ainda não há dispatch de GameCommand, resultados, Server Control real nem eventos
+de domínio pelo Agent (11.2+); essas mensagens recebem `NOT_IMPLEMENTED`. A
+migration `1790020000000-GameAgentTransport` completa vinte e três migrations.
+
+| Variável | Padrão | Regra |
+| --- | --- | --- |
+| `AGENT_AUTH_TIMEOUT_MS` | 5000 | 100–60000; prazo para o HELLO |
+| `AGENT_HEARTBEAT_INTERVAL` | `10s` | intervalo anunciado ao Agent |
+| `AGENT_HEARTBEAT_TIMEOUT` | `30s` | maior que o intervalo e ≤ `GAME_BRIDGE_HEARTBEAT_TIMEOUT_MS` |

@@ -185,3 +185,13 @@ shape por scope, status e expiração, índices únicos parciais de um ACTIVE po
 oferta + titular, trigger de histórico imutável) e `vip_entitlement_requests`
 (idempotência por scope de ator, append-only). `down` recusa reverter com
 entitlements existentes. Detalhes em `docs/player-services.md`.
+
+A Subetapa 11.1 adiciona `1790020000000-GameAgentTransport`: permission
+`GAME_AGENT_CREDENTIAL_MANAGE` com grants para COORDINATOR e DEV (37 permissions,
+95 grants), `game_agent_credentials` (SHA-256 do segredo com CHECK de formato,
+status ACTIVE/REVOKED coerente com `revoked_at`, trigger de identidade e hash
+imutáveis e histórico sem DELETE) e, em `game_connections`, as colunas da sessão
+do Host Agent (`credential_id` FK, `capabilities` jsonb limitado a 64,
+`game_process_state`, `skse_ready`) com CHECKs de coerência e de
+`disconnect_reason`. `down` recusa reverter com credenciais existentes. Detalhes
+em `docs/integration-architecture.md`.

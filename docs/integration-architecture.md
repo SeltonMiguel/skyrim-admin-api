@@ -6,6 +6,10 @@ para integração, fixa as decisões de transporte, autenticação, protocolo e
 garantias de entrega do Game Agent, e distribui o trabalho restante entre as
 subetapas 11.1–11.6.
 
+**Estado:** a 11.1 (transporte + autenticação do Host Agent) está implementada;
+§4 descreve o contrato em vigor e cada seção marca o que é da 11.1. O restante
+(11.2+) continua sendo contrato proposto.
+
 Tudo o que é descrito como "proposto" ou "11.x" **não existe** no código. Tudo o
 que é descrito como "atual" foi verificado neste repositório, com referência ao
 arquivo. Código do Game Agent/SKSE, do Electron e do Launcher C# **não está neste
@@ -245,11 +249,12 @@ Trade-offs aceitos:
 - **Backpressure:** o adapter deve recusar `send` (`TRANSIENT`) se o buffer do
   socket exceder um limite, em vez de acumular.
 
-Condição técnica para 11.1: o `RealtimeGateway` atual registra um handler de
-`upgrade` que **responde 400 e destrói** qualquer socket cujo path não seja
-`/api/v1/realtime`. Uma segunda superfície WS exige um roteador de upgrade único
-(ou que cada handler ignore paths que não são seus). Os dois `WebSocketServer`
-continuam separados, com limites próprios.
+Condição técnica, **resolvida na 11.1**: o `RealtimeGateway` tinha o próprio
+handler de `upgrade`, que respondia 400 a qualquer outro path. Agora
+`WebSocketUpgradeRouter` (`src/websocket/`) é o **único** listener de `upgrade`:
+`/api/v1/realtime` → realtime, `/api/v1/agent` → Agent, qualquer outro path ou
+qualquer query string → 400. Os dois `WebSocketServer` continuam separados, com
+limites próprios.
 
 ### Topologia final do Agent (decidida)
 
@@ -309,9 +314,9 @@ disponível".**
 | Domain events (Agent → Backend) | (A); o evento já ocorreu no jogo |
 | `WORK_SYNC` / `WORK_ITEMS` | (A); o Agent decide executar só quando (B) |
 
-O HELLO/HEARTBEAT deve informar, **conceitualmente** (enum final na 11.1):
+O HELLO/HEARTBEAT informa (fechado na 11.1, §4.4):
 
-- sessão/conectividade do Agent (`connectionId`, `agentInstanceId`);
+- sessão/conectividade do Agent (`connectionId`);
 - `agentVersion`;
 - capabilities (Server Control, tipos de gameplay, eventos);
 - estado do processo do jogo (ex.: parado, iniciando, rodando, pausado, parando);
@@ -332,71 +337,212 @@ política do worker, não do lifecycle.
 Identidade própria do Agent. **Nunca** Staff JWT, Player JWT, `staff_sessions`,
 `player_sessions`, `JWT_*_SECRET` ou `PLAYER_JWT_*_SECRET`.
 
-### Credencial (proposta para 11.1)
+**Implementado na 11.1** (`src/game-agent/`, migration
+`1790020000000-GameAgentTransport`). O que segue é o contrato em vigor.
 
-| Campo | Regra |
+### 4.1 Credencial
+
+Tabela `game_agent_credentials`:
+
+| Coluna | Regra |
 | --- | --- |
-| `credentialId` | UUID público, identifica a credencial (lookup sem varrer hashes) |
-| `gameServerId` | FK para `game_servers`; uma credencial pertence a **um** servidor |
-| segredo | 256 bits de `crypto.randomBytes`, codificado base64url, exibido **uma vez** na emissão |
-| `secret_hash` | SHA-256 hex do segredo (mesmo padrão de `player_sessions.refresh_token_hash` e do challenge); comparação com `timingSafeEqual`. Segredo aleatório de alta entropia dispensa KDF lenta; argon2 (já dependência) só se o segredo puder ser escolhido por humanos, o que não deve ocorrer |
-| `created_at`, `created_by_staff_id` | autoria |
-| `last_used_at` | atualizado no HELLO |
-| `revoked_at`, `revoked_by_staff_id` | revogação imediata |
-| `expires_at` | opcional |
+| `id` | UUID; é o `credentialId` público |
+| `game_server_id` | FK `game_servers`; a credencial pertence a **um** servidor |
+| `secret_hash` | `char(64)`, CHECK `^[0-9a-f]{64}$`: SHA-256 hex do segredo |
+| `status` | `ACTIVE` \| `REVOKED`, CHECK coerente com `revoked_at` |
+| `created_by_staff_id` | FK `staff_users`, nullable |
+| `created_at`, `last_used_at`, `revoked_at` | `last_used_at` só muda após HELLO autenticado |
 
-- **Rotação:** até **duas** credenciais ativas por servidor (antiga e nova), para
-  trocar sem downtime; depois revoga-se a antiga.
-- **Revogação:** fecha imediatamente a conexão ativa autenticada por ela (close
-  `CREDENTIAL_REVOKED`) e rejeita novos HELLO.
-- **Emissão/revogação:** por Staff. Precisa de permission dedicada (proposta:
-  `GAME_AGENT_CREDENTIAL_MANAGE`) com Audit; o catálogo atual de permissions não a
-  contém. Endpoint Admin ou comando CLI (como `staff:bootstrap`) é decisão aberta.
-- Plaintext nunca é persistido, logado, auditado nem retornado depois da emissão.
+- **Segredo:** 32 bytes de `crypto.randomBytes` (256 bits), base64url sem padding
+  (43 caracteres), gerado pelo backend. Só o SHA-256 é persistido. SHA-256 é
+  deliberado: o segredo é aleatório de alta entropia, não senha humana (mesmo
+  raciocínio do refresh token de player); não há KDF lenta.
+- **Comparação:** busca **por `credentialId`**, nunca pelo segredo; digests de
+  tamanho fixo comparados com `timingSafeEqual`. Credencial inexistente também
+  compara contra um digest fixo, para que os dois caminhos façam o mesmo trabalho.
+- **Imutabilidade (trigger `guard_game_agent_credential`):** `id`, servidor, hash,
+  autor e `created_at` nunca mudam; `status` só `ACTIVE → REVOKED`, uma vez;
+  `DELETE` recusado (histórico). Não há `expires_at` nem `revoked_by_staff_id`: o
+  Audit registra quem revogou.
+- O segredo nunca é logado, auditado, devolvido depois da criação nem aparece em
+  frames do backend. O hash nunca sai pela API.
 
-### Migration provável em 11.1
+### 4.2 Staff API
 
-- Tabela `game_agent_credentials` (campos acima; índices por servidor e ativos).
-- `game_connections.credential_id` (FK) para saber qual credencial abriu a sessão
-  e fechá-la na revogação.
-- Possivelmente `game_connections.capabilities` (jsonb) e `agent_version`
-  (hoje existe `bridge_version varchar(64)`, reutilizável).
-- Se houver endpoint Admin: permission + grants (COORDINATOR, DEV) e AuditActions.
+Permission nova **`GAME_AGENT_CREDENTIAL_MANAGE`**, concedida só a COORDINATOR e
+DEV (37 permissions, 95 grants). GENERAL_CHIEF, ADMIN, MODERATOR e SUPPORT → 403.
+Todas as respostas têm `Cache-Control: no-store`.
 
-### Handshake (proposto)
+| Rota | Resposta |
+| --- | --- |
+| `GET /api/v1/admin/game-servers/:gameServerId/agent-credentials` | `{ items: [{ credentialId, gameServerId, status, createdAt, lastUsedAt, revokedAt }] }` |
+| `POST /api/v1/admin/game-servers/:gameServerId/agent-credentials` | 201 `{ credentialId, gameServerId, credentialSecret, status: ACTIVE, createdAt }` — **única** vez que o segredo aparece |
+| `POST /api/v1/admin/game-servers/:gameServerId/agent-credentials/:credentialId/revoke` | 200 com a metadata segura |
 
-O segredo trafega **no primeiro frame**, nunca na URL (mesma regra do realtime).
+- Prefixo `admin/` como no catálogo VIP administrativo. Corpo vazio (qualquer
+  propriedade → 400); servidor inexistente → 404; credencial de outro servidor →
+  404.
+- **Máximo de 2 ACTIVE** por servidor, para rotação sem downtime: A ativa → criar
+  B → trocar o Agent → revogar A. Terceira → 409. A garantia é o lock `FOR UPDATE`
+  da linha de `game_servers` na mesma transação da contagem e do INSERT (sem
+  mutex em memória). Ordem de locks em create, revoke e HELLO: `game_servers →
+  game_agent_credentials → game_connections`.
+- **Create não é idempotente** por design: cada chamada emite um segredo novo,
+  limitado pelo teto de 2. Resposta perdida → revogar e criar outra.
+- **Revoke:** `ACTIVE → REVOKED`; repetir devolve o mesmo estado, sem Audit. Na
+  mesma transação, as sessões `CONNECTED` daquela credencial viram `DISCONNECTED /
+  CREDENTIAL_REVOKED`; logo após o commit, o socket é fechado (`4009`), sem esperar
+  heartbeat. Outras credenciais do servidor não são afetadas.
+- **Audit** (mesma transação da mutação; falha → 503 e rollback):
+  `GAME_AGENT_CREDENTIAL_CREATED` (201) e `GAME_AGENT_CREDENTIAL_REVOKED` (200),
+  `resourceType = GAME_AGENT_CREDENTIAL`, `resourceId = credentialId`, ator STAFF.
+  Metadata `{ gameServerId, status }`. O `credentialId` fica em `resourceId`: o
+  sanitizer do Audit remove por desenho qualquer chave que contenha "credential",
+  e ele não foi afrouxado.
+- Staff/Player JWT não autenticam o Agent, e o segredo do Agent não autentica
+  nenhuma rota HTTP (Staff ou Player) nem o realtime.
+
+### 4.3 HELLO e AUTHENTICATED
+
+O segredo trafega **só no primeiro frame**, nunca na URL (o roteador de upgrade
+recusa qualquer query string).
 
 ```json
 {
   "protocolVersion": "1",
   "type": "HELLO",
-  "messageId": "0f0e…",
+  "messageId": "UUID",
+  "gameServerId": "UUID",
   "occurredAt": "2026-10-01T12:00:00.000Z",
   "payload": {
-    "gameServerId": "019b4700-3333-4333-8333-333333333333",
-    "credentialId": "019b4700-5555-4555-8555-555555555555",
-    "secret": "<base64url>",
-    "agentInstanceId": "c8b4…",
+    "credentialId": "UUID",
+    "credentialSecret": "<43 caracteres base64url>",
     "agentVersion": "1.4.2",
-    "supportedProtocolVersions": ["1"],
-    "capabilities": {
-      "commandTypes": ["BRIDGE_PING", "CHARACTER_PROFILE_QUERY"],
-      "domainEvents": ["CHARACTER_OWNERSHIP_CONFIRMATION"],
-      "serverControl": ["SERVER_START", "SERVER_RESTART"]
-    },
-    "runtime": { "process": "RUNNING", "gameBridge": "READY" }
+    "capabilities": ["BRIDGE_PING", "SERVER_START"],
+    "gameProcessState": "STOPPED",
+    "skseReady": false
   }
 }
 ```
 
-(Os valores de `runtime` são ilustrativos; o enum final é fixado na 11.1, §3.1.)
+Validação estrita (chaves exatas, extras → erro): UUIDs, `occurredAt` ISO-8601
+UTC, segredo com o formato exato (um JWT nunca passa), `agentVersion`
+`[A-Za-z0-9._:-]{1,64}`, até 64 capabilities distintas `^[A-Z][A-Z0-9_]{0,63}$`,
+`gameProcessState` do enum e `skseReady` booleano. Capabilities expressam
+compatibilidade operacional; **não concedem autorização**.
 
-Resposta `WELCOME` com `connectionId` (= `game_connections.id`), versão negociada,
-`heartbeatIntervalMs`, timeout e limites (frame, in-flight). `agentInstanceId` é o
-`externalConnectionId`: **novo a cada socket** (o serviço atual rejeita reuso de
-um id encerrado). Qualquer falha → `ERROR` genérico + close, sem revelar se o
-servidor ou a credencial existem.
+Verificação e ativação, em duas fases:
+
+1. **Transação** (nada é publicado em memória): servidor existe → credencial
+   existe → pertence ao `gameServerId` do HELLO → ACTIVE → segredo confere →
+   servidor habilitado → cria a sessão (`game_connections`, fechando a anterior
+   como `SUPERSEDED`) → atualiza `last_used_at` → **commit**. Qualquer falha ou
+   rollback → close `4001 UNAUTHORIZED`, sem revelar o motivo (o log interno
+   registra `UNKNOWN_SERVER`, `UNKNOWN_CREDENTIAL`, `CREDENTIAL_SERVER_MISMATCH`,
+   `CREDENTIAL_REVOKED`, `INVALID_SECRET` ou `SERVER_DISABLED`); nenhuma entrada
+   de registry, nenhum `AUTHENTICATED`, e a sessão anterior segue intacta.
+2. **Promoção pós-commit:** a sessão entra no registry como **AUTHENTICATING**
+   (invisível para `getSession`, `isConnected`, `isRuntimeReady`, `supports` e
+   `send`; visível para revogação e limpeza) → revalida no banco que a linha da
+   sessão continua `CONNECTED` e a credencial continua `ACTIVE` → sem nenhum
+   `await` entre a revalidação positiva e a ativação, promove para **ACTIVE** →
+   só então fecha a sessão anterior (`4006 SUPERSEDED`) → envia `AUTHENTICATED`.
+   As promoções de um servidor são serializadas em memória, na ordem de commit.
+
+Revogação × HELLO: se o revoke commita antes da leitura de revalidação, ela o vê
+e a sessão fecha com `4009` sem ficar ACTIVE; se commita depois, o fechamento
+pós-commit do revoke encontra a sessão (AUTHENTICATING ou ACTIVE) e a fecha. Em
+nenhuma ordem uma sessão de credencial REVOKED termina ACTIVE. Se a nova sessão
+é recusada depois do commit (revogada, ou já superada por uma HELLO mais nova), a
+anterior só é fechada se o banco já a marcou como encerrada; se ela continua
+`CONNECTED`, permanece ACTIVE.
+
+Sucesso → frame `AUTHENTICATED`, com `payload`: `inReplyTo`, `connectionId`
+(= `game_connections.id`), `heartbeatIntervalMs`, `heartbeatTimeoutMs`,
+`maxFrameBytes` e `serverTime`. Nada de segredo.
+
+O `externalConnectionId` de cada sessão é um UUID novo gerado pelo backend por
+socket (o Game Bridge nunca reutiliza um id encerrado); o Agent não o envia.
+
+### 4.4 Sessão, runtime e heartbeat
+
+`game_connections` **é** a sessão do Host Agent. Colunas acrescentadas:
+`credential_id` (FK), `capabilities` (jsonb array, ≤ 64), `game_process_state`,
+`skse_ready`. `bridge_version` passa a guardar a versão do Host Agent (sem coluna
+duplicada). CHECK: sessões com credencial têm runtime; sessões abertas pelo serviço
+interno, sem transporte, não têm. `disconnect_reason` passou a ter CHECK.
+
+**Runtime** (fechado na 11.1): `UNKNOWN`, `STOPPED`, `STARTING`, `RUNNING`, `PAUSED`,
+`STOPPING`, `RESTARTING`, mais `skseReady: boolean`. Não há `CRASHED`: um processo
+que caiu é `STOPPED` (ou `RESTARTING` enquanto o Agent o recupera). **Game ready =
+`RUNNING` e `skseReady`.**
+
+**HEARTBEAT** (autenticado):
+
+```json
+{ "...envelope": "...", "type": "HEARTBEAT",
+  "payload": { "gameProcessState": "RUNNING", "skseReady": true, "capabilities": ["…"] } }
+```
+
+`capabilities` é opcional (ausente = mantém as anunciadas). O backend chama
+`GameConnectionService.heartbeat`, que atualiza `last_heartbeat_at` e o runtime; se
+o banco disser que a sessão não está mais ativa (servidor desabilitado, sessão
+substituída ou vencida), o socket fecha com `4011 SESSION_CLOSED`. Caso contrário
+responde `HEARTBEAT_ACK { inReplyTo, serverTime }`.
+
+**Timeout:** uma varredura periódica em memória (a cada `min(intervalo, 1 s)`, sem
+timer por conexão) encerra sessões sem heartbeat há `AGENT_HEARTBEAT_TIMEOUT`:
+linha `DISCONNECTED / STALE`, socket `4008 HEARTBEAT_TIMEOUT`, registry sem a
+sessão. Nenhum status novo foi criado.
+
+| Variável | Padrão | Regra |
+| --- | --- | --- |
+| `AGENT_AUTH_TIMEOUT_MS` | 5000 | 100–60000; prazo para o HELLO chegar |
+| `AGENT_HEARTBEAT_INTERVAL` | `10s` | anunciado ao Agent no AUTHENTICATED |
+| `AGENT_HEARTBEAT_TIMEOUT` | `30s` | > intervalo e ≤ `GAME_BRIDGE_HEARTBEAT_TIMEOUT_MS` (um socket vivo sempre tem sessão saudável no Game Bridge) |
+
+### 4.5 Ciclo de vida da conexão
+
+| Evento | Sessão (`disconnect_reason`) | Socket |
+| --- | --- | --- |
+| Zero Agents | nenhuma `CONNECTED`; GameCommand/Server Control continuam com os gateways Disconnected | — |
+| Agent fecha com 1000 | `REQUESTED` | — |
+| Queda/fechamento sem 1000, violação de protocolo pós-auth | `CLOSED` | código do motivo |
+| Novo HELLO do mesmo servidor autenticado com sucesso | anterior `SUPERSEDED` (na transação do novo) | anterior `4006 SUPERSEDED` só depois de a nova ficar ACTIVE; HELLO que falha ou faz rollback não afeta a anterior |
+| Heartbeat vencido | `STALE` | `4008` |
+| Credencial revogada | `CREDENTIAL_REVOKED` | `4009` |
+| Backend encerrando | `SHUTDOWN` | `1001` |
+| Backend iniciando | toda linha `CONNECTED` restante vira `BACKEND_RESTART` (sockets não sobrevivem a restart; histórico mantido) | — |
+
+Conexões duplicadas: uma sessão ativa por servidor, garantida pelo índice parcial
+único existente e pelo lock do servidor; duas HELLO simultâneas serializam no
+banco e a última **autenticada com sucesso** (commit + promoção) vence; registry e
+banco concordam. A reconciliação de startup
+assume **instância única** (Etapa 12 trata multi-instância).
+
+Códigos de close: `4000 AUTH_TIMEOUT`, `4001 UNAUTHORIZED`, `4003 PROTOCOL_ERROR`,
+`4005 PROTOCOL_UNSUPPORTED`, `4006 SUPERSEDED`, `4008 HEARTBEAT_TIMEOUT`,
+`4009 CREDENTIAL_REVOKED`, `4010 SERVER_MISMATCH`, `4011 SESSION_CLOSED`,
+`1001 SHUTDOWN`, e `1009` do próprio `ws` para frame grande.
+
+### 4.6 Session registry e router
+
+`AgentSessionRegistry` (memória, um por instância) tem dois estados internos:
+**AUTHENTICATING** (por `connectionId`, só para revogação/limpeza/shutdown) e
+**ACTIVE** (índice `gameServerId`, o único visível às leituras públicas e a
+`send`). Não há enum no protocolo nem no banco. Cada sessão guarda
+`connectionId`, `gameServerId`, `credentialId`, `agentVersion`, capabilities,
+runtime, `connectedAt`, `lastHeartbeatAt` e o socket; sem regra de domínio. API
+para as próximas subetapas: `getSession`, `isConnected`, `isRuntimeReady`,
+`supports(capability)`, `send(gameServerId, connectionId, frame)` (só para aquela
+sessão, nunca redirecionado). **Nenhum dispatcher o usa ainda** (11.2).
+
+`AgentMessageRouter` recebe só frames autenticados: `gameServerId` do frame ≠ da
+sessão → `4010`; `HEARTBEAT` → tratado; `COMMAND_RESULT`, `DOMAIN_EVENT` e
+`SERVER_CONTROL_RESULT` → `ERROR { code: NOT_IMPLEMENTED, retryable: false }` sem
+tocar no domínio (socket continua aberto); `ERROR` do Agent → logado; `HELLO`
+repetido, `WORK_SYNC`, tipos só de saída ou desconhecidos → `4003`. O router não
+importa repositórios nem `typeorm` (teste de fronteira).
 
 ## 5. Protocol / envelope
 
@@ -412,10 +558,14 @@ envelope externo é novo, mas os contratos internos já publicados (`CommandEnve
   "messageId": "UUID do frame",
   "gameServerId": "UUID",
   "occurredAt": "ISO-8601 UTC",
-  "inReplyTo": "messageId opcional (respostas)",
-  "payload": { }
+  "payload": { "inReplyTo": "messageId, só em respostas" }
 }
 ```
+
+**11.1:** o envelope tem exatamente essas seis chaves nos dois sentidos
+(`src/game-agent/agent-protocol.contracts.ts`); `inReplyTo` fica dentro do
+`payload` das respostas (`AUTHENTICATED`, `HEARTBEAT_ACK`, `ERROR`) para o
+envelope ser idêntico em entrada e saída.
 
 - Adaptação ao projeto: `CommandEnvelope` usa `serverId`, não `gameServerId`. O
   envelope externo usa `gameServerId`; o interno mantém `serverId`. Ambos devem
@@ -426,22 +576,26 @@ envelope externo é novo, mas os contratos internos já publicados (`CommandEnve
   usam `eventId`, Server Control usa `operationId`.
 - Chaves extras no envelope ou no payload → rejeição (mesma regra "closed" de
   `actor()` e dos DTOs).
-- Frames binários → protocol error. Tamanho máximo de frame proposto: **128 KiB**
-  (cabe um result de 64 KiB mais envelope; o realtime usa 16 KiB).
-- Compatibilidade: campos novos só em versão nova. O backend aceita a lista
-  `supportedProtocolVersions` do HELLO e escolhe a maior comum; se não houver,
-  `ERROR PROTOCOL_UNSUPPORTED` e close. Versões antigas são removidas só com
-  janela de depreciação documentada.
+- Frames binários → protocol error. Tamanho máximo de frame: **128 KiB**
+  (`MAX_AGENT_FRAME_BYTES`, único lugar; cabe um result de 64 KiB mais envelope;
+  o realtime continua com 16 KiB). Acima disso o `ws` fecha com `1009` antes de
+  qualquer parse.
+- Frame malformado (JSON inválido, chaves extras, tipos errados) → close `4003`
+  imediato, antes ou depois da autenticação.
+- Compatibilidade: campos novos só em versão nova. **11.1 aceita somente `"1"`**,
+  sem negociação nem fallback: outra versão → close `4005 PROTOCOL_UNSUPPORTED`,
+  sem sessão. Uma lista de versões suportadas no HELLO fica para quando existir
+  uma segunda versão. Versões antigas são removidas só com janela de depreciação
+  documentada.
 
 ## 6. Message types
 
 | Tipo | Direção | Payload | Resposta | Subetapa |
 | --- | --- | --- | --- | --- |
-| `HELLO` | A → B | credencial, versões, capabilities, runtime | `WELCOME` ou `ERROR`+close | 11.1 |
-| `WELCOME` | B → A | `connectionId`, limites, intervalos | — | 11.1 |
-| `HEARTBEAT` | A → B | `connectionId`, estado do processo, prontidão SKSE, capabilities de gameplay atuais | `HEARTBEAT_ACK` | 11.1 |
-| `HEARTBEAT_ACK` | B → A | `serverTime` | — | 11.1 |
-| `GOODBYE` | A → B ou B → A | motivo | close | 11.1 |
+| `HELLO` | A → B | credencial, `agentVersion`, capabilities, runtime (§4.3) | `AUTHENTICATED` ou close | 11.1 ✔ |
+| `AUTHENTICATED` | B → A | `connectionId`, intervalos, limite de frame, `serverTime` | — | 11.1 ✔ |
+| `HEARTBEAT` | A → B | estado do processo, `skseReady`, capabilities opcionais (a sessão vem do socket) | `HEARTBEAT_ACK` | 11.1 ✔ |
+| `HEARTBEAT_ACK` | B → A | `inReplyTo`, `serverTime` | — | 11.1 ✔ |
 | `COMMAND` | B → A | `CommandEnvelope` (inalterado) | `COMMAND_ACK` e depois `COMMAND_RESULT` | 11.2 |
 | `COMMAND_ACK` | A → B | `BridgeMessage` | — | 11.2 |
 | `COMMAND_RESULT` | A → B | `ResultMessage` | `ERROR` só se rejeitado | 11.2 |
@@ -452,12 +606,14 @@ envelope externo é novo, mas os contratos internos já publicados (`CommandEnve
 | `DOMAIN_EVENT_RESULT` | B → A | resultado tipado do serviço (`APPLIED`, `ALREADY_APPLIED`, `REJECTED` + reason) | — | 11.4 |
 | `WORK_SYNC` | A → B | escopo opcional (ex.: `characterExternalId`) | `WORK_ITEMS` | 11.4 |
 | `WORK_ITEMS` | B → A | lista de trabalho pendente derivada do banco (§13–15) | — | 11.4 |
-| `ERROR` | ambos | `code`, `inReplyTo?`, `retryable` | — | 11.1 |
+| `ERROR` | ambos | `code`, `inReplyTo?`, `retryable` | — | 11.1 ✔ (`NOT_IMPLEMENTED`) |
 
-`ERROR.code` é catálogo fechado (ex.: `INVALID_MESSAGE`, `UNAUTHORIZED`,
-`PROTOCOL_UNSUPPORTED`, `SERVER_MISMATCH`, `UNKNOWN_COMMAND`, `RESULT_CONFLICT`,
-`STALE_CONNECTION`, `TEMPORARILY_UNAVAILABLE`, `RATE_LIMITED`); nunca stack trace,
-SQL ou texto de exceção.
+Não há `GOODBYE`: o encerramento gracioso é o close `1000` do WebSocket
+(sessão `REQUESTED`). Na 11.1 os erros de autenticação e protocolo são **códigos
+de close** (§4.5); o frame `ERROR` só responde a mensagens válidas cujo fluxo ainda
+não existe (`NOT_IMPLEMENTED`). `ERROR.code` continua catálogo fechado (próximos:
+`UNKNOWN_COMMAND`, `RESULT_CONFLICT`, `TEMPORARILY_UNAVAILABLE`, `RATE_LIMITED`);
+nunca stack trace, SQL ou texto de exceção.
 
 **Proibido em qualquer versão:** tipo de mensagem ou command que carregue console
 Skyrim bruto, Papyrus arbitrário, shell, script, SQL, caminho de arquivo ou
@@ -570,7 +726,7 @@ ACKNOWLEDGED nunca é reenviado.
 | RESULT conflitante para command finalizado | rejeitado `RESULT_CONFLICT`; original preservado (atual) |
 | RESULT de outro GameServer | rejeitado `SERVER_MISMATCH`; sessão encerrada (tentativa de injeção) |
 | `commandId` desconhecido | rejeitado `UNKNOWN_COMMAND`, logado com ids |
-| malformed (envelope, contrato, tamanho) | rejeitado `INVALID_MESSAGE`; reincidência fecha a sessão |
+| malformed (envelope, contrato, tamanho) | envelope/tamanho: close `4003`/`1009` (já na 11.1); contrato de result: rejeitado `INVALID_MESSAGE` |
 | RESULT antes de qualquer tentativa possível (PENDING sem lease/tentativa) | rejeitado (atual) |
 | RESULT tardio válido | finaliza o command enquanto a policy permitir: antes de `executionDeadlineAt` e sem TIMEOUT persistido. Depois disso, TIMEOUT vence (atual) e o RESULT é rejeitado como conflito, com métrica de "resultado após TIMEOUT" |
 
@@ -1033,7 +1189,7 @@ Por que o Agent **não** reutiliza `/api/v1/realtime`:
 | --- | --- | --- | --- | --- |
 | Agent offline | banco | dispatcher consome tentativas; PENDING → FAILED `GATEWAY_UNAVAILABLE`; Server Control → FAILED `AGENT_UNAVAILABLE`; eventos esperam no Agent | sim | reconectar o Agent; reenviar operações humanas |
 | Agent conectado, Skyrim parado ou SKSE não pronto | banco + runtime reportado | GameCommand não é enviado (`UNAVAILABLE`, sem escrita no socket); segue TTL/tentativas atuais; Server Control funciona | sim | iniciar o jogo (START) se desejado |
-| Agent reconnect | banco (`game_connections`) | novo `connect` com novo `agentInstanceId`; sessão anterior SUPERSEDED; `WORK_SYNC`; RESULTs pendentes reenviados pela nova sessão; **reconexão não implica replay de side effect** | sim | nenhuma |
+| Agent reconnect | banco (`game_connections`) | novo HELLO → nova sessão com novo `externalConnectionId` gerado pelo backend; sessão anterior SUPERSEDED; `WORK_SYNC`; RESULTs pendentes reenviados pela nova sessão; **reconexão não implica replay de side effect** | sim | nenhuma |
 | Conexão duplicada (mesmo servidor) | banco (índice parcial único) | a mais nova vence; a antiga recebe close `SUPERSEDED` e suas mensagens são rejeitadas | sim | investigar se não for reconexão legítima (credencial vazada?) |
 | Backend restart | banco | sockets caem; Agent reconecta; leases expiram → DISPATCHED conservador; workers retomam | sim (GameCommand); Server Control com claim fica desconhecido | revisar Server Control desconhecido |
 | Agent restart | journal durável do Agent | Agent reconecta, reenvia eventos sem resposta, responde re-envios de command pelo journal (safe replay) | sim **se** o journal é durável | se o journal se perdeu: reconciliar manualmente |
@@ -1042,7 +1198,7 @@ Por que o Agent **não** reutiliza `/api/v1/realtime`:
 | Result duplicado | `game_command_results` UNIQUE | idêntico → no-op (em qualquer sessão válida do servidor); diferente → `RESULT_CONFLICT`, original preservado | sim | investigar conflito (bug do Agent) |
 | Result de outro GameServer | sessão autenticada | rejeitado `SERVER_MISMATCH`, sessão encerrada | sim | investigar credencial/Agent |
 | Evento duplicado | tabelas de evento por domínio | `ALREADY_APPLIED` / `ALREADY_VERIFIED` | sim | nenhuma |
-| Payload malformado | — | `ERROR INVALID_MESSAGE`; reincidência → close | sim | corrigir Agent |
+| Payload malformado | — | close `4003` imediato (11.1) | sim | corrigir Agent |
 | Protocol mismatch | — | `PROTOCOL_UNSUPPORTED` + close; sem retry até atualizar | sim | atualizar Agent/backend |
 | Credencial revogada | banco (credenciais) | close; HELLO rejeitado; sem retry com a mesma | sim | emitir nova credencial |
 | Banco indisponível | — | HELLO/eventos → `TEMPORARILY_UNAVAILABLE` retryable; dispatcher não reserva | sim (retry com backoff) | restaurar banco |
@@ -1064,7 +1220,7 @@ Por que o Agent **não** reutiliza `/api/v1/realtime`:
 | Eventos forjados | só sessões autenticadas chegam ao router; eventos validados por tipo; o Agent é confiável **apenas para o seu servidor** |
 | Credencial roubada | revogação imediata com close da sessão; rotação com 2 ativas; `last_used_at`; alerta em conexão duplicada inesperada; nunca em URL/log |
 | Payload grande | `maxPayload` do WS (128 KiB proposto); limites de 4096/65536 bytes já existentes; profundidade 32 |
-| Flood de mensagens | limite de frames por segundo e de in-flight por sessão; close `RATE_LIMITED`; HELLO com timeout (como `REALTIME_AUTH_TIMEOUT_MS`) |
+| Flood de mensagens | 11.1: HELLO com prazo (`AGENT_AUTH_TIMEOUT_MS`), um frame processado por vez por socket, frame ≤ 128 KiB. Pendente (11.2): cota de frames por segundo e de in-flight, close `RATE_LIMITED` |
 | Protocolo malformado | parser estrito (chaves exatas, sem binário); N erros → close |
 | Cruzamento Player/Staff/Agent | três superfícies e três modelos de credencial sem reuso; ator `SYSTEM:AGENT` nunca vem do fio; router não chama serviços de Player/Staff; players só originam as 5 queries |
 
@@ -1095,12 +1251,21 @@ Logs estruturados (sem payload, segredo, challenge ou result), com
 Stack de métricas (Prometheus/OpenTelemetry) não é adicionada na Etapa 11; os
 sinais podem começar como logs estruturados e consultas ao banco.
 
+**11.1 — logs em vigor** (Nest `Logger`, formato `mensagem [chave=valor …]`, só ids
+validados): `Agent authenticated` (servidor, conexão, credencial, versão,
+runtime), `Agent authentication rejected` (motivo interno), `Agent session
+superseded`, `Agent disconnected` (código), `Agent heartbeat timeout`, `Agent
+protocol version rejected`, `Agent malformed frame`, `Agent protocol violation`,
+`Agent frame for another server rejected`, `Agent session closed: credential
+revoked`, `Agent credential created/revoked`, `Agent sessions closed on startup`.
+Nunca aparecem segredo, hash, JWT nem payloads. O histórico por motivo continua em
+`game_connections.disconnect_reason`.
+
 ## 23. Open decisions
 
 | Decisão | Quando |
 | --- | --- |
-| Emissão de credenciais: endpoint Admin + permission nova, ou CLI | 11.1 |
-| Enum final de estado do processo e de prontidão SKSE; persistir capabilities/runtime em `game_connections` ou só em memória | 11.1 |
+| Rate limit de frames e de mensagens em voo por sessão Agent (hoje: um frame por vez por socket, limite de tamanho e HELLO com prazo; sem cota por segundo) | 11.2 |
 | Catálogo tipado de erros remotos por domínio (sem migration: `error_code` sem CHECK) | 11.2 |
 | Worker deixa de consumir tentativas enquanto o runtime não está pronto, ou mantém a política atual | 11.2 |
 | Nome e semântica do estado "desfecho desconhecido" de Server Control; ACK; `notAfter` | 11.3 |
@@ -1121,7 +1286,7 @@ A divisão proposta foi **confirmada**, com o escopo abaixo. Nenhuma subetapa no
 | Subetapa | Escopo | Migration provável |
 | --- | --- | --- |
 | **11.0** Integration Discovery + Contracts | este documento | não |
-| **11.1** Game Agent Transport + Authentication | roteador de upgrade; `WebSocketServer` do Agent; credenciais (hash, rotação, revogação); HELLO/WELCOME/HEARTBEAT/GOODBYE/ERROR; ligação com `GameConnectionService` (sessão do Host Agent); estado de runtime/SKSE no HELLO/HEARTBEAT; `markStaleConnections` periódica; limites e rate; `AgentMessageRouter` vazio com testes de fronteira; `BRIDGE_PING` ponta a ponta opcional | sim (`game_agent_credentials`, `game_connections.credential_id`, talvez capabilities; permission se houver endpoint) |
+| **11.1** Game Agent Transport + Authentication — **implementada** | roteador de upgrade único; `WebSocketServer` do Agent; credenciais (SHA-256, até 2 ACTIVE, revogação com close imediato) e Staff API; HELLO/AUTHENTICATED/HEARTBEAT/HEARTBEAT_ACK/ERROR; `game_connections` como sessão do Host Agent com runtime/SKSE/capabilities; varredura de heartbeat; supersede; reconciliação de startup e shutdown; limite de frame; `AgentMessageRouter` com `NOT_IMPLEMENTED` e testes de fronteira. Fora: rate limit por segundo e `BRIDGE_PING` ponta a ponta (dependem do dispatch, 11.2) | `1790020000000-GameAgentTransport` (23 migrations; permission + 2 grants) |
 | **11.2** GameCommand Execution + Results | `AgentGameGateway` substituindo `DisconnectedGameGateway`; worker de dispatch pós-commit e varreduras; COMMAND/ACK/RESULT; gate por prontidão de runtime + capability; erros tipados; RESULT independente da sessão (§8.1); journal/UNCERTAIN (§8.2) | provavelmente não |
 | **11.3** Server Control Real Transport | `AgentServerControlGateway`; ACK/RESULT; estado desconhecido; reconciliação de claims; `notAfter`; RESULT por `gameServerId` + `operationId` após reconexão; conflitos por estado de processo | sim (CHECK de status/timestamps) |
 | **11.4** Agent Domain Events + Gameplay Delivery | adapters de ownership, profession, trade, marketplace; `gameServerId` nos serviços de Trade/Marketplace; `WORK_SYNC`; release de custódia; VIP delivery | sim (release de custódia, `vip_reward_deliveries`) |
