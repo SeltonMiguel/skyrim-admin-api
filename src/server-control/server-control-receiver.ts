@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 import { BridgeClock } from '../game-bridge/bridge-clock.js';
 import { GameConnectionService } from '../game-bridge/game-connection.service.js';
+import { RealtimeEventBus } from '../realtime-events/realtime-event-bus.js';
 import { ServerControlOperation } from './entities/server-control-operation.entity.js';
 import {
   SERVER_CONTROL_TERMINAL,
@@ -15,6 +16,7 @@ import type {
 import { expired } from './server-control-dispatcher.js';
 import type { ExpiredOperation } from './server-control-dispatcher.js';
 import { ServerControlRejection } from './server-control-rejection.js';
+import { publishServerControl } from './server-control.events.js';
 
 export type ServerControlResultInput = {
   // Always the authenticated session's, never the payload's.
@@ -48,6 +50,7 @@ export class ServerControlReceiver {
     private readonly database: DataSource,
     private readonly connections: GameConnectionService,
     private readonly clock: BridgeClock,
+    private readonly events: RealtimeEventBus,
   ) {}
   async receive(
     input: ServerControlResultInput,
@@ -64,7 +67,7 @@ export class ServerControlReceiver {
         : input.outcome === 'UNCERTAIN'
           ? 'OUTCOME_UNKNOWN'
           : null;
-    return this.database.transaction(async (manager) => {
+    const received = await this.database.transaction(async (manager) => {
       const repository = manager.getRepository<ServerControlOperation>(
         'ServerControlOperation',
       );
@@ -124,6 +127,19 @@ export class ServerControlReceiver {
       await repository.save(operation);
       return { operation, duplicate: false, accepted: true };
     });
+    // After commit; a duplicate changed nothing and publishes nothing.
+    if (!received.duplicate) this.terminal(received.operation);
+    return received;
+  }
+  private terminal(operation: ServerControlOperation): void {
+    publishServerControl(this.events, {
+      operationId: operation.id,
+      gameServerId: operation.gameServerId,
+      type: operation.type,
+      status: operation.status,
+      errorCode: operation.errorCode,
+      completedAt: operation.completedAt!,
+    });
   }
   // Possibly delivered (claimed) and no result by the persistent deadline:
   // UNCERTAIN, never FAILED and never resent. One fenced UPDATE, so a
@@ -149,6 +165,14 @@ export class ServerControlReceiver {
       )
       .returning('id, game_server_id, type')
       .execute();
-    return expired(result.raw);
+    const operations = expired(result.raw);
+    for (const op of operations)
+      publishServerControl(this.events, {
+        ...op,
+        status: S.UNCERTAIN,
+        errorCode: 'RESULT_TIMEOUT',
+        completedAt: now,
+      });
+    return operations;
   }
 }

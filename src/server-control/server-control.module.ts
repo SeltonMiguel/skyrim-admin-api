@@ -12,6 +12,7 @@ import { ServerControlWorker } from './server-control.worker.js';
 import {
   ServerControlController,
   ServerControlOperationController,
+  ServerControlOperationListController,
 } from './server-control.controller.js';
 // GameBridgeModule supplies only the server registry, connections and clock;
 // the gameplay GameCommandBus/GameGateway are deliberately not used here.
@@ -27,7 +28,11 @@ import {
     // remains available for tests and as an explicit fallback.
     { provide: ServerControlGateway, useClass: AgentServerControlGateway },
   ],
-  controllers: [ServerControlController, ServerControlOperationController],
+  controllers: [
+    ServerControlController,
+    ServerControlOperationController,
+    ServerControlOperationListController,
+  ],
   exports: [ServerControlDispatcher, ServerControlReceiver],
 })
 export class ServerControlModule {}

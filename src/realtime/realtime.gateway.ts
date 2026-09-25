@@ -3,6 +3,7 @@ import {
   OnApplicationBootstrap,
   OnModuleDestroy,
   OnModuleInit,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { IncomingMessage } from 'node:http';
@@ -19,9 +20,11 @@ import type {
   RealtimeEnvelope,
   RealtimeRecipients,
 } from '../realtime-events/realtime-event-bus.js';
+import type { Permission } from '../rbac/permissions.js';
 import {
   connectionKey,
   RealtimeConnectionRegistry,
+  sendFrame,
 } from './realtime-connection.registry.js';
 import type { RealtimeSurface } from './realtime-connection.registry.js';
 
@@ -48,6 +51,11 @@ export class RealtimeGateway
   private readonly authTimeoutMs: number;
   private wss?: WebSocketServer;
   private unsubscribe?: () => void;
+  // Access token of each authenticated Staff socket, kept only in memory to
+  // re-check its session and grants when a Staff event is delivered.
+  private readonly staffTokens = new Map<WebSocket, string>();
+  // One in-flight re-check per socket, shared by concurrent deliveries.
+  private readonly checks = new Map<WebSocket, Promise<Permission[] | null>>();
   constructor(
     private readonly upgrades: WebSocketUpgradeRouter,
     private readonly bus: RealtimeEventBus,
@@ -79,11 +87,42 @@ export class RealtimeGateway
       socket.close(RealtimeClose.SHUTDOWN, 'SHUTDOWN');
     this.wss?.close();
   }
-  // Server-chosen fan-out; Group events currently target players only.
+  // Server-chosen fan-out: Player events by identity, Staff events by
+  // permission. Never awaited by the publisher (after its commit).
   private deliver(envelope: RealtimeEnvelope, recipients: RealtimeRecipients) {
     const frame = JSON.stringify(envelope);
     for (const playerId of recipients.playerIds)
       this.registry.send(connectionKey('PLAYER', playerId), frame);
+    const permission = recipients.staffPermission;
+    if (!permission) return;
+    for (const socket of this.registry.surface('STAFF'))
+      void this.authorize(socket).then((grants) => {
+        if (grants?.includes(permission)) sendFrame(socket, frame);
+      });
+  }
+  // Staff grants are re-read at every delivery through the same service as
+  // HTTP (session, account status, current role), so a role change applies
+  // to the next event and nothing is cached beyond one in-flight check. A
+  // session that is no longer valid closes the socket; a database failure
+  // only skips this delivery.
+  private authorize(socket: WebSocket): Promise<Permission[] | null> {
+    const pending = this.checks.get(socket);
+    if (pending) return pending;
+    const token = this.staffTokens.get(socket);
+    if (!token) return Promise.resolve(null);
+    const check = this.staff
+      .authenticate(token)
+      .then(
+        (auth) => auth.permissions,
+        (error: unknown) => {
+          if (error instanceof UnauthorizedException)
+            socket.close(RealtimeClose.UNAUTHORIZED, 'UNAUTHORIZED');
+          return null;
+        },
+      )
+      .finally(() => this.checks.delete(socket));
+    this.checks.set(socket, check);
+    return check;
   }
   private readonly upgrade = (
     request: IncomingMessage,
@@ -122,6 +161,7 @@ export class RealtimeGateway
         clearTimeout(timeout);
         state = 'AUTHENTICATED';
         key = connectionKey(frame.surface, identity.id);
+        if (frame.surface === 'STAFF') this.staffTokens.set(ws, frame.token);
         this.registry.add(key, ws);
         expiry = setTimeout(
           () => ws.close(RealtimeClose.TOKEN_EXPIRED, 'TOKEN_EXPIRED'),
@@ -140,6 +180,7 @@ export class RealtimeGateway
       clearTimeout(timeout);
       if (expiry) clearTimeout(expiry);
       if (key) this.registry.remove(key, ws);
+      this.staffTokens.delete(ws);
     });
     ws.on('error', () => ws.terminate());
   }

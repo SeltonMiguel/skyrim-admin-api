@@ -1,5 +1,6 @@
 import { RealtimeEventBus } from '../realtime-events/realtime-event-bus.js';
 import type { RealtimeData } from '../realtime-events/realtime-event-bus.js';
+import { Permission } from '../rbac/permissions.js';
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { DataSource, EntityManager } from 'typeorm';
@@ -50,6 +51,7 @@ export class GameCommandStore {
       .findOneBy({ id });
     if (!initial) throw new NotFoundException('Game command not found');
     let notification: { playerId: string; data: RealtimeData } | undefined;
+    let staffNotification: RealtimeData | undefined;
     const result = await this.database.transaction(async (manager) => {
       // Consistent lock order for connect/heartbeat, dispatch, ACK, RESULT and timeout.
       const server = await this.servers.get(
@@ -71,9 +73,24 @@ export class GameCommandStore {
       }
       const wasTerminal = isTerminal(command.status);
       const value = await operation(manager, command, server);
+      const ended = !wasTerminal && isTerminal(command.status);
+      if (ended && command.actorType === 'STAFF') {
+        const result = await manager
+          .getRepository<GameCommandResult>('GameCommandResult')
+          .findOneByOrFail({ gameCommandId: command.id });
+        // The fields GET /game-commands/:id already shows with
+        // GAME_BRIDGE_READ; never the payload or the result body.
+        staffNotification = {
+          commandId: command.id,
+          gameServerId: command.gameServerId,
+          commandType: command.type,
+          status: command.status,
+          errorCode: result.errorCode,
+          completedAt: command.completedAt!.toISOString(),
+        };
+      }
       if (
-        !wasTerminal &&
-        isTerminal(command.status) &&
+        ended &&
         command.actorType === 'PLAYER' &&
         command.requestedByPlayerId
       ) {
@@ -98,6 +115,12 @@ export class GameCommandStore {
     if (notification)
       this.events.publish('PLAYER_GAME_OPERATION_UPDATED', notification.data, {
         playerIds: [notification.playerId],
+      });
+    // Staff-requested commands only (Character, Moderation, World, ping);
+    // Player and SYSTEM commands have their own read paths.
+    if (staffNotification)
+      this.events.publish('STAFF_GAME_OPERATION_UPDATED', staffNotification, {
+        staffPermission: Permission.GAME_BRIDGE_READ,
       });
     return result;
   }

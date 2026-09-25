@@ -13,6 +13,7 @@ import type { RawData } from 'ws';
 import type { ApplicationConfig } from '../config/environment.js';
 import { BridgeClock } from '../game-bridge/bridge-clock.js';
 import { GameConnectionService } from '../game-bridge/game-connection.service.js';
+import { GameServerStatusNotifier } from '../game-bridge/game-server-status.notifier.js';
 import type {
   DisconnectReason,
   GameConnection,
@@ -64,6 +65,7 @@ export class AgentGateway
     private readonly connections: GameConnectionService,
     private readonly clock: BridgeClock,
     config: ConfigService<{ application: ApplicationConfig }, true>,
+    private readonly status: GameServerStatusNotifier,
   ) {
     this.config = config.get('application', { infer: true }).agent;
   }
@@ -213,6 +215,8 @@ export class AgentGateway
         return;
       }
       state = 'AUTHENTICATED';
+      // Staff wake-up: connected, or a supersede of the previous session.
+      void this.status.changed(gameServerId);
       const now = this.clock.now();
       ws.send(
         JSON.stringify(
@@ -409,5 +413,8 @@ export class AgentGateway
         `Agent session close not persisted [gameServerId=${session.gameServerId} connectionId=${session.connectionId}]`,
       );
     }
+    // Also after a close the database already recorded (revocation,
+    // supersede): the notifier publishes only a real change.
+    await this.status.changed(session.gameServerId);
   }
 }

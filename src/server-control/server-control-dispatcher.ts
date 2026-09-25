@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { DataSource } from 'typeorm';
 import type { ApplicationConfig } from '../config/environment.js';
 import { BridgeClock } from '../game-bridge/bridge-clock.js';
+import { RealtimeEventBus } from '../realtime-events/realtime-event-bus.js';
 import { ServerControlOperation } from './entities/server-control-operation.entity.js';
 import { ServerControlStatus as S } from './server-control.contracts.js';
 import type {
@@ -10,6 +11,7 @@ import type {
   ServerControlType,
 } from './server-control.contracts.js';
 import { ServerControlGateway } from './server-control-gateway.js';
+import { publishServerControl } from './server-control.events.js';
 import type {
   ServerControlAcceptance,
   ServerControlRequest,
@@ -50,6 +52,7 @@ export class ServerControlDispatcher {
     private readonly gateway: ServerControlGateway,
     private readonly clock: BridgeClock,
     config: ConfigService<{ application: ApplicationConfig }, true>,
+    private readonly events: RealtimeEventBus,
   ) {
     const policy = config.get('application', { infer: true }).serverControl;
     this.pendingTimeoutMs = policy.pendingTimeoutMs;
@@ -72,15 +75,32 @@ export class ServerControlDispatcher {
         `${enabled ? '' : 'NOT '}EXISTS (SELECT 1 FROM game_servers s WHERE s.id = game_server_id AND s.enabled)`,
       );
   }
-  private async failIfDisabled(id: string): Promise<boolean> {
-    const failed = await this.unclaimed(id, false)
-      .set({
-        status: S.FAILED,
-        errorCode: 'SERVER_DISABLED',
-        completedAt: this.clock.now(),
-      })
+  private async failIfDisabled(
+    pending: Pick<ServerControlOperation, 'id' | 'gameServerId' | 'type'>,
+  ): Promise<boolean> {
+    const completedAt = this.clock.now();
+    const failed = await this.unclaimed(pending.id, false)
+      .set({ status: S.FAILED, errorCode: 'SERVER_DISABLED', completedAt })
       .execute();
-    return failed.affected === 1;
+    if (failed.affected !== 1) return false;
+    this.terminal(pending, 'SERVER_DISABLED', completedAt);
+    return true;
+  }
+  // Every FAILED written here is committed (autocommit UPDATE) and wakes
+  // the Staff after it; nothing was sent for any of them.
+  private terminal(
+    operation: Pick<ServerControlOperation, 'id' | 'gameServerId' | 'type'>,
+    errorCode: ServerControlErrorCode,
+    completedAt: Date,
+  ): void {
+    publishServerControl(this.events, {
+      operationId: operation.id,
+      gameServerId: operation.gameServerId,
+      type: operation.type,
+      status: S.FAILED,
+      errorCode,
+      completedAt,
+    });
   }
   async dispatch(id: string): Promise<DispatchOutcome> {
     const pending = await this.repository().findOneBy({ id });
@@ -97,7 +117,7 @@ export class ServerControlDispatcher {
       pending.type,
     );
     if (!connectionId)
-      return (await this.failIfDisabled(id)) ? 'FAILED' : 'HELD';
+      return (await this.failIfDisabled(pending)) ? 'FAILED' : 'HELD';
     const issuedAt = this.clock.now();
     const notAfter = new Date(issuedAt.getTime() + this.deliveryWindowMs);
     const claim = await this.unclaimed(id, true)
@@ -109,7 +129,7 @@ export class ServerControlDispatcher {
       })
       .execute();
     if (claim.affected !== 1)
-      return (await this.failIfDisabled(id)) ? 'FAILED' : 'SKIPPED';
+      return (await this.failIfDisabled(pending)) ? 'FAILED' : 'SKIPPED';
     // ---- Delivery boundary crossed: from here on, never resent. ----
     const operation = await this.repository().findOneByOrFail({ id });
     const outcome = await this.send({
@@ -135,7 +155,12 @@ export class ServerControlDispatcher {
           }
         : { status: S.DISPATCHED, dispatchedAt: now };
     // Fenced by PENDING: a result that already arrived wins.
-    await this.repository().update({ id, status: S.PENDING }, values);
+    const written = await this.repository().update(
+      { id, status: S.PENDING },
+      values,
+    );
+    if (values.errorCode && written.affected === 1)
+      this.terminal(operation, values.errorCode, now);
     if (outcome.accepted === 'UNKNOWN')
       this.logger.warn(
         `Server control send ambiguous, treated as delivered [operationId=${id} gameServerId=${operation.gameServerId} action=${operation.type} connectionId=${connectionId}]`,
@@ -212,6 +237,13 @@ export class ServerControlDispatcher {
       })
       .returning('id, game_server_id, type')
       .execute();
-    return expired(result.raw);
+    const operations = expired(result.raw);
+    for (const op of operations)
+      this.terminal(
+        { id: op.operationId, gameServerId: op.gameServerId, type: op.type },
+        'DISPATCH_EXPIRED',
+        now,
+      );
+    return operations;
   }
 }

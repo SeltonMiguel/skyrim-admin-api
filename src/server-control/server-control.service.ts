@@ -12,6 +12,7 @@ import { AuditService } from '../audit/audit.service.js';
 import { AuditOutcome, AuditResource } from '../audit/audit.types.js';
 import type { AuthenticatedStaff } from '../auth/auth.types.js';
 import { RequestContext } from '../common/request-context/request-context.service.js';
+import { pageResult } from '../admin-queries/query-pagination.js';
 import { BridgeClock } from '../game-bridge/bridge-clock.js';
 import { GameServerService } from '../game-bridge/game-server.service.js';
 import { ServerControlOperation } from './entities/server-control-operation.entity.js';
@@ -27,6 +28,7 @@ import {
   serverControlDetail,
   serverControlReference,
 } from './server-control.presenter.js';
+import type { ServerControlListQueryDto } from './dto/server-control.dto.js';
 
 const NOT_FOUND = 'Server control operation not found';
 const IN_FLIGHT = 'Another server control operation is in progress';
@@ -164,13 +166,45 @@ export class ServerControlService {
       throw error;
     }
   }
+  // Types whose Server Control permission the caller holds.
+  private readable(auth: AuthenticatedStaff): ServerControlType[] {
+    return SERVER_CONTROL_TYPES.filter((type) =>
+      auth.permissions.includes(SERVER_CONTROL_POLICY[type].permission),
+    );
+  }
+  // Operations of one server (PENDING/DISPATCHED in flight, UNCERTAIN
+  // needing attention), so the Admin Web can start without known ids. Each
+  // item is what GET /server-control-operations/:id shows; types the caller
+  // cannot read are never listed nor counted.
+  async list(
+    gameServerId: string,
+    query: ServerControlListQueryDto,
+    auth: AuthenticatedStaff,
+  ) {
+    const readable = this.readable(auth);
+    if (!readable.length)
+      throw new ForbiddenException('Missing required permissions');
+    await this.servers.get(gameServerId);
+    const types =
+      query.type === undefined
+        ? readable
+        : readable.filter((type) => type === query.type);
+    if (!types.length) return pageResult([], 0, query);
+    const [items, total] = await this.repository().findAndCount({
+      where: {
+        gameServerId,
+        type: In(types),
+        ...(query.status === undefined ? {} : { status: query.status }),
+      },
+      order: { createdAt: 'DESC', id: 'DESC' },
+      skip: (query.page - 1) * query.limit,
+      take: query.limit,
+    });
+    return pageResult(items.map(serverControlDetail), total, query);
+  }
   async get(id: string, auth: AuthenticatedStaff) {
     // Roles without any Server Control grant learn nothing about existence.
-    if (
-      !SERVER_CONTROL_TYPES.some((type) =>
-        auth.permissions.includes(SERVER_CONTROL_POLICY[type].permission),
-      )
-    )
+    if (!this.readable(auth).length)
       throw new ForbiddenException('Missing required permissions');
     const operation = await this.repository().findOneBy({ id });
     if (!operation) throw new NotFoundException(NOT_FOUND);

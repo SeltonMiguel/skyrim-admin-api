@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Optional,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
@@ -10,6 +11,10 @@ import type { ApplicationConfig } from '../config/environment.js';
 import { BridgeClock } from './bridge-clock.js';
 import { identifier, PROTOCOL_VERSION, uuid } from './command-contract.js';
 import { GameServerService } from './game-server.service.js';
+import {
+  connectionFresh,
+  GameServerStatusNotifier,
+} from './game-server-status.notifier.js';
 import { GameConnection } from './entities/game-connection.entity.js';
 import type { DisconnectReason } from './entities/game-connection.entity.js';
 import type { GameProcessState } from '../game-agent/agent-protocol.contracts.js';
@@ -41,6 +46,8 @@ export class GameConnectionService {
     private readonly servers: GameServerService,
     private readonly clock: BridgeClock,
     config: ConfigService<{ application: ApplicationConfig }, true>,
+    // Staff wake-up after commit (11.6); absent in transport-less fixtures.
+    @Optional() private readonly status?: GameServerStatusNotifier,
   ) {
     this.timeout = config.get('application', {
       infer: true,
@@ -50,11 +57,11 @@ export class GameConnectionService {
     connection: GameConnection | null,
     now = this.clock.now(),
   ): connection is GameConnection {
-    return (
-      !!connection &&
-      connection.status === 'CONNECTED' &&
-      connection.lastHeartbeatAt.getTime() + this.timeout > now.getTime()
-    );
+    return connectionFresh(connection, now, this.timeout);
+  }
+  // Signals a possible operational change of the server after a commit.
+  private notify(serverId: string): void {
+    void this.status?.changed(serverId);
   }
   active(serverId: string, manager: EntityManager = this.database.manager) {
     return manager
@@ -66,9 +73,11 @@ export class GameConnectionService {
     return server.enabled && this.healthy(await this.active(serverId));
   }
   async connect(input: ConnectInput): Promise<GameConnection> {
-    return this.database.transaction((manager) =>
+    const connection = await this.database.transaction((manager) =>
       this.connectInTransaction(manager, input),
     );
+    this.notify(input.gameServerId);
+    return connection;
   }
   // Caller owns the short transaction (the Host Agent HELLO also verifies its
   // credential under the same server lock). The previous CONNECTED session of
@@ -137,7 +146,10 @@ export class GameConnectionService {
     runtime?: RuntimeSnapshot,
   ): Promise<boolean> {
     uuid(connectionId);
-    return this.database.transaction(async (manager) => {
+    // Only a runtime change or a stale close is an operational change; an
+    // unchanged heartbeat publishes nothing.
+    let changed = false;
+    const alive = await this.database.transaction(async (manager) => {
       const server = await this.servers.get(serverId, manager, true);
       const connection = await this.active(serverId, manager);
       if (!server.enabled || !connection || connection.id !== connectionId)
@@ -145,10 +157,14 @@ export class GameConnectionService {
       const now = this.clock.now();
       if (!this.healthy(connection, now)) {
         await this.close(manager, connection, 'STALE', now);
+        changed = true;
         return false;
       }
       connection.lastHeartbeatAt = now;
       if (runtime && connection.credentialId) {
+        changed =
+          connection.gameProcessState !== runtime.gameProcessState ||
+          connection.skseReady !== runtime.skseReady;
         connection.gameProcessState = runtime.gameProcessState;
         connection.skseReady = runtime.skseReady;
         if (runtime.capabilities)
@@ -159,6 +175,8 @@ export class GameConnectionService {
         .save(connection);
       return true;
     });
+    if (changed) this.notify(serverId);
+    return alive;
   }
   // Runtime snapshot reported outside a heartbeat (Server Control result).
   // One autocommit UPDATE on the connection row: no server lock and no
@@ -183,7 +201,9 @@ export class GameConnectionService {
       })
       .andWhere("status = 'CONNECTED' AND credential_id IS NOT NULL")
       .execute();
-    return result.affected === 1;
+    if (result.affected !== 1) return false;
+    this.notify(serverId);
+    return true;
   }
   async disconnect(serverId: string, connectionId: string): Promise<boolean> {
     return this.end(serverId, connectionId, 'REQUESTED');
@@ -196,13 +216,15 @@ export class GameConnectionService {
     reason: DisconnectReason,
   ): Promise<boolean> {
     uuid(connectionId);
-    return this.database.transaction(async (manager) => {
+    const ended = await this.database.transaction(async (manager) => {
       await this.servers.get(serverId, manager, true);
       const connection = await this.active(serverId, manager);
       if (!connection || connection.id !== connectionId) return false;
       await this.close(manager, connection, reason, this.clock.now());
       return true;
     });
+    if (ended) this.notify(serverId);
+    return ended;
   }
   // Closes every session of a credential (revocation), inside the caller's
   // transaction; the caller then closes the matching sockets after commit.
@@ -258,6 +280,7 @@ export class GameConnectionService {
         await this.close(manager, current, 'STALE', this.clock.now());
         return 1;
       });
+      this.notify(candidate.gameServerId);
     }
     return count;
   }

@@ -11,12 +11,14 @@ import { GameGateway } from './game-gateway.js';
 import { AgentGameGateway } from '../game-agent/agent-game.gateway.js';
 import { AgentSessionModule } from '../game-agent/agent-session.module.js';
 import { GameServerService } from './game-server.service.js';
+import { GameServerStatusNotifier } from './game-server-status.notifier.js';
 
 @Module({
   imports: [RealtimeEventsModule, CommonModule, AgentSessionModule],
   providers: [
     BridgeClock,
     GameServerService,
+    GameServerStatusNotifier,
     GameConnectionService,
     GameCommandBus,
     GameCommandStore,
@@ -29,6 +31,7 @@ import { GameServerService } from './game-server.service.js';
   exports: [
     BridgeClock,
     GameServerService,
+    GameServerStatusNotifier,
     GameConnectionService,
     GameCommandBus,
     GameCommandDispatcher,

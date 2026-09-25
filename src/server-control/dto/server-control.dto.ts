@@ -1,5 +1,6 @@
-import { ApiProperty } from '@nestjs/swagger';
-import { IsUUID } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { IsEnum, IsIn, IsOptional, IsUUID } from 'class-validator';
+import { PageQueryDto } from '../../admin-queries/dto/query.dto.js';
 import {
   SERVER_CONTROL_ERRORS,
   SERVER_CONTROL_TYPES,
@@ -44,4 +45,24 @@ export class ServerControlOperationDetailDto extends ServerControlOperationRefer
   })
   errorCode: ServerControlErrorCode | null;
   @ApiProperty({ type: String, nullable: true }) errorMessage: string | null;
+}
+// Cold-start recovery of the Admin Web (11.6): operations of one server,
+// newest first, restricted to the types the caller may read.
+export class ServerControlListQueryDto extends PageQueryDto {
+  @ApiPropertyOptional({ enum: ServerControlStatus })
+  @IsOptional()
+  @IsEnum(ServerControlStatus)
+  status?: ServerControlStatus;
+  @ApiPropertyOptional({ enum: SERVER_CONTROL_TYPES })
+  @IsOptional()
+  @IsIn(SERVER_CONTROL_TYPES)
+  type?: ServerControlType;
+}
+export class ServerControlOperationPageDto {
+  @ApiProperty({ type: ServerControlOperationDetailDto, isArray: true })
+  items: ServerControlOperationDetailDto[];
+  @ApiProperty() total: number;
+  @ApiProperty() page: number;
+  @ApiProperty() limit: number;
+  @ApiProperty() totalPages: number;
 }

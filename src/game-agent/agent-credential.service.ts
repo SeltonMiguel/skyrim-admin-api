@@ -16,6 +16,7 @@ import type { AuthenticatedStaff } from '../auth/auth.types.js';
 import { BridgeClock } from '../game-bridge/bridge-clock.js';
 import { GameConnectionService } from '../game-bridge/game-connection.service.js';
 import { GameServerService } from '../game-bridge/game-server.service.js';
+import { GameServerStatusNotifier } from '../game-bridge/game-server-status.notifier.js';
 import {
   agentSecretHash,
   AgentCredentialStatus as S,
@@ -53,6 +54,7 @@ export class AgentCredentialService {
     private readonly audit: AuditService,
     private readonly sessions: AgentSessionRegistry,
     private readonly clock: BridgeClock,
+    private readonly status: GameServerStatusNotifier,
   ) {}
   private credentials(manager: EntityManager) {
     return manager.getRepository<GameAgentCredential>('GameAgentCredential');
@@ -162,6 +164,8 @@ export class AgentCredentialService {
       this.logger.log(
         `Agent credential revoked [gameServerId=${gameServerId} credentialId=${credential.id}]`,
       );
+      // Covers a closed row without a live socket in this instance.
+      void this.status.changed(gameServerId);
     }
     return view(credential);
   }

@@ -3,6 +3,7 @@ import { Module } from '@nestjs/common';
 import { AuditModule } from '../audit/audit.module.js';
 import { PlayerAuthModule } from '../player-auth/player-auth.module.js';
 import {
+  CharacterGroupController,
   PlayerGroupController,
   PlayerGroupInviteController,
 } from './player-group.controller.js';
@@ -12,6 +13,10 @@ import { PlayerGroupService } from './player-group.service.js';
 @Module({
   imports: [AuditModule, PlayerAuthModule, PlayerSettingsModule],
   providers: [PlayerGroupService],
-  controllers: [PlayerGroupController, PlayerGroupInviteController],
+  controllers: [
+    PlayerGroupController,
+    PlayerGroupInviteController,
+    CharacterGroupController,
+  ],
 })
 export class PlayerGroupsModule {}
