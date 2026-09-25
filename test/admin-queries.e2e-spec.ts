@@ -106,9 +106,10 @@ describeDatabase('Admin read APIs with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(22);
+    expect(await database.runMigrations()).toHaveLength(23);
     expect(await database.runMigrations()).toHaveLength(0);
     // Roll back only this stage and prove previous permission data survives.
+    await database.undoLastMigration(); // Etapa 11.1 Game Agent Transport
     await database.undoLastMigration(); // Etapa 10.17 VIP Entitlements
     await database.undoLastMigration(); // Etapa 10.16 Player Settings
     await database.undoLastMigration(); // Etapa 10.15 Player Chat
@@ -136,7 +137,7 @@ describeDatabase('Admin read APIs with real PostgreSQL', () => {
         "SELECT * FROM permissions WHERE name IN ('DASHBOARD_READ', 'GAME_BRIDGE_READ')",
       ),
     ).toEqual([]);
-    expect(await database.runMigrations()).toHaveLength(18);
+    expect(await database.runMigrations()).toHaveLength(19);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -195,8 +196,8 @@ describeDatabase('Admin read APIs with real PostgreSQL', () => {
     expect(
       (await database.driver.createSchemaBuilder().log()).upQueries,
     ).toEqual([]);
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(22);
-    expect(await database.query('SELECT * FROM permissions')).toHaveLength(36);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(23);
+    expect(await database.query('SELECT * FROM permissions')).toHaveLength(37);
   });
   it.each(Object.values(R))(
     'persists both explicit read grants and permits all six GET APIs for %s',

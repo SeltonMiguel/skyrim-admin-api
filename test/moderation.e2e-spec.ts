@@ -107,7 +107,7 @@ describeDatabase('Moderation with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(22);
+    expect(await database.runMigrations()).toHaveLength(23);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -167,9 +167,9 @@ describeDatabase('Moderation with real PostgreSQL', () => {
     expect(
       (await database.driver.createSchemaBuilder().log()).upQueries,
     ).toEqual([]);
-    expect(await database.query('SELECT * FROM permissions')).toHaveLength(36);
+    expect(await database.query('SELECT * FROM permissions')).toHaveLength(37);
     expect(await database.query('SELECT * FROM role_permissions')).toHaveLength(
-      93,
+      95,
     );
     const rows = await database.query(
       'SELECT tablename FROM pg_tables WHERE schemaname = $1 ORDER BY tablename',
@@ -181,6 +181,7 @@ describeDatabase('Moderation with real PostgreSQL', () => {
       'economy_accounts',
       'economy_entries',
       'economy_transactions',
+      'game_agent_credentials',
       'game_command_results',
       'game_commands',
       'game_connections',

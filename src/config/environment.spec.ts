@@ -369,3 +369,33 @@ describe('Player chat environment validation', () => {
       ).toThrow('PLAYER_CHAT_RATE_LIMIT_WINDOW');
   });
 });
+
+describe('Host Agent environment validation', () => {
+  it('defaults to a 5s HELLO window, 10s heartbeat and 30s timeout', () => {
+    expect(validateEnvironment(example).agent).toEqual({
+      authTimeoutMs: 5000,
+      heartbeatIntervalMs: 10000,
+      heartbeatTimeoutMs: 30000,
+    });
+    expect(
+      validateEnvironment({
+        ...example,
+        AGENT_HEARTBEAT_INTERVAL: '1s',
+        AGENT_HEARTBEAT_TIMEOUT: '3s',
+      }).agent,
+    ).toMatchObject({ heartbeatIntervalMs: 1000, heartbeatTimeoutMs: 3000 });
+  });
+  it.each([
+    { AGENT_HEARTBEAT_INTERVAL: '30s', AGENT_HEARTBEAT_TIMEOUT: '30s' },
+    { AGENT_HEARTBEAT_INTERVAL: '10s', AGENT_HEARTBEAT_TIMEOUT: '5s' },
+    // Never beyond the Game Bridge session timeout (30s by default).
+    { AGENT_HEARTBEAT_TIMEOUT: '31s' },
+    { AGENT_HEARTBEAT_INTERVAL: '10' },
+    { AGENT_AUTH_TIMEOUT_MS: '50' },
+    { AGENT_AUTH_TIMEOUT_MS: '60001' },
+  ])('rejects %o', (override) =>
+    expect(() => validateEnvironment({ ...example, ...override })).toThrow(
+      /AGENT_/,
+    ),
+  );
+});

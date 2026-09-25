@@ -50,6 +50,10 @@ export class RealtimeTestClient {
   send(value: unknown) {
     this.socket.send(typeof value === 'string' ? value : JSON.stringify(value));
   }
+  // Sends the text as a binary frame.
+  sendBinary(text: string) {
+    this.socket.send(new TextEncoder().encode(text));
+  }
   async open() {
     await this.until(() => this.opened || this.closed);
     if (!this.opened) throw new Error('Socket did not open');
@@ -75,8 +79,8 @@ export class RealtimeTestClient {
   events() {
     return this.messages.filter((m) => m.type !== 'AUTHENTICATED');
   }
-  close() {
-    this.socket.close(1000);
+  close(code = 1000) {
+    this.socket.close(code);
     return this.closedWith();
   }
 }
