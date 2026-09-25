@@ -46,6 +46,17 @@ export interface ApplicationConfig {
     rateLimitWindow: number;
   };
   realtime: { authTimeoutMs: number };
+  // Server Control over the Host Agent (11.3), at-most-once. The result
+  // timeout always exceeds the delivery window.
+  serverControl: {
+    // Unclaimed PENDING (never sent) fails after this.
+    pendingTimeoutMs: number;
+    // notAfter = claim + window; the Agent refuses later execution.
+    deliveryWindowMs: number;
+    // Claimed without a result after this: UNCERTAIN, never resent.
+    resultTimeoutMs: number;
+    workerIntervalMs: number;
+  };
   // Host Agent transport (11.1). The heartbeat timeout never exceeds the Game
   // Bridge connection timeout, so a live socket always has a healthy session.
   agent: {
@@ -100,6 +111,10 @@ interface Environment {
   PLAYER_CHAT_RATE_LIMIT_COUNT: number;
   PLAYER_CHAT_RATE_LIMIT_WINDOW: string;
   REALTIME_AUTH_TIMEOUT_MS: number;
+  SERVER_CONTROL_PENDING_TIMEOUT_MS: number;
+  SERVER_CONTROL_DELIVERY_WINDOW_MS: number;
+  SERVER_CONTROL_RESULT_TIMEOUT_MS: number;
+  SERVER_CONTROL_WORKER_INTERVAL_MS: number;
   AGENT_AUTH_TIMEOUT_MS: number;
   AGENT_HEARTBEAT_INTERVAL: string;
   AGENT_HEARTBEAT_TIMEOUT: string;
@@ -238,6 +253,26 @@ const schema = Joi.object<Environment>({
     .min(100)
     .max(60000)
     .default(5000),
+  SERVER_CONTROL_PENDING_TIMEOUT_MS: Joi.number()
+    .integer()
+    .min(500)
+    .max(3600000)
+    .default(30000),
+  SERVER_CONTROL_DELIVERY_WINDOW_MS: Joi.number()
+    .integer()
+    .min(100)
+    .max(600000)
+    .default(10000),
+  SERVER_CONTROL_RESULT_TIMEOUT_MS: Joi.number()
+    .integer()
+    .min(500)
+    .max(3600000)
+    .default(300000),
+  SERVER_CONTROL_WORKER_INTERVAL_MS: Joi.number()
+    .integer()
+    .min(50)
+    .max(60000)
+    .default(1000),
   AGENT_AUTH_TIMEOUT_MS: Joi.number()
     .integer()
     .min(100)
@@ -326,6 +361,13 @@ export function validateEnvironment(
     throw new Error(
       'Invalid environment variables: AGENT_HEARTBEAT_INTERVAL, AGENT_HEARTBEAT_TIMEOUT',
     );
+  if (
+    value.SERVER_CONTROL_RESULT_TIMEOUT_MS <=
+    value.SERVER_CONTROL_DELIVERY_WINDOW_MS
+  )
+    throw new Error(
+      'Invalid environment variables: SERVER_CONTROL_RESULT_TIMEOUT_MS, SERVER_CONTROL_DELIVERY_WINDOW_MS',
+    );
   return {
     agent: {
       authTimeoutMs: value.AGENT_AUTH_TIMEOUT_MS,
@@ -344,6 +386,12 @@ export function validateEnvironment(
       rateLimitWindow: chatWindow,
     },
     realtime: { authTimeoutMs: value.REALTIME_AUTH_TIMEOUT_MS },
+    serverControl: {
+      pendingTimeoutMs: value.SERVER_CONTROL_PENDING_TIMEOUT_MS,
+      deliveryWindowMs: value.SERVER_CONTROL_DELIVERY_WINDOW_MS,
+      resultTimeoutMs: value.SERVER_CONTROL_RESULT_TIMEOUT_MS,
+      workerIntervalMs: value.SERVER_CONTROL_WORKER_INTERVAL_MS,
+    },
     playerAuth: {
       accessSecret: value.PLAYER_JWT_ACCESS_SECRET || testPlayerAccessSecret,
       refreshSecret: value.PLAYER_JWT_REFRESH_SECRET || testPlayerRefreshSecret,

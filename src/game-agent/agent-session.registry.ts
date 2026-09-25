@@ -1,7 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import { AgentClose, isRuntimeReady } from './agent-protocol.contracts.js';
 import type { CommandType } from '../game-bridge/command-contract.js';
-import { supportsCommand } from './agent-capabilities.js';
+import type { ServerControlType } from '../server-control/server-control.contracts.js';
+import {
+  supportsCommand,
+  supportsServerControl,
+} from './agent-capabilities.js';
 import type {
   AgentCloseReason,
   AgentEnvelope,
@@ -104,9 +108,17 @@ export class AgentSessionRegistry {
     const session = this.active.get(gameServerId);
     return !!session && supportsCommand(session.capabilities, type);
   }
+  // Whether the ACTIVE session can run this Server Control action. The game
+  // runtime is irrelevant here (START works with Skyrim stopped).
+  supportsServerControl(
+    gameServerId: string,
+    type: ServerControlType,
+  ): boolean {
+    const session = this.active.get(gameServerId);
+    return !!session && supportsServerControl(session.capabilities, type);
+  }
   // Delivers to exactly this ACTIVE session; never to an AUTHENTICATING one
-  // and never redirected to a newer one. Not used by GameCommand dispatch
-  // until 11.2.
+  // and never redirected to a newer one.
   send(
     gameServerId: string,
     connectionId: string,
@@ -133,6 +145,21 @@ export class AgentSessionRegistry {
     });
     if (runtime.capabilities)
       session.capabilities = Object.freeze([...runtime.capabilities]);
+    return true;
+  }
+  // Runtime known by the Agent, reported outside a heartbeat (e.g. with a
+  // Server Control result). Not a liveness signal.
+  updateRuntime(
+    gameServerId: string,
+    connectionId: string,
+    runtime: AgentRuntime,
+  ): boolean {
+    const session = this.activeSession(gameServerId, connectionId);
+    if (!session) return false;
+    session.runtime = Object.freeze({
+      gameProcessState: runtime.gameProcessState,
+      skseReady: runtime.skseReady,
+    });
     return true;
   }
   // ACTIVE sessions silent for at least timeoutMs.

@@ -160,6 +160,31 @@ export class GameConnectionService {
       return true;
     });
   }
+  // Runtime snapshot reported outside a heartbeat (Server Control result).
+  // One autocommit UPDATE on the connection row: no server lock and no
+  // liveness refresh. Only an active Host Agent session is updated.
+  async updateRuntime(
+    serverId: string,
+    connectionId: string,
+    runtime: Omit<RuntimeSnapshot, 'capabilities'>,
+  ): Promise<boolean> {
+    uuid(connectionId);
+    const result = await this.database
+      .getRepository<GameConnection>('GameConnection')
+      .createQueryBuilder()
+      .update()
+      .set({
+        gameProcessState: runtime.gameProcessState,
+        skseReady: runtime.skseReady,
+      })
+      .where('id = :connectionId AND game_server_id = :serverId', {
+        connectionId,
+        serverId,
+      })
+      .andWhere("status = 'CONNECTED' AND credential_id IS NOT NULL")
+      .execute();
+    return result.affected === 1;
+  }
   async disconnect(serverId: string, connectionId: string): Promise<boolean> {
     return this.end(serverId, connectionId, 'REQUESTED');
   }

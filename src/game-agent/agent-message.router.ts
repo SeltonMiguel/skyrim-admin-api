@@ -14,6 +14,7 @@ import type {
   AgentOutboundType,
 } from './agent-protocol.contracts.js';
 import { AgentCommandAdapter } from './agent-command.adapter.js';
+import { AgentServerControlAdapter } from './agent-server-control.adapter.js';
 import type { RouteOutcome } from './agent-command.adapter.js';
 import { AgentSessionRegistry } from './agent-session.registry.js';
 import type { AgentSessionSnapshot } from './agent-session.registry.js';
@@ -21,7 +22,6 @@ import type { AgentSessionSnapshot } from './agent-session.registry.js';
 export type { RouteOutcome } from './agent-command.adapter.js';
 // Flows owned by later substeps: typed, answered, never executed here.
 const NOT_IMPLEMENTED = new Set([
-  'SERVER_CONTROL_RESULT', // 11.3
   'DOMAIN_EVENT', // 11.4
 ]);
 
@@ -36,6 +36,7 @@ export class AgentMessageRouter {
     private readonly connections: GameConnectionService,
     private readonly sessions: AgentSessionRegistry,
     private readonly commands: AgentCommandAdapter,
+    private readonly serverControl: AgentServerControlAdapter,
     private readonly clock: BridgeClock,
   ) {}
   async route(
@@ -64,6 +65,8 @@ export class AgentMessageRouter {
       return this.commands.acknowledge(session, envelope);
     if (type === 'COMMAND_RESULT')
       return this.commands.result(session, envelope);
+    if (type === 'SERVER_CONTROL_RESULT')
+      return this.serverControl.result(session, envelope);
     if (type === 'ERROR') {
       this.logger.warn(`Agent reported an error [${ids}]`);
       return {};

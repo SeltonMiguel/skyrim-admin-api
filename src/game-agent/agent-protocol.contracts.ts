@@ -7,6 +7,14 @@ import {
   UNCERTAIN_OUTCOME,
 } from '../game-bridge/command-contract.js';
 import type { RemoteFailureCode } from '../game-bridge/command-contract.js';
+import {
+  isServerControlType,
+  SERVER_CONTROL_REMOTE_FAILURES,
+} from '../server-control/server-control.contracts.js';
+import type {
+  ServerControlRemoteFailure,
+  ServerControlType,
+} from '../server-control/server-control.contracts.js';
 
 // Host Agent WebSocket protocol v1 (Etapa 11.1). The version is the one the
 // Game Bridge already persists in game_connections.protocol_version; there
@@ -22,8 +30,7 @@ if (MAX_AGENT_FRAME_BYTES < 2 * MAX_COMMAND_RESULT_BYTES)
   throw new Error('Agent frame limit must hold a maximal command result');
 
 // Frames the Agent may send. HELLO only as the first frame; DOMAIN_EVENT
-// and SERVER_CONTROL_RESULT are typed but answered with NOT_IMPLEMENTED
-// until 11.3–11.4.
+// is typed but answered with NOT_IMPLEMENTED until 11.4.
 export const AGENT_INBOUND_TYPES = [
   'HELLO',
   'HEARTBEAT',
@@ -33,8 +40,9 @@ export const AGENT_INBOUND_TYPES = [
   'SERVER_CONTROL_RESULT',
   'ERROR',
 ] as const;
-// Frames the backend sends. SERVER_CONTROL and WORK_ITEMS are declared for
-// later substeps and never sent yet.
+// Frames the backend sends. WORK_ITEMS is declared for 11.4 and never sent
+// yet. There is no SERVER_CONTROL_ACK in either direction: an operation is
+// sent once whatever happens, so an ACK would change nothing (11.3).
 export const AGENT_OUTBOUND_TYPES = [
   'AUTHENTICATED',
   'HEARTBEAT_ACK',
@@ -42,6 +50,7 @@ export const AGENT_OUTBOUND_TYPES = [
   'COMMAND',
   'COMMAND_RESULT_ACK',
   'SERVER_CONTROL',
+  'SERVER_CONTROL_RESULT_ACK',
   'WORK_ITEMS',
 ] as const;
 // Declared for 11.4; an Agent sending it now breaks the protocol.
@@ -92,6 +101,8 @@ export type AgentErrorCode =
   | 'UNKNOWN_COMMAND'
   | 'NOT_DISPATCHED'
   | 'RESULT_CONFLICT'
+  | 'UNKNOWN_OPERATION'
+  | 'OPERATION_MISMATCH'
   | 'TEMPORARILY_UNAVAILABLE';
 
 export interface AgentEnvelope<T extends string = string> {
@@ -310,6 +321,60 @@ export function commandResultPayload(
     case UNCERTAIN_OUTCOME:
       exactKeys(payload, ['commandId', 'correlationId', 'outcome']);
       return { ...ids, outcome: UNCERTAIN_OUTCOME };
+    default:
+      return invalid();
+  }
+}
+
+// SERVER_CONTROL_RESULT: the outcome of one operation (whatever session
+// received it). Closed: a remote failure code, never free text; the
+// optional runtime is the process state the Agent knows after the action.
+export type ServerControlResultPayload = {
+  operationId: string;
+  correlationId: string;
+  type: ServerControlType;
+  runtime?: AgentRuntime;
+} & (
+  | { outcome: 'SUCCEEDED' }
+  | { outcome: 'FAILED'; errorCode: ServerControlRemoteFailure }
+  | { outcome: typeof UNCERTAIN_OUTCOME }
+);
+export function serverControlResultPayload(
+  payload: Record<string, unknown>,
+): ServerControlResultPayload {
+  const base = ['operationId', 'correlationId', 'type', 'outcome'];
+  const common = {
+    operationId: uuid(payload.operationId),
+    correlationId: uuid(payload.correlationId),
+    type: isServerControlType(payload.type) ? payload.type : invalid(),
+    ...(payload.runtime === undefined
+      ? {}
+      : {
+          runtime: (() => {
+            const value = plain(payload.runtime);
+            exactKeys(value, ['gameProcessState', 'skseReady']);
+            return runtime(value);
+          })(),
+        }),
+  };
+  switch (payload.outcome) {
+    case 'SUCCEEDED':
+    case UNCERTAIN_OUTCOME:
+      exactKeys(payload, base, ['runtime']);
+      return { ...common, outcome: payload.outcome };
+    case 'FAILED':
+      exactKeys(payload, [...base, 'errorCode'], ['runtime']);
+      if (
+        !SERVER_CONTROL_REMOTE_FAILURES.includes(
+          payload.errorCode as ServerControlRemoteFailure,
+        )
+      )
+        invalid();
+      return {
+        ...common,
+        outcome: 'FAILED',
+        errorCode: payload.errorCode as ServerControlRemoteFailure,
+      };
     default:
       return invalid();
   }

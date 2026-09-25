@@ -1,6 +1,7 @@
 import { COMMAND_TYPES } from '../game-bridge/command-contract.js';
 import type { CommandType } from '../game-bridge/command-contract.js';
 import { COMMAND_KINDS } from '../game-bridge/command-kinds.js';
+import type { ServerControlType } from '../server-control/server-control.contracts.js';
 
 // Closed GameCommand capabilities of a Host Agent (11.2). They describe
 // operational compatibility only: RBAC and ownership are decided by the
@@ -31,4 +32,25 @@ export function supportedCommandTypes(
   capabilities: readonly string[],
 ): CommandType[] {
   return COMMAND_TYPES.filter((type) => supportsCommand(capabilities, type));
+}
+
+// Closed Server Control capabilities (11.3), also compatibility only:
+// - SERVER_CONTROL_V1: speaks SERVER_CONTROL / SERVER_CONTROL_RESULT and
+//   keeps the durable operation journal by operationId (RECEIVED ->
+//   EXECUTING -> COMPLETED): never executes an operationId twice, refuses
+//   after notAfter, replays the result after reconnects and reports
+//   UNCERTAIN when an EXECUTING entry cannot be proven. The journal is part
+//   of the protocol, not a separate capability: at-most-once needs it.
+// - one capability per action, named exactly as the ServerControlType.
+// The game runtime (RUNNING, SKSE) is never required: START must work with
+// Skyrim stopped.
+export const SERVER_CONTROL_CAPABILITY = 'SERVER_CONTROL_V1';
+export function supportsServerControl(
+  capabilities: readonly string[],
+  type: ServerControlType,
+): boolean {
+  return (
+    capabilities.includes(SERVER_CONTROL_CAPABILITY) &&
+    capabilities.includes(type)
+  );
 }

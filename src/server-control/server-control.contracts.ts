@@ -15,21 +15,52 @@ export function isServerControlType(
   return SERVER_CONTROL_TYPES.includes(value as ServerControlType);
 }
 
-// PENDING: persisted, not yet handed to a transport.
-// DISPATCHED: transport accepted, or delivery could not be refuted; never resent.
-// SUCCEEDED: reserved for the Agent result receiver (Etapa 11); unreachable now.
-// FAILED: definitely not delivered (no Agent, rejected, or server disabled).
+// At-most-once lifecycle (Etapa 11.3). The delivery boundary is the claim:
+// once dispatch_claimed_at is committed the operation may have reached the
+// Host Agent and is never sent again, by anyone, for any reason.
+// PENDING: persisted; before the claim nothing was sent. After a claim (a
+//   crash between claim and send reconciliation) it is possibly delivered.
+// DISPATCHED: handed to the transport, or delivery could not be refuted.
+// SUCCEEDED: the Agent reported the intended effect.
+// FAILED: definitely no effect: never delivered (no eligible Agent, disabled
+//   server, proven non-delivery) or the Agent reported a definite failure.
+// UNCERTAIN: terminal; the backend cannot say whether the action ran (no
+//   result before the deadline, or the Agent itself could not prove it).
 export enum ServerControlStatus {
   PENDING = 'PENDING',
   DISPATCHED = 'DISPATCHED',
   SUCCEEDED = 'SUCCEEDED',
   FAILED = 'FAILED',
+  UNCERTAIN = 'UNCERTAIN',
 }
+export const SERVER_CONTROL_TERMINAL = [
+  ServerControlStatus.SUCCEEDED,
+  ServerControlStatus.FAILED,
+  ServerControlStatus.UNCERTAIN,
+] as const;
+// Definite failures the Host Agent may report (closed, no free text).
+export const SERVER_CONTROL_REMOTE_FAILURES = [
+  'DELIVERY_EXPIRED', // received after notAfter: refused, nothing executed
+  'INVALID_PROCESS_STATE', // action not applicable to the current process
+  'EXECUTION_FAILED', // attempted; the process definitely did not change
+] as const;
+export type ServerControlRemoteFailure =
+  (typeof SERVER_CONTROL_REMOTE_FAILURES)[number];
 export const SERVER_CONTROL_ERRORS = {
   AGENT_UNAVAILABLE: 'No server control Agent connected',
   AGENT_REJECTED: 'Server control transport rejected the request',
   SERVER_DISABLED: 'Game server disabled',
-} as const;
+  DISPATCH_EXPIRED:
+    'No eligible server control Agent before the dispatch deadline',
+  DELIVERY_EXPIRED: 'Agent refused the operation after its delivery window',
+  INVALID_PROCESS_STATE:
+    'Operation not applicable to the current game process state',
+  EXECUTION_FAILED: 'Agent reported that the operation failed without effect',
+  // UNCERTAIN reasons.
+  RESULT_TIMEOUT: 'No result before the deadline; outcome unknown',
+  OUTCOME_UNKNOWN: 'Agent could not determine whether the operation ran',
+} as const satisfies Record<ServerControlRemoteFailure, string> &
+  Record<string, string>;
 export type ServerControlErrorCode = keyof typeof SERVER_CONTROL_ERRORS;
 
 export const SERVER_CONTROL_POLICY: Readonly<

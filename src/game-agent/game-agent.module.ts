@@ -11,18 +11,21 @@ import { AgentSessionModule } from './agent-session.module.js';
 import { AgentGateway } from './agent.gateway.js';
 import { AgentCommandAdapter } from './agent-command.adapter.js';
 import { GameCommandWorker } from './game-command.worker.js';
+import { AgentServerControlAdapter } from './agent-server-control.adapter.js';
+import { ServerControlModule } from '../server-control/server-control.module.js';
 
-// Host Agent transport + authentication (11.1) and GameCommand execution
-// (11.2): credentials managed by Staff, the /api/v1/agent WebSocket, the
-// session registry, the message router with the GameCommand adapter and the
-// dispatch worker. Nothing here talks to Server Control or routes domain
-// events (11.3+).
+// Host Agent transport + authentication (11.1), GameCommand execution
+// (11.2) and Server Control results (11.3): credentials managed by Staff,
+// the /api/v1/agent WebSocket, the session registry, the message router
+// with the GameCommand and Server Control adapters and the GameCommand
+// worker. Domain events are not routed yet (11.4).
 @Module({
   imports: [
     AuthModule,
     AuditModule,
     GameBridgeModule,
     AgentSessionModule,
+    ServerControlModule,
     WebSocketModule,
   ],
   providers: [
@@ -30,6 +33,7 @@ import { GameCommandWorker } from './game-command.worker.js';
     AgentCredentialService,
     AgentMessageRouter,
     AgentCommandAdapter,
+    AgentServerControlAdapter,
     AgentGateway,
     GameCommandWorker,
   ],
