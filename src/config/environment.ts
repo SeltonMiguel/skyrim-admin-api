@@ -36,6 +36,12 @@ export interface ApplicationConfig {
   playerCharacters: { challengeTtl: number };
   playerGroups: { inviteTtl: number };
   playerGuilds: { inviteTtl: number };
+  // Retention and the per player + character send limit, in seconds.
+  playerChat: {
+    retention: number;
+    rateLimitCount: number;
+    rateLimitWindow: number;
+  };
   realtime: { authTimeoutMs: number };
   bootstrap: { username?: string; displayName?: string; password?: string };
   database: {
@@ -73,6 +79,9 @@ interface Environment {
   PLAYER_LINK_CHALLENGE_TTL: string;
   PLAYER_GROUP_INVITE_TTL: string;
   PLAYER_GUILD_INVITE_TTL: string;
+  PLAYER_CHAT_RETENTION: string;
+  PLAYER_CHAT_RATE_LIMIT_COUNT: number;
+  PLAYER_CHAT_RATE_LIMIT_WINDOW: string;
   REALTIME_AUTH_TIMEOUT_MS: number;
   DISCORD_CLIENT_ID?: string;
   DISCORD_CLIENT_SECRET?: string;
@@ -184,6 +193,13 @@ const schema = Joi.object<Environment>({
   PLAYER_LINK_CHALLENGE_TTL: ttl('10m'),
   PLAYER_GROUP_INVITE_TTL: ttl('10m'),
   PLAYER_GUILD_INVITE_TTL: ttl('7d'),
+  PLAYER_CHAT_RETENTION: ttl('7d'),
+  PLAYER_CHAT_RATE_LIMIT_COUNT: Joi.number()
+    .integer()
+    .min(1)
+    .max(100)
+    .default(5),
+  PLAYER_CHAT_RATE_LIMIT_WINDOW: ttl('10s'),
   REALTIME_AUTH_TIMEOUT_MS: Joi.number()
     .integer()
     .min(100)
@@ -237,10 +253,23 @@ export function validateEnvironment(
   const guildInviteTtl = ttlSeconds(value.PLAYER_GUILD_INVITE_TTL);
   if (guildInviteTtl < 3600 || guildInviteTtl > 30 * 86400)
     throw new Error('Invalid environment variables: PLAYER_GUILD_INVITE_TTL');
+  const chatRetention = ttlSeconds(value.PLAYER_CHAT_RETENTION);
+  if (chatRetention < 86400 || chatRetention > 30 * 86400)
+    throw new Error('Invalid environment variables: PLAYER_CHAT_RETENTION');
+  const chatWindow = ttlSeconds(value.PLAYER_CHAT_RATE_LIMIT_WINDOW);
+  if (chatWindow > 3600)
+    throw new Error(
+      'Invalid environment variables: PLAYER_CHAT_RATE_LIMIT_WINDOW',
+    );
   return {
     playerCharacters: { challengeTtl },
     playerGroups: { inviteTtl },
     playerGuilds: { inviteTtl: guildInviteTtl },
+    playerChat: {
+      retention: chatRetention,
+      rateLimitCount: value.PLAYER_CHAT_RATE_LIMIT_COUNT,
+      rateLimitWindow: chatWindow,
+    },
     realtime: { authTimeoutMs: value.REALTIME_AUTH_TIMEOUT_MS },
     playerAuth: {
       accessSecret: value.PLAYER_JWT_ACCESS_SECRET || testPlayerAccessSecret,
