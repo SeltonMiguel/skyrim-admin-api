@@ -642,8 +642,8 @@ e capability do tipo, sem gastar tentativas enquanto o Agent não é elegível;
 mutations exigem a capability de journal `COMMAND_DEDUP_V1`. O Agent confirma a
 tentativa com `COMMAND_ACK` e devolve `COMMAND_RESULT`, aceito mesmo depois de
 reconexão; `UNCERTAIN` vira TIMEOUT/EXECUTION_UNCERTAIN. Server Control real e
-eventos de domínio ainda recebem `NOT_IMPLEMENTED` (11.4+). Nenhuma migration nova
-na 11.2.
+eventos de domínio ainda recebiam `NOT_IMPLEMENTED` naquela etapa. Nenhuma
+migration nova na 11.2.
 
 A Subetapa 11.3 liga o Server Control ao Host Agent com garantia **at-most-once**:
 a operação é enviada no máximo uma vez (`SERVER_CONTROL` com `notAfter`) para uma
@@ -653,6 +653,17 @@ reconexão. Sem resultado até o prazo a operação termina `UNCERTAIN` (termina
 "não sabemos"), distinta de `FAILED` ("sem efeito"). No máximo uma operação em voo
 por servidor (409). A migration `1790030000000-ServerControlTransport` eleva o total
 para vinte e quatro.
+
+A Subetapa 11.4 liga os domínios de gameplay ao Host Agent. `DOMAIN_EVENT`
+(catálogo fechado: ownership, XP de profissão, settlement de trade, custódia,
+settlement e devolução do marketplace) é deduplicado por `eventId` num receipt
+gravado na mesma transação do efeito e respondido com `DOMAIN_EVENT_ACK` só depois
+do commit. `WORK_SYNC`/`WORK_ITEMS` devolvem, paginado, o trabalho físico pendente
+do servidor da sessão, sempre relido das tabelas de domínio; o servidor vem sempre
+da sessão, e trabalho de outro servidor fecha a sessão (4010). Entitlements VIP
+CHARACTER são entregues por GameCommands tipados `SYSTEM:VIP_DELIVERY`; PLAYER nunca
+escolhe character. A migration `1790040000000-AgentDomainEvents` eleva o total para
+vinte e cinco.
 
 | Variável | Padrão | Regra |
 | --- | --- | --- |
@@ -668,3 +679,5 @@ para vinte e quatro.
 | `SERVER_CONTROL_DELIVERY_WINDOW_MS` | 10000 | 100–600000; `notAfter` = claim + janela |
 | `SERVER_CONTROL_RESULT_TIMEOUT_MS` | 300000 | 500–3600000, maior que a janela; sem resultado vira UNCERTAIN |
 | `SERVER_CONTROL_WORKER_INTERVAL_MS` | 1000 | 50–60000; cadência do worker de Server Control |
+| `AGENT_WORK_PUSH_INTERVAL_MS` | 2000 | 100–60000; push best-effort de trabalho novo ao Agent |
+| `VIP_DELIVERY_WORKER_INTERVAL_MS` | 2000 | 50–60000; criação/reconciliação das entregas VIP |

@@ -8,8 +8,8 @@ subetapas 11.1–11.6.
 
 **Estado:** 11.1 (transporte + autenticação do Host Agent, §4), 11.2 (execução de
 GameCommand + resultados, §8.3) e 11.3 (Server Control pelo Host Agent,
-at-most-once, §9.1) estão implementadas. O restante (11.4+) continua sendo
-contrato proposto.
+at-most-once, §9.1) e 11.4 (eventos de domínio do Agent + trabalho de gameplay,
+§10.2) estão implementadas. O restante (11.5+) continua sendo contrato proposto.
 
 Tudo o que é descrito como "proposto" ou "11.x" **não existe** no código. Tudo o
 que é descrito como "atual" foi verificado neste repositório, com referência ao
@@ -198,7 +198,7 @@ Outros pontos encontrados na busca e **fora** do escopo de Agent → Backend:
 - Moderation `PLAYER_BAN` atua no runtime Skyrim (`playerId` opaco do jogo) e
   **não** altera `players.status`; continua assim.
 
-**Lacuna encontrada — escopo por servidor:** os três serviços de Trade/Marketplace
+**Lacuna encontrada — escopo por servidor (corrigida na 11.4):** os três serviços de Trade/Marketplace
 recebem apenas `tradeId`/`listingId`/`purchaseId` e **não conferem** que a entidade
 pertence ao GameServer do Agent. Hoje é seguro (não há transporte); em 11.4 é
 obrigatório passar o `gameServerId` da sessão autenticada ao serviço e rejeitar
@@ -543,9 +543,8 @@ worker da 11.2 e o `AgentServerControlGateway` da 11.3 os usam (§8.3, §9.1).
 `AgentMessageRouter` recebe só frames autenticados: `gameServerId` do frame ≠ da
 sessão → `4010`; `HEARTBEAT` → tratado; `COMMAND_ACK`/`COMMAND_RESULT` → adapter de
 GameCommand (11.2); `SERVER_CONTROL_RESULT` → adapter de Server Control (11.3);
-`DOMAIN_EVENT` → `ERROR { code: NOT_IMPLEMENTED, retryable: false }` sem tocar no
-domínio (socket continua aberto); `ERROR` do Agent → logado; `HELLO`
-repetido, `WORK_SYNC`, tipos só de saída ou desconhecidos → `4003`. O router não
+`DOMAIN_EVENT` e `WORK_SYNC` → adapter de domínio (11.4, §10.2); `ERROR` do Agent → logado; `HELLO`
+repetido, tipos só de saída ou desconhecidos → `4003`. O router não
 importa repositórios nem `typeorm` (teste de fronteira).
 
 ## 5. Protocol / envelope
@@ -607,10 +606,10 @@ envelope ser idêntico em entrada e saída.
 | `SERVER_CONTROL` | B → A | `operationId`, `correlationId`, `type`, `issuedAt`, `notAfter` (§9.1) | `SERVER_CONTROL_RESULT` (sem ACK) | 11.3 ✔ |
 | `SERVER_CONTROL_RESULT` | A → B | `operationId`, `correlationId`, `type`, `outcome` (+ `errorCode` se FAILED), `runtime?` | `SERVER_CONTROL_RESULT_ACK` ou `ERROR` | 11.3 ✔ |
 | `SERVER_CONTROL_RESULT_ACK` | B → A | `inReplyTo`, `operationId`, `status`, `accepted`, `duplicate` | — | 11.3 ✔ |
-| `DOMAIN_EVENT` | A → B | `{ eventType, eventId, data }` | `DOMAIN_EVENT_RESULT` | 11.4 |
-| `DOMAIN_EVENT_RESULT` | B → A | resultado tipado do serviço (`APPLIED`, `ALREADY_APPLIED`, `REJECTED` + reason) | — | 11.4 |
-| `WORK_SYNC` | A → B | escopo opcional (ex.: `characterExternalId`) | `WORK_ITEMS` | 11.4 |
-| `WORK_ITEMS` | B → A | lista de trabalho pendente derivada do banco (§13–15) | — | 11.4 |
+| `DOMAIN_EVENT` | A → B | `{ eventId, kind, data }`, `kind` fechado, `data` exato por kind (§10.2) | `DOMAIN_EVENT_ACK` ou `ERROR` | 11.4 ✔ |
+| `DOMAIN_EVENT_ACK` | B → A | `inReplyTo`, `eventId`, `kind`, `duplicate` (só após o commit) | — | 11.4 ✔ |
+| `WORK_SYNC` | A → B | `kind?`, `cursor?`, `limit?` (1–50); nunca servidor | `WORK_ITEMS` | 11.4 ✔ |
+| `WORK_ITEMS` | B → A | `inReplyTo` (ou `null` no push), `items[]`, `nextCursor` | — | 11.4 ✔ |
 | `ERROR` | ambos | `code`, `inReplyTo?`, `retryable` | — | 11.1 ✔ (`NOT_IMPLEMENTED`) |
 
 Não há `GOODBYE`: o encerramento gracioso é o close `1000` do WebSocket
@@ -655,10 +654,11 @@ As quatro garantias são **distintas** e não devem ser misturadas.
 
 **Domain events — at-least-once com dedup no backend**
 - O Agent gera `eventId` **persistente** (gravado antes de enviar) e reenvia até
-  receber `DOMAIN_EVENT_RESULT`.
-- O backend deduplica **por domínio** com as chaves já existentes (§2.3); não há
-  tabela genérica de inbox, porque cada domínio já grava o evento na mesma
-  transação do efeito.
+  receber `DOMAIN_EVENT_ACK` (ou um `ERROR` não retryable).
+- O backend deduplica de forma **uniforme** em `agent_domain_event_receipts`
+  (servidor da sessão + `eventId`), gravado **na mesma transação** do efeito de
+  domínio (11.4, §10.2); as chaves de cada domínio (§2.3) continuam valendo por
+  baixo.
 - `REJECTED` é resposta definitiva para aquele `eventId`, exceto
   `LEDGER_REJECTED` e `TEMPORARILY_UNAVAILABLE`, que são retryable.
 
@@ -1091,68 +1091,204 @@ operacional); com `operationId`, `gameServerId`, `action`, `connectionId`.
 | Concorrência | até `AGENT_MAX_IN_FLIGHT_COMMANDS` por servidor | 1 operação em voo por servidor |
 | Worker | `GameCommandWorker` (retries) | `ServerControlWorker` (sem retry) |
 
-## 10. Domain event routing
+## 10. Domain event routing (11.4 — implementado)
 
 ```text
-AgentTransport (ws: upgrade, frame size, binário, rate, estado AUTH)
-      │  frames JSON válidos
+AgentGateway (ws, frame ≤ 128 KiB, rate limit por sessão, estado AUTH)
+      │  frames autenticados
       ▼
-AgentSession (credencial → gameServerId, connectionId, capabilities)
-      │  identidade autenticada, nunca vinda do payload
-      ▼
-AgentMessageRouter
-      │  valida envelope + versão + type; valida gameServerId do envelope = sessão;
-      │  despacha por type para um adapter; aplica limites de in-flight
-      ▼
-typed adapters (um por type)
-      │  valida/copia payload (allowlist), converte para o contrato interno,
-      │  injeta gameServerId DA SESSÃO, mapeia retorno → DOMAIN_EVENT_RESULT
-      ▼
-domain services existentes (confirmFromAgent, grantFromAgent, receiver…)
+AgentMessageRouter            (sem regra de negócio, sem typeorm/entities)
+      │  gameServerId do envelope = sessão, senão 4010
+      ├─ DOMAIN_EVENT ─► AgentDomainEventAdapter ─► AgentDomainEventService
+      │                     (parse fechado)            (tabela kind → handler,
+      │                                                  receipt, dedup)
+      │                                                    ▼
+      │                                  entry points de domínio (confirmFromAgent, grantFromAgent)
+      └─ WORK_SYNC ────► AgentDomainEventAdapter ─► AgentWorkService ─► projeções read-only
+                                                                          (TradeWorkSource, MarketplaceWorkSource)
 ```
 
-| `eventType` (proposto) | Adapter → serviço | Retorno |
+### 10.1 Work recovery: `WORK_SYNC` / `WORK_ITEMS`
+
+Mantidos os princípios da 11.0: recovery depois de toda (re)conexão, push
+best-effort que pode coexistir, catálogo fechado, backend como autoridade e
+itens derivados das tabelas de domínio no momento do pedido. Detalhes em §10.2.
+
+### 10.2 Implementado na 11.4
+
+**Inventário dos entry points (reais).**
+
+| Entry point | Parâmetros | Transação | Idempotência | Servidor | Ator | Realtime |
+| --- | --- | --- | --- | --- | --- | --- |
+| `CharacterLinkService.confirmFromAgent` | `challenge`, `gameServerId`, `characterExternalId` | 1 tx: link → challenge → player | challenge single-use (hash); replay → `ALREADY_VERIFIED` | já recebia; challenge de outro servidor → `CHALLENGE_MISMATCH` | `SYSTEM:AGENT` (Audit) | nenhum (continua para 11.5) |
+| `ProfessionExperienceService.grantFromAgent` | `gameServerId`, `characterExternalId`, `eventId`, `amount` | 1 tx: lock da profissão | UNIQUE(`game_server_id`, `external_event_id`) | já recebia (é a identidade) | `SYSTEM:AGENT` (Audit) | nenhum |
+| `TradeSettlementService.confirmFromAgent` | `tradeId`, `settlementEventId`, `outcome` **+ `gameServerId` (11.4)** | `mutate`: trade → escrow → ledger; realtime pós-commit | UNIQUE(servidor, event) + UNIQUE(trade) | **não conferia** → agora `SERVER_MISMATCH` | `SYSTEM:AGENT` (Audit) | `TRADE_COMPLETED`/`FAILED` |
+| `MarketplaceCustodyService.confirmFromAgent` | `listingId`, `custodyEventId`, `outcome` **+ `gameServerId`** | `mutate`: listing | idem | **não conferia** → `SERVER_MISMATCH` | `SYSTEM:AGENT` | `MARKETPLACE_LISTING_ACTIVE`/`FAILED` |
+| `MarketplaceSettlementService.confirmFromAgent` | `purchaseId`, `settlementEventId`, `outcome` **+ `gameServerId`** | `mutate`: listing → purchase → escrow → ledger | idem | **não conferia** → `SERVER_MISMATCH` | `SYSTEM:AGENT` | `…_SOLD` / `…_PURCHASE_FAILED` |
+| `MarketplaceReleaseService.confirmFromAgent` **(novo)** | `releaseId`, `releaseEventId`, `outcome`, `gameServerId` | `mutate`: listing → release | UNIQUE(servidor, `release_event_id`) + status | `SERVER_MISMATCH` | `SYSTEM:AGENT` (Audit `…_ITEM_RELEASED`/`…_RELEASE_FAILED`) | nenhum |
+| `VipDeliveryService` (reescrito) | — (worker) | 1 tx por delivery: entitlement → delivery → `submitInTransaction` | idempotency key `vip-delivery:<deliveryId>` | servidor do entitlement | `SYSTEM:VIP_DELIVERY` | nenhum |
+
+Todos ganharam um parâmetro opcional `onAccepted: AgentEventHook`
+(`src/actors/agent-event.contracts.ts`), chamado **dentro da transação do domínio**
+imediatamente antes de um resultado aceito (aplicado ou já aplicado) commitar.
+
+**DOMAIN_EVENT (A → B).** `{ eventId, kind, data }`: `eventId` UUID, identidade
+persistente de entrega; `kind` do catálogo fechado `AGENT_EVENT_KINDS`
+(`agent-domain-event.contracts.ts`); `data` com chaves exatas por kind (campo extra
+→ `INVALID_MESSAGE`):
+
+| kind | data | Serviço |
 | --- | --- | --- |
-| `CHARACTER_OWNERSHIP_CONFIRMATION` | `CharacterLinkService.confirmFromAgent` | `OwnershipConfirmation` (sem `playerId` no fio: o Agent não precisa saber o dono) |
-| `PROFESSION_EXPERIENCE` | `ProfessionExperienceService.grantFromAgent` | `ExperienceGrant` |
-| `TRADE_SETTLEMENT` | `TradeSettlementService.confirmFromAgent` (+ `gameServerId`, 11.4) | `SettlementResult` (sem `ledgerReason` no fio) |
-| `MARKETPLACE_CUSTODY` | `MarketplaceCustodyService.confirmFromAgent` (+ `gameServerId`) | `CustodyResult` |
-| `MARKETPLACE_SETTLEMENT` | `MarketplaceSettlementService.confirmFromAgent` (+ `gameServerId`) | `MarketSettlementResult` |
-| `MARKETPLACE_CUSTODY_RELEASED` | **novo em 11.4** (devolução ao seller após cancel/falha) | a definir |
-| `VIP_DELIVERY_*` | resultado via GameCommand (§15) | — |
+| `CHARACTER_OWNERSHIP_PROOF` | `challenge`, `characterExternalId` | `CharacterLinkService.confirmFromAgent` |
+| `PROFESSION_EXPERIENCE` | `characterExternalId`, `amount` (`eventId` vira `externalEventId`) | `ProfessionExperienceService.grantFromAgent` |
+| `TRADE_SETTLEMENT` | `workId` (= tradeId), `outcome` `SUCCEEDED`\|`SETTLED` (legado)\|`FAILED` | `TradeSettlementService` |
+| `MARKETPLACE_CUSTODY` | `workId` (= listingId), `outcome` `SUCCEEDED`\|`CUSTODIED` (legado)\|`FAILED` | `MarketplaceCustodyService` |
+| `MARKETPLACE_SETTLEMENT` | `workId` (= purchaseId), `outcome` `SETTLED`\|`FAILED` | `MarketplaceSettlementService` |
+| `MARKETPLACE_RELEASE` | `workId` (= releaseId), `outcome` `RELEASED`\|`FAILED` | `MarketplaceReleaseService` |
 
-Regras do router:
+Não existe evento genérico (`entity/action/payload`), comando ou script. Novo kind =
+mudança explícita (parser, handler, CHECK). Nenhum kind aceita `playerId`, link,
+status final, servidor, GOLD, preço, quantidade, item, participante ou nível.
 
-- **Sem regra de negócio**: não decide XP, ownership, escrow ou status.
-- **Não importa repositórios nem `DataSource`** de domínio; só serviços. Proposta:
-  teste unitário que falha se `src/agent-*` importar `typeorm`/entities de domínio,
-  no mesmo estilo do teste que já proíbe `child_process` em `server-control`.
-- Exceção do serviço (ex.: banco indisponível) → `ERROR TEMPORARILY_UNAVAILABLE`
-  retryable; nunca `APPLIED` presumido.
-- Nenhum log de payload, challenge, segredo ou resultado (regra já vigente no Game
-  Bridge); só ids, type, outcome e reason.
+**Respostas (sempre depois do commit).**
 
-### 10.1 Work recovery: `WORK_SYNC` / `WORK_ITEMS` (proposta mantida, 11.4)
+| Caso | Frame |
+| --- | --- |
+| aplicado | `DOMAIN_EVENT_ACK { eventId, kind, duplicate: false }` |
+| mesmo `eventId` e mesmo conteúdo (retry, reconexão, restart) ou domínio já aplicado | `DOMAIN_EVENT_ACK { duplicate: true }`, sem segundo efeito |
+| mesmo `eventId` com outro conteúdo ou outro kind | `ERROR EVENT_CONFLICT` |
+| recusa final do domínio (ex.: `EXPIRED_CHALLENGE`, `PROFESSION_NOT_SELECTED`, `TRADE_NOT_AWAITING`) | `ERROR DOMAIN_REJECTED { reason, retryable: false }` (persistida: o mesmo `eventId` recebe a mesma resposta) |
+| recusa retryable (`LEDGER_REJECTED`, `SERVER_UNAVAILABLE`) | `ERROR DOMAIN_REJECTED { retryable: true }`, nada persistido |
+| work de outro servidor | close `4010 SERVER_MISMATCH`, nada muda |
+| payload/kind inválido | `ERROR INVALID_MESSAGE` |
+| exceção (banco) | `ERROR TEMPORARILY_UNAVAILABLE`, `retryable: true` |
 
-Intenção e limites:
+**Dedup uniforme (`agent_domain_event_receipts`).** PK (`game_server_id`,
+`event_id`), `kind`, `content_hash` (SHA-256 do JSON canônico de `{kind, data}`),
+`status` `APPLIED`\|`REJECTED`, `reason`. Nunca guarda o payload (o challenge não é
+persistido). Transação por evento: parse → leitura do receipt (duplicado/conflito)
+→ serviço de domínio abre sua transação e trava a entidade canônica → confere o
+servidor da sessão → aplica → **hook grava o receipt** (`ON CONFLICT DO NOTHING`;
+se outra entrega do mesmo `eventId` venceu, a transação faz rollback e a resposta
+vem do receipt vencedor) → commit → realtime do domínio → ACK. Não existe janela
+"domínio commitou sem receipt": ambos são o mesmo commit (teste: se o receipt falha,
+nem o XP nem o evento de domínio ficam). Receipt não é Audit.
 
-- **Recovery/sincronização** depois de HELLO e de toda reconexão: o Agent pede, o
-  backend devolve o trabalho pendente daquele GameServer.
-- **Live push pode coexistir**: após o commit de uma transição (trade AWAITING,
-  listing PENDING_CUSTODY, purchase AWAITING, listing cancelada com custódia), o
-  backend pode enviar o mesmo `WORK_ITEMS` como dica. Perder o push não perde
-  trabalho, porque o próximo `WORK_SYNC` o recalcula.
-- **Estritamente tipado**: catálogo fechado de `kind` (`TRADE_CUSTODY`,
-  `LISTING_CUSTODY`, `PURCHASE_SETTLEMENT`, `LISTING_RELEASE`, e VIP se aplicável),
-  cada um com payload allowlisted (ids, character ids, item ids opacos,
-  quantidades). **Não é comando arbitrário** nem canal de execução genérico.
-- **O backend continua autoridade do estado**: os itens são derivados das tabelas
-  de domínio no momento do pedido, sem estado próprio; nada muda no backend por
-  causa de um `WORK_ITEMS` enviado.
-- **Os retornos continuam deduplicados pelos event ids de domínio**
-  (`settlementEventId`, `custodyEventId`, …). Receber o mesmo trabalho duas vezes
-  não gera efeito duplicado: o Agent consulta seu journal e, se já respondeu,
-  reenvia o mesmo evento, que resulta em `ALREADY_APPLIED`.
+**Server binding.** `gameServerId` vem sempre da sessão. Trade/Marketplace/release
+conferem o servidor da entidade dentro da transação → `SERVER_MISMATCH` + close
+`4010` (injeção cross-server), nenhuma mutação. Ownership: challenge de outro
+servidor é `DOMAIN_REJECTED CHALLENGE_MISMATCH` **sem** fechar a sessão — o
+challenge é digitado pelo jogador; fechar o Agent por um código errado seria um
+vetor de negação de serviço. Profession: a identidade é (servidor da sessão,
+character), então outro servidor é outra profissão.
+
+**WORK_SYNC / WORK_ITEMS.** `WORK_SYNC { kind?, cursor?, limit? }` (limite 1–50,
+padrão 50); o servidor é o da sessão. `WORK_ITEMS { inReplyTo, items, nextCursor }`
+com `items[] = { workId, kind, createdAt, data }`, catálogo `AGENT_WORK_KINDS`:
+
+| kind | Origem (canônica) | data | workId |
+| --- | --- | --- | --- |
+| `TRADE_SETTLEMENT` | trades `AWAITING_GAME_CONFIRMATION` | `tradeId`, personagens, `initiatorItems`/`targetItems` (GAME_ITEM + qtd) | tradeId |
+| `MARKETPLACE_CUSTODY` | listings `PENDING_CUSTODY` | `listingId`, seller, item, qtd | listingId |
+| `MARKETPLACE_SETTLEMENT` | purchases `AWAITING_GAME_CONFIRMATION` | `purchaseId`, `listingId`, buyer, seller, item, qtd | purchaseId |
+| `MARKETPLACE_RELEASE` | releases `PENDING` | `releaseId`, `listingId`, seller, item, qtd | releaseId |
+
+Nunca GOLD, preço ou regra econômica. Paginação: kinds na ordem fixa; dentro de
+cada kind, keyset (instante canônico em µs, id) — sem offset. Cursor opaco
+(base64url), validado estritamente. Página limitada a 50 itens **e** 96 KiB (um
+trade pode ter 20 linhas por lado), abaixo do frame de 128 KiB. Nada é marcado
+"entregue" por aparecer num `WORK_ITEMS`: socket que cai não perde nada; o próximo
+`WORK_SYNC` devolve o mesmo trabalho com o mesmo `workId`. Trabalho que commita
+durante uma passada pode aparecer só na próxima passada ou no push.
+
+**Push best-effort.** `AgentWorkNotifier` (`AGENT_WORK_PUSH_INTERVAL_MS`, padrão
+2 s) lê a primeira página canônica de cada sessão ACTIVE e envia, como
+`WORK_ITEMS { inReplyTo: null }`, só os itens ainda não avisados àquela conexão
+(memória limitada, só otimização). Roda fora de qualquer transação de domínio;
+domínios não o chamam; falha de socket não reverte nada.
+
+**Journal do Host Agent por `workId` (requisito).** Entrega de work é
+at-least-once: o mesmo `workId` pode chegar várias vezes (sync, push, reconexão).
+O Agent grava em journal durável `workId → fase` antes de cada efeito físico,
+nunca repete um efeito já feito e, ao receber de novo um work já concluído,
+reenvia o mesmo `DOMAIN_EVENT` (mesmo `eventId`), que resulta em ACK duplicado.
+
+**Ownership.** Player cria o challenge → digita no jogo → Agent envia
+`CHARACTER_OWNERSHIP_PROOF { challenge, characterExternalId }` → o backend
+resolve challenge, player e link. Preservados: hash, TTL, single use, escopo por
+servidor, regras de conflito. O challenge não é logado nem persistido. Não há
+evento realtime de link verificado (continua para 11.5).
+
+**Professions.** `eventId` do protocolo = `externalEventId`. O Agent só informa o
+fato (`characterExternalId`, `amount`); nível, teto e regras seguem no serviço.
+Retry não duplica XP; recusa é final para o `eventId` (persistida).
+
+**Trade.** O backend continua autoridade de ofertas, aceite, GOLD, escrow e
+elegibilidade; o work traz só os itens físicos que o backend já determinou.
+`TRADE_SETTLEMENT SUCCEEDED` confirma fulfillment físico completo, registrado
+no journal por workId; `SETTLED` é o alias legado com a mesma semântica. Só então
+GOLD é liquidado e Trade vira `COMPLETED` (settled). Não resta entrega física
+invisível depois disso. Enquanto incompleto, o work permanece em `WORK_SYNC`.
+Reconnect recupera o mesmo workId, sem repetir transferências conhecidas.
+`FAILED` libera GOLD apenas quando há falha física definitiva.
+
+**Marketplace.** Custody → `ACTIVE`; purchase → work de settlement → `SETTLED` paga
+o seller pelo preço da listing → `SOLD`. **Release (novo):**
+`player_marketplace_item_releases` (`PENDING`→`COMPLETED`\|`FAILED`, `reason`
+`CANCELLED`\|`PURCHASE_FAILED`), criada **na mesma transação** que cancela uma
+listing `ACTIVE` ou falha um settlement; o id é o `workId`. Um item custodiado nunca
+é esquecido: a release fica pendente até o Agent reportar. Custody adquirida
+(`SUCCEEDED`, alias de `CUSTODIED`) que chega após `CANCELLED`/`FAILED` cria ou
+garante a release persistente sem reativar a listing. Sem aquisição confirmada,
+nenhuma release é criada. Lock da listing + UNIQUE(listing_id) garantem uma única
+obrigação independentemente dos receipts e de novos eventIds equivalentes.
+Release concluída não é reaberta. O histórico anterior permanece imutável;
+`PURCHASE_FAILED` é o reason existente reutilizado para listing FAILED.
+`WORK_SYNC` recupera a devolução com o mesmo release workId após reconnect.
+Servidor diferente recebe `SERVER_MISMATCH` sem mutação. Backend é a fonte de
+verdade das obrigações pendentes; journal deduplica a execução física.
+
+**VIP delivery.** Decisão de alvo: **só scope CHARACTER** gera entrega (o
+entitlement já nomeia servidor + character). Scope PLAYER continua direito da
+conta: nenhum character é escolhido (nem primeiro, nem último, nem o mais recente);
+um produto PLAYER com reward in-game exigirá um fluxo explícito de claim/target.
+`vip_reward_deliveries`: uma linha por reward (índice + snapshot), criada na mesma
+transação do grant. Estados `PENDING` → `COMMAND_CREATED` → `SUCCEEDED` \| `FAILED` \|
+`UNCERTAIN`, ou `CANCELLED` / `FAILED UNSUPPORTED_REWARD` sem command. Mapeamento
+fechado: `ITEM → CHARACTER_ITEM_GIVE`, `HORSE → CHARACTER_HORSE_GIVE`,
+`TITLE → CHARACTER_TITLE_GIVE`, `SPELL → CHARACTER_SPELL_GIVE` (reward sem command
+tipado nunca é entregue; nada de console/Papyrus/script). Reutiliza o GameCommand
+da 11.2: `submitInTransaction` com ator `SYSTEM:VIP_DELIVERY` e idempotency key
+`vip-delivery:<deliveryId>`; o Agent vê só `commandId` e payload tipado. O worker
+(`VIP_DELIVERY_WORKER_INTERVAL_MS`, padrão 2 s) só cria o command quando o servidor
+tem Agent pronto com a capability (senão a entrega espera, sem consumir o direito)
+e reconcilia pelo `game_command_id`: `SUCCEEDED → SUCCEEDED`, `FAILED → FAILED`
+(código do command), `TIMEOUT`/`EXECUTION_UNCERTAIN → UNCERTAIN`; nunca cria outro
+command. **Revoke/expiração:** antes do command → `CANCELLED`, nada entregue
+(checado sob o lock do entitlement, mesma ordem do revoke); depois do command → sem
+"desexecução" nem clawback, o command segue seu lifecycle; `SUCCEEDED` já entregue
+não é removido. Entitlements concedidos antes da 11.4 não ganham deliveries (não
+havia snapshot); decisão aberta (§23).
+
+**Audit.** Transporte técnico não audita. Os domínios mantêm exatamente seu Audit
+(`SYSTEM:AGENT`); a release audita no mesmo padrão de custody/settlement; VIP não
+cria Audit novo (o GameCommand já tem ator `SYSTEM:VIP_DELIVERY`).
+
+**Logs** (sem challenge, payload, JWT ou credencial): `Agent domain event applied |
+duplicate | conflict | rejected by the domain (reason) | for another server's work
+rejected`, com `eventId`, `kind`, `gameServerId`, `connectionId`, `workId`;
+`Agent work sync (count, more)`; `Agent work pushed`; `VIP delivery command created
+| held | succeeded | failed | uncertain | ended without command` com `deliveryId`.
+
+**Restart.** Receipts, releases, deliveries e work vivem no banco: evento concluído
+não reaplica (receipt), work pendente reaparece no `WORK_SYNC`, delivery reconcilia
+pelo `game_command_id`, release `PENDING` reaparece. Nada depende de memória.
+
+**Migration 25 (`1790040000000-AgentDomainEvents`).** As três tabelas, com CHECKs de
+coerência. Backfill: listings já `CANCELLED`/`FAILED` com custódia `CUSTODIED`
+ganham release `PENDING`. `down` recusa enquanto houver release `PENDING` ou
+delivery `PENDING`/`COMMAND_CREATED` (obrigações abertas); histórico terminal é
+perdido no rollback.
 
 ## 11. Character verification
 
@@ -1161,7 +1297,7 @@ Player (Electron) POST /player/character-links { gameServerId, characterExternal
    ◄── 201 { link PENDING, challenge "ABCD-EFGH-JKLMN", expiresAt }   (hash SHA-256 no banco)
 Player digita o challenge no jogo (comando/diálogo do mod)
 SKSE → Agent: { challenge, characterExternalId do personagem logado }
-Agent ─ DOMAIN_EVENT CHARACTER_OWNERSHIP_CONFIRMATION { eventId, challenge, characterExternalId } ─► Router
+Agent ─ DOMAIN_EVENT CHARACTER_OWNERSHIP_PROOF { eventId, challenge, characterExternalId } ─► Router
 Router injeta gameServerId da sessão ─► CharacterLinkService.confirmFromAgent
    ◄── VERIFIED | ALREADY_VERIFIED | REJECTED(reason)
 Agent informa o jogador in-game; Electron relê GET /player/character-links/:linkId
@@ -1174,7 +1310,8 @@ Agent informa o jogador in-game; Electron relê GET /player/character-links/:lin
   Agent), TTL (`PLAYER_LINK_CHALLENGE_TTL`), single-use (`consumed_at`), revogação
   de challenges anteriores, `characterExternalId` escopado por servidor, reuso de
   challenge consumido → `ALREADY_VERIFIED` só para o mesmo link.
-- `eventId` aqui serve só a transporte/log: a idempotência real é o challenge.
+- `eventId` é a identidade de entrega (receipt, §10.2); a idempotência de domínio
+  continua sendo o challenge.
 - O Agent não deve logar nem persistir o challenge além do necessário para o
   reenvio; tentativas repetidas de challenges inválidos por um mesmo character
   devem ser limitadas no Agent (brute force de 64 bits é inviável, mas spam não).
@@ -1207,37 +1344,34 @@ Router ─► ProfessionExperienceService.grantFromAgent ─► GRANTED | ALREAD
 
 Estado atual: o segundo accept reserva o GOLD em `TRADE_ESCROW`; com GAME_ITEM o
 trade para em `AWAITING_GAME_CONFIRMATION` e publica o realtime
-`TRADE_AWAITING_GAME_CONFIRMATION` **só para players**. **O Agent não é avisado**:
-não existe mensagem Backend → Agent para iniciar a custódia.
+`TRADE_AWAITING_GAME_CONFIRMATION` para players. O Agent recupera o trabalho por
+`WORK_SYNC` e recebe push best-effort de `WORK_ITEMS`.
 
-Sequência proposta (11.4):
+Sequência (implementada na 11.4, §10.2):
 
 ```text
 Backend: trade → AWAITING (GOLD RESERVED)            [commit]
-Backend ─ WORK_ITEMS { kind: TRADE_CUSTODY, tradeId, parties, items } ─► Agent
+Backend ─ WORK_ITEMS { kind: TRADE_SETTLEMENT, workId = tradeId, parties, items } ─► Agent
           (push após commit + WORK_SYNC em todo (re)connect; §10.1)
-Agent: jogadores online? valida itens e quantidades, retira os itens para
-       custódia durável e reversível (journal local persistido)
-Agent ─ DOMAIN_EVENT TRADE_SETTLEMENT { eventId, tradeId, outcome: SETTLED } ─► Backend
-Backend (tx): settle GOLD, COMPLETED, evento gravado, Audit    ─► APPLIED
-Agent: entrega os itens às contrapartes (retry durável até concluir)
+Agent: executa todas as transferências aos destinatários, journal por workId
+Agent ─ DOMAIN_EVENT TRADE_SETTLEMENT { eventId, workId, outcome: SUCCEEDED } ─► Backend
+Backend (tx): settle GOLD, COMPLETED, evento gravado, Audit ─► ACK
 
-falha de custódia ou impossibilidade ─► outcome FAILED ─► GOLD RELEASED, trade FAILED
-                                         Agent devolve itens eventualmente retirados
-LEDGER_REJECTED ─► nada muda; Agent mantém custódia, reenvia depois com o
-                   MESMO eventId, ou envia FAILED com outro eventId
+LEDGER_REJECTED ─► continua AWAITING, GOLD RESERVED; reenvia o mesmo sucesso
+                   sem repetir as transferências já concluídas
 ```
 
-- **Invariante:** nenhum item é entregue irreversivelmente antes do `APPLIED` de
-  `SETTLED`. GOLD commit do backend é a autoridade da conclusão econômica.
-- **Crash recovery:** o Agent persiste `(tradeId, eventId, fase)` antes de cada
-  passo. Resposta perdida → reenvio → `ALREADY_APPLIED` com o status final,
-  e o Agent segue para a entrega ou devolução. Backend reinicia → o trade continua
-  AWAITING no banco e reaparece no próximo `WORK_SYNC`.
-- **Lacuna de escopo:** passar e conferir `gameServerId` da sessão (§2.3).
+- **Invariante:** sucesso confirma fulfillment físico completo. Trade settled =
+  fulfillment físico confirmado + settlement econômico concluído. Não há
+  entrega física posterior à conclusão.
+- **Crash recovery:** o Agent persiste `(workId, eventId, fase)` por transferência.
+  Reconexão antes da conclusão recupera o mesmo workId em WORK_SYNC e retoma
+  apenas o restante. Resposta perdida → mesmo evento → duplicate ACK, sem
+  repetir efeitos físicos ou GOLD. Após o commit, o work desaparece.
+- **Escopo (11.4):** `gameServerId` da sessão conferido na transação (§10.2).
 - **Lacuna de produto:** trade AWAITING não expira e o Player não pode cancelar.
-  Se o Agent nunca responder, o GOLD fica reservado indefinidamente. Decidir em
-  11.4: timeout operacional com `FAILED` iniciado pelo backend **somente** se o
+  Se o Agent nunca responder, o GOLD fica reservado indefinidamente. Fora deste delta:
+  timeout operacional com `FAILED` iniciado pelo backend **somente** se o
   Agent confirmar que não tem custódia, ou ação de operador.
 
 ## 14. Marketplace
@@ -1247,7 +1381,8 @@ Estado atual: create → `PENDING_CUSTODY`; custody → `ACTIVE`; purchase →
 `SOLD`/`FAILED`; cancel de `PENDING_CUSTODY`/`ACTIVE` → `CANCELLED`. **O Agent não
 é avisado de nenhuma dessas transições.**
 
-Sequência proposta (11.4):
+Sequência (implementada na 11.4; kinds finais em §10.2: `MARKETPLACE_CUSTODY`,
+`MARKETPLACE_SETTLEMENT`, `MARKETPLACE_RELEASE`):
 
 ```text
 1. Listing custody
@@ -1265,21 +1400,22 @@ Sequência proposta (11.4):
    FAILED ─► refund do buyer, listing FAILED ─► Agent devolve ao seller
 
 3. Refund/release
-   Listing CANCELLED ou FAILED com custody_event_id preenchido
-          ─ WORK_ITEMS { kind: LISTING_RELEASE, listingId } ─► Agent devolve ao seller
-   Agent ─ MARKETPLACE_CUSTODY_RELEASED { eventId, listingId } ─► Backend registra devolução
+   Listing CANCELLED ou FAILED com custody confirmada, inclusive confirmação tardia
+          ─ release PENDING persistente
+          ─ WORK_ITEMS { kind: MARKETPLACE_RELEASE, workId: releaseId } ─► Agent devolve ao seller
+   Agent ─ DOMAIN_EVENT MARKETPLACE_RELEASE { eventId, workId, outcome: RELEASED }
+          ─► Backend marca release COMPLETED
 ```
 
 - **Invariante:** item só sai da custódia para o buyer depois do `APPLIED` de
   `SETTLED`; para o seller, depois de `CANCELLED`/`FAILED` confirmados no backend.
-- **Lacuna de estado:** hoje não há registro de "item devolvido ao seller". Sem
-  ele, uma listing CANCELLED/FAILED com custódia continuaria aparecendo em todo
-  `WORK_SYNC`. Proposta 11.4: tabela append-only de release events (ou colunas
-  `custody_released_at`/`custody_release_event_id`) — **migration**.
-- **Crash recovery:** igual a Trade; `WORK_SYNC` é recalculado a partir das tabelas
-  de domínio (listings/purchases/escrows), que já são a fonte de verdade — não é
-  necessária uma outbox para esses trabalhos.
-- **Lacuna de escopo:** conferir `gameServerId` da sessão nos dois serviços.
+- **Estado de devolução (11.4):** `player_marketplace_item_releases` (§10.2),
+  uma por listing, inclusive para custody adquirida confirmada após cancellation/failure.
+  Listing continua terminal; a release fica em WORK_SYNC até COMPLETED/FAILED.
+- **Crash recovery:** `WORK_SYNC` é recalculado a partir das tabelas de domínio,
+  incluindo releases; reconnect recupera o mesmo workId. O journal deduplica a
+  devolução física e o receipt deduplica o evento.
+- **Escopo (11.4):** `gameServerId` da sessão conferido nos três serviços.
 
 ## 15. VIP delivery
 
@@ -1289,7 +1425,8 @@ Estado atual: `VipDeliveryService.requestDelivery` sempre retorna
 `CHARACTER_HORSE_GIVE`, `CHARACTER_TITLE_GIVE` e `CHARACTER_SPELL_GIVE` sem
 `characterId`, e `SystemSource.VIP_DELIVERY` já é aceito pelos CHECKs.
 
-Recomendação para 11.4:
+Recomendação da 11.0 (a implementação final da 11.4 está em §10.2; estados:
+`PENDING`, `COMMAND_CREATED`, `SUCCEEDED`, `FAILED`, `UNCERTAIN`, `CANCELLED`):
 
 ```text
 entitlement ACTIVE (CHARACTER scope)
@@ -1451,6 +1588,14 @@ Por que o Agent **não** reutiliza `/api/v1/realtime`:
 | Server Control entregue tarde ao Agent | `notAfter` no frame | Agent recusa: `FAILED / DELIVERY_EXPIRED`, nada executado | — | nova solicitação |
 | Server Control: capability ausente | registry | não há claim; PENDING → FAILED `DISPATCH_EXPIRED` | sim | atualizar o Agent |
 | Result tardio após TIMEOUT | banco (TIMEOUT imutável) | 409 conflito | não reabre | **efeito pode ter ocorrido**: métrica + reconciliação manual |
+| DOMAIN_EVENT sem ACK (socket caiu) | receipt no banco | Agent reenvia o mesmo `eventId` → ACK `duplicate: true`, sem segundo efeito | sim | — |
+| Receipt não pode ser gravado | transação do domínio | rollback do efeito e do receipt; `TEMPORARILY_UNAVAILABLE` retryable | sim | — |
+| Agent do servidor B conclui work do servidor A | entidade de domínio | `SERVER_MISMATCH`, close 4010, nada muda | — | investigar credencial |
+| Work perdido (push falhou, socket caiu durante WORK_ITEMS) | tabelas de domínio | próximo `WORK_SYNC` devolve o mesmo `workId` | sim | — |
+| Listing ACTIVE cancelada / settlement FAILED | `player_marketplace_item_releases` | release PENDING até o Agent reportar | sim | release FAILED → operador |
+| VIP CHARACTER sem Agent pronto | `vip_reward_deliveries` | fica PENDING sem command | sim | — |
+| VIP command TIMEOUT / EXECUTION_UNCERTAIN | delivery UNCERTAIN | nunca cria outro command | — | verificar no jogo |
+| Entitlement revogado/expirado antes do command | delivery | CANCELLED, nada entregue | — | — |
 
 ## 21. Security model
 
@@ -1512,11 +1657,11 @@ Nunca aparecem segredo, hash, JWT nem payloads. O histórico por motivo continua
 | Backpressure do socket (bufferedAmount) no `AgentGameGateway` | Etapa 12 / hardening |
 | Regras de aceitação pelo estado de processo reportado (ex.: START com `RUNNING` → 409 no backend); hoje o Agent recusa com `INVALID_PROCESS_STATE` | quando houver uso |
 | Contador/métrica exportada de UNCERTAIN (hoje log estruturado) e endpoint/lista de operações UNCERTAIN para o Admin Web | Etapa 12 / 11.5 |
-| Catálogo final de `kind` de `WORK_ITEMS` e se a entrega VIP também passa por ele ou só por GameCommands | 11.4 |
-| Registro de devolução de custódia do Marketplace (migration) | 11.4 |
-| Expiração/resolução de trades e purchases AWAITING sem resposta do Agent | 11.4 |
-| `vip_reward_deliveries`; alvo de entitlements PLAYER; efeito de revoke em rewards entregues | 11.4 |
-| Quais ações de gameplay geram XP e quanto | produto / 11.4 |
+| Expiração/resolução de trades e purchases AWAITING (e releases PENDING/FAILED) sem resposta do Agent: timeout operacional ou ação de operador | produto / Etapa 12 |
+| Fluxo explícito de claim/target para rewards in-game de entitlements PLAYER | produto |
+| Deliveries VIP para entitlements CHARACTER concedidos antes da 11.4 (sem snapshot); nova tentativa de delivery FAILED/UNCERTAIN por operador | produto |
+| Evento realtime de link verificado e de work concluído para o Electron | 11.5 |
+| Quais ações de gameplay geram XP e quanto | produto |
 | Sincronização de gold do jogo com o ledger (hoje: não existe) | produto |
 | Descoberta de servidores pelo Player; eventos realtime de link verificado e operação concluída | 11.5 |
 | Multi-instância do backend (roteamento de sockets, broker) | Etapa 12 |
@@ -1531,7 +1676,7 @@ A divisão proposta foi **confirmada**, com o escopo abaixo. Nenhuma subetapa no
 | **11.1** Game Agent Transport + Authentication — **implementada** | roteador de upgrade único; `WebSocketServer` do Agent; credenciais (SHA-256, até 2 ACTIVE, revogação com close imediato) e Staff API; HELLO/AUTHENTICATED/HEARTBEAT/HEARTBEAT_ACK/ERROR; `game_connections` como sessão do Host Agent com runtime/SKSE/capabilities; varredura de heartbeat; supersede; reconciliação de startup e shutdown; limite de frame; `AgentMessageRouter` com `NOT_IMPLEMENTED` e testes de fronteira. Fora: rate limit por segundo e `BRIDGE_PING` ponta a ponta (dependem do dispatch, 11.2) | `1790020000000-GameAgentTransport` (23 migrations; permission + 2 grants) |
 | **11.2** GameCommand Execution + Results — **implementada** | `AgentGameGateway` como provider de produção; `GameCommandWorker`; COMMAND/COMMAND_ACK/COMMAND_RESULT/COMMAND_RESULT_ACK; gate por runtime + capability antes da reserva; capabilities fechadas e dedup obrigatório para mutations; RESULT independente da sessão; UNCERTAIN → TIMEOUT; expiração de PENDING; em voo contado no banco; rate limit por sessão | nenhuma (23 migrations) |
 | **11.3** Server Control Real Transport — **implementada** | `AgentServerControlGateway`; `ServerControlWorker` sem retry; SERVER_CONTROL / SERVER_CONTROL_RESULT / SERVER_CONTROL_RESULT_ACK (sem ACK de recepção); `UNCERTAIN` terminal; claim como fronteira de entrega; `notAfter`; prazos persistidos; RESULT por `gameServerId` + `operationId` após reconexão; uma operação em voo por servidor | `1790030000000-ServerControlTransport` (24 migrations) |
-| **11.4** Agent Domain Events + Gameplay Delivery | adapters de ownership, profession, trade, marketplace; `gameServerId` nos serviços de Trade/Marketplace; `WORK_SYNC`; release de custódia; VIP delivery | sim (release de custódia, `vip_reward_deliveries`) |
+| **11.4** Agent Domain Events + Gameplay Delivery — **implementada** | `DOMAIN_EVENT`/`DOMAIN_EVENT_ACK` com kinds fechados; receipts atômicos (`agent_domain_event_receipts`); ownership, profession, trade, marketplace custody/settlement/release; `gameServerId` da sessão nos serviços de Trade/Marketplace; `WORK_SYNC`/`WORK_ITEMS` paginado + push best-effort; `player_marketplace_item_releases`; VIP CHARACTER delivery por GameCommand `SYSTEM:VIP_DELIVERY` | `1790040000000-AgentDomainEvents` (25 migrations) |
 | **11.5** Electron / Launcher Integration Contract | matriz §16 validada contra o cliente real; descoberta de servidores; eventos realtime de link/operação; contrato local Launcher documentado | talvez não |
 | **11.6** End-to-End Realtime + Integration Validation | Agent de teste (fake no repo) cobrindo a failure matrix; realtime ponta a ponta; observabilidade mínima; revisão de segurança | não |
 

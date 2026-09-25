@@ -206,3 +206,14 @@ result_deadline_at)`. Operações da Etapa 09 ainda abertas são reconciliadas: 
 claim → `UNCERTAIN/RESULT_TIMEOUT`; sem claim → `FAILED/DISPATCH_EXPIRED`. `down`
 volta `UNCERTAIN` para `DISPATCHED` e os novos códigos para o catálogo antigo.
 Detalhes em `docs/integration-architecture.md` §9.1 e `docs/server-control.md`.
+
+A Subetapa 11.4 adiciona `1790040000000-AgentDomainEvents` (25 migrations):
+`agent_domain_event_receipts` (PK servidor + `event_id`, kind fechado, SHA-256 do
+conteúdo canônico, status `APPLIED`/`REJECTED` + reason; nunca o payload),
+`player_marketplace_item_releases` (uma por listing, `PENDING`/`COMPLETED`/`FAILED`
+com CHECK de coerência, reason `CANCELLED`/`PURCHASE_FAILED`, unicidade do
+`release_event_id` por servidor) e `vip_reward_deliveries` (uma por reward de
+entitlement CHARACTER, snapshot jsonb ≤ 4096 bytes, `game_command_id` único, CHECK
+de estado). Backfill: listings já `CANCELLED`/`FAILED` com custódia `CUSTODIED`
+recebem release `PENDING`; entitlements anteriores não recebem deliveries. `down`
+recusa enquanto houver release `PENDING` ou delivery `PENDING`/`COMMAND_CREATED`.
