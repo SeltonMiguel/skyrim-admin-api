@@ -421,6 +421,7 @@ describeDatabase('Player authentication with real PostgreSQL', () => {
       '/api/v1/player/character-operations/{operationId}',
       '/api/v1/player/chat/direct/{targetCharacterId}',
       '/api/v1/player/chat/global',
+      '/api/v1/player/game-servers',
       '/api/v1/player/game-servers/{gameServerId}/characters/{characterId}/holds-query',
       '/api/v1/player/game-servers/{gameServerId}/characters/{characterId}/horses-query',
       '/api/v1/player/game-servers/{gameServerId}/characters/{characterId}/profile-query',

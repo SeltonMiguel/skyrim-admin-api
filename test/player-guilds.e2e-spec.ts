@@ -1105,8 +1105,26 @@ describeDatabase('Player guilds with real PostgreSQL', () => {
     expect(byB.invitedByCharacterId).toBe(characterId);
     await bSocket.event('GUILD_INVITE_CREATED');
     await settle();
-    // Realtime stops for the former owner.
-    expect(aSocket.events()).toEqual([]);
+    // Guild events stop for the former owner; own link changes still notify.
+    expect(
+      aSocket
+        .events()
+        .filter((event) => String(event.type).startsWith('GUILD_')),
+    ).toEqual([]);
+    expect(aSocket.events()).toContainEqual(
+      expect.objectContaining({
+        type: 'PLAYER_CHARACTER_LINK_UPDATED',
+        data: expect.objectContaining({
+          characterLinkId: aLink,
+          status: 'REVOKED',
+        }),
+      }),
+    );
+    expect(
+      aSocket
+        .events()
+        .every((event) => event.type === 'PLAYER_CHARACTER_LINK_UPDATED'),
+    ).toBe(true);
     const [invitedAudit] = (await audits(guild.id)).filter(
       (e: { action: string; actor_player_id: string }) =>
         e.action === 'PLAYER_GUILD_INVITED' &&

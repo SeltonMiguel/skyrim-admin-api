@@ -1,3 +1,4 @@
+import { RealtimeEventBus } from '../src/realtime-events/realtime-event-bus.js';
 import { Test } from '@nestjs/testing';
 import type { TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
@@ -939,7 +940,12 @@ describeDatabase('Game Bridge with real PostgreSQL', () => {
       );
     const other = new GameCommandDispatcher(
       otherDb,
-      new GameCommandStore(otherDb, otherServers, clock),
+      new GameCommandStore(
+        otherDb,
+        otherServers,
+        clock,
+        module.get(RealtimeEventBus),
+      ),
       new GameConnectionService(otherDb, otherServers, clock, config),
       otherGateway,
       clock,
@@ -1006,7 +1012,12 @@ describeDatabase('Game Bridge with real PostgreSQL', () => {
       );
     const other = new GameCommandDispatcher(
       otherDb,
-      new GameCommandStore(otherDb, otherServers, clock),
+      new GameCommandStore(
+        otherDb,
+        otherServers,
+        clock,
+        module.get(RealtimeEventBus),
+      ),
       new GameConnectionService(otherDb, otherServers, clock, config),
       otherGateway,
       clock,
