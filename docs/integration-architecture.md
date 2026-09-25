@@ -9,7 +9,8 @@ subetapas 11.1–11.6.
 **Estado:** 11.1 (transporte + autenticação do Host Agent, §4), 11.2 (execução de
 GameCommand + resultados, §8.3) e 11.3 (Server Control pelo Host Agent,
 at-most-once, §9.1) e 11.4 (eventos de domínio do Agent + trabalho de gameplay,
-§10.2) estão implementadas. O restante (11.5+) continua sendo contrato proposto.
+§10.2) e 11.5 (contrato Electron/Launcher e gaps backend, §16) estão implementadas.
+Implementações dos clientes externos e trabalho posterior continuam propostos.
 
 Tudo o que é descrito como "proposto" ou "11.x" **não existe** no código. Tudo o
 que é descrito como "atual" foi verificado neste repositório, com referência ao
@@ -1120,7 +1121,7 @@ itens derivados das tabelas de domínio no momento do pedido. Detalhes em §10.2
 
 | Entry point | Parâmetros | Transação | Idempotência | Servidor | Ator | Realtime |
 | --- | --- | --- | --- | --- | --- | --- |
-| `CharacterLinkService.confirmFromAgent` | `challenge`, `gameServerId`, `characterExternalId` | 1 tx: link → challenge → player | challenge single-use (hash); replay → `ALREADY_VERIFIED` | já recebia; challenge de outro servidor → `CHALLENGE_MISMATCH` | `SYSTEM:AGENT` (Audit) | nenhum (continua para 11.5) |
+| `CharacterLinkService.confirmFromAgent` | `challenge`, `gameServerId`, `characterExternalId` | 1 tx: link → challenge → player | challenge single-use (hash); replay → `ALREADY_VERIFIED` | já recebia; challenge de outro servidor → `CHALLENGE_MISMATCH` | `SYSTEM:AGENT` (Audit) | `PLAYER_CHARACTER_LINK_UPDATED` após commit (11.5) |
 | `ProfessionExperienceService.grantFromAgent` | `gameServerId`, `characterExternalId`, `eventId`, `amount` | 1 tx: lock da profissão | UNIQUE(`game_server_id`, `external_event_id`) | já recebia (é a identidade) | `SYSTEM:AGENT` (Audit) | nenhum |
 | `TradeSettlementService.confirmFromAgent` | `tradeId`, `settlementEventId`, `outcome` **+ `gameServerId` (11.4)** | `mutate`: trade → escrow → ledger; realtime pós-commit | UNIQUE(servidor, event) + UNIQUE(trade) | **não conferia** → agora `SERVER_MISMATCH` | `SYSTEM:AGENT` (Audit) | `TRADE_COMPLETED`/`FAILED` |
 | `MarketplaceCustodyService.confirmFromAgent` | `listingId`, `custodyEventId`, `outcome` **+ `gameServerId`** | `mutate`: listing | idem | **não conferia** → `SERVER_MISMATCH` | `SYSTEM:AGENT` | `MARKETPLACE_LISTING_ACTIVE`/`FAILED` |
@@ -1216,8 +1217,8 @@ reenvia o mesmo `DOMAIN_EVENT` (mesmo `eventId`), que resulta em ACK duplicado.
 **Ownership.** Player cria o challenge → digita no jogo → Agent envia
 `CHARACTER_OWNERSHIP_PROOF { challenge, characterExternalId }` → o backend
 resolve challenge, player e link. Preservados: hash, TTL, single use, escopo por
-servidor, regras de conflito. O challenge não é logado nem persistido. Não há
-evento realtime de link verificado (continua para 11.5).
+servidor, regras de conflito. O challenge não é logado nem persistido. Desde a 11.5 há
+`PLAYER_CHARACTER_LINK_UPDATED` após commit, somente para o dono; HTTP continua canônico.
 
 **Professions.** `eventId` do protocolo = `externalEventId`. O Agent só informa o
 fato (`characterExternalId`, `amount`); nível, teto e regras seguem no serviço.
@@ -1315,7 +1316,8 @@ Agent informa o jogador in-game; Electron relê GET /player/character-links/:lin
 - O Agent não deve logar nem persistir o challenge além do necessário para o
   reenvio; tentativas repetidas de challenges inválidos por um mesmo character
   devem ser limitadas no Agent (brute force de 64 bits é inviável, mas spam não).
-- Não há evento realtime de link verificado hoje (§16).
+- Desde a 11.5, `PLAYER_CHARACTER_LINK_UPDATED` acorda somente o dono após
+  commit; Electron refaz GET (§16).
 
 ## 12. Professions
 
@@ -1463,9 +1465,10 @@ catálogo público e a troca de auth).
 | Feature | HTTP | Realtime | Fonte de verdade | Launcher IPC? | Agent? |
 | --- | --- | --- | --- | --- | --- |
 | Auth | `POST player/auth/discord/exchange`, `POST player/auth/refresh`, `POST player/auth/logout`, `GET player/me` | — (socket fecha em `TOKEN_EXPIRED`) | backend (`player_sessions`) | não (OAuth/PKCE/state no Electron) | não |
-| Characters | `POST player/character-links`, `GET player/character-links/:linkId`, `POST player/character-links/:linkId/revoke`, `GET player/me/characters[/:characterLinkId]` | **nenhum** | backend; verificação pelo Agent | não | **sim** (ownership) |
-| Profile / Skills | `POST player/game-servers/:gameServerId/characters/:characterId/{profile,skills}-query`, `GET player/character-operations/:operationId` | **nenhum** (polling) | Skyrim via GameCommand | não | **sim** |
-| Properties / Holds / Horses | `POST …/{properties,holds,horses}-query`, `GET player/character-operations/:operationId` | **nenhum** (polling) | Skyrim via GameCommand | não | **sim** |
+| GameServers | `GET player/game-servers?page&limit` | nenhum; HTTP periódico | backend: servidores habilitados + heartbeat/runtime persistidos | não | só fornece runtime |
+| Characters | `POST player/character-links`, `GET player/character-links/:linkId`, `POST player/character-links/:linkId/revoke`, `GET player/me/characters[/:characterLinkId]` | `PLAYER_CHARACTER_LINK_UPDATED` | backend; verificação pelo Agent | não | **sim** (ownership) |
+| Profile / Skills | `POST player/game-servers/:gameServerId/characters/:characterId/{profile,skills}-query`, `GET player/character-operations/:operationId` | `PLAYER_GAME_OPERATION_UPDATED` (GET do result; polling fallback) | Skyrim via GameCommand | não | **sim** |
+| Properties / Holds / Horses | `POST …/{properties,holds,horses}-query`, `GET player/character-operations/:operationId` | `PLAYER_GAME_OPERATION_UPDATED` (GET do result; polling fallback) | Skyrim via GameCommand | não | **sim** |
 | Professions | `GET` / `POST player/me/characters/:characterLinkId/profession` | nenhum | backend; XP do Agent | não | **sim** (XP) |
 | Groups | `POST player/groups`, `GET :groupId`, invites/leave/kick/disband, `GET/POST player/group-invites…` | `GROUP_*` (8) | backend | não | não |
 | Guilds | `POST player/guilds`, `GET :guildId`, invites/leave/kick/role/transfer-master/disband, `player/guild-invites…`, `GET player/me/characters/:id/guild` | `GUILD_*` (11) | backend | não | não |
@@ -1483,23 +1486,42 @@ que dependem do runtime (ownership, profile/skills, properties/holds/horses,
 settlement de itens, entrega VIP) têm API pronta, mas só produzem resultado com o
 Agent real.
 
-Gaps reais para 11.5 (documentados, **não** implementados):
+### 11.5 implementada — contrato Electron/Launcher
 
-1. **Descoberta de servidores pelo Player:** `POST player/character-links` exige
-   `gameServerId`, mas a única listagem de servidores é Admin
-   (`GET game-servers`, `GAME_BRIDGE_READ`). O Electron não tem como obter o id
-   sem configuração externa. Precisa de uma leitura pública/Player mínima
-   (`id`, `code`, `name`, disponibilidade) — decisão de 11.5.
-2. **Sem realtime para link VERIFIED e para conclusão de character operations:**
-   o Electron precisa fazer polling. Avaliar eventos `CHARACTER_LINK_VERIFIED` e
-   `CHARACTER_OPERATION_COMPLETED` em 11.5/11.6 (evento, não endpoint).
-3. Confirmar suporte do Discord a PKCE (`codeVerifier`) na integração real
-   (pendência da 10.3).
+Contrato completo por tela, bodies, auth, startup, realtime/reconciliação e IPC:
+[Electron integration](electron-integration.md). Electron e C# Launcher não estão
+neste repositório. A 11.5 fecha apenas os contratos e gaps do Backend.
+
+- `GET /api/v1/player/game-servers`: PlayerAuthGuard, paginação, somente enabled;
+  allowlist `id/code/name/enabled/agentConnected/gameProcessState/gameReady`.
+  Liveness usa heartbeat persistido e regra existente do Bridge; gameReady exige
+  Agent saudável, RUNNING e SKSE pronto. Sessão inexistente/stale oculta snapshot
+  (gameProcessState null, gameReady=false). Disabled some da descoberta, histórico não.
+  Nenhum Agent internal/credential, write de estado ou Audit no GET.
+- `PLAYER_CHARACTER_LINK_UPDATED`: PENDING/VERIFIED/REVOKED, após commit do link
+  (incluindo receipt Agent); só dono. Payload `characterLinkId`, `gameServerId`,
+  `characterExternalId`, `status`, `updatedAt`. Sem challenge/proof/hash/playerId.
+- `PLAYER_GAME_OPERATION_UPDATED`: transição terminal SUCCEEDED/FAILED/TIMEOUT,
+  inclusive EXECUTION_UNCERTAIN e expirações/falhas locais. Só actor PLAYER,
+  destinatário `requestedByPlayerId` persistido, nunca ownership atual.
+  Payload `operationId/status/errorCode/completedAt`; sem result bruto, ACK,
+  dispatch/retry ou dados Agent. Commit antes da notificação; rollback e
+  duplicate não notificam. Staff/SYSTEM não entram nesse evento.
+- Eventos são best-effort; falha de listener não reverte transação e não gera
+  Audit adicional. Frame segue 16 KiB; result (até 64 KiB) só em HTTP. Reconnect
+  exige refetch; não há replay queue. Wallet usa eventos Trade/Marketplace para
+  invalidar saldo e refaz GET, sem evento econômico duplicado.
+- Groups tem GET por groupId e invites pendentes, mas não listagem de memberships
+  atuais. O cliente precisa preservar/revalidar IDs conhecidos; recuperação após
+  perdê-los é um gap documentado, sem nova Group API na 11.5.
+- Sem migrations: continuam 25. Agent protocol, GameCommand lifecycle e Server
+  Control não mudam. Confirmar callback/PKCE e IPC contra os repos externos.
 
 ## 17. Local Launcher boundary
 
-O código do Electron e do Launcher C# **não está neste repositório**; 11.0 (e
-11.5) só definem o contrato esperado, sem validar implementação.
+O código do Electron e do Launcher C# **não está neste repositório**; 11.5 define o contrato esperado de IPC em [electron-integration.md](electron-integration.md),
+sem validar implementação externa. Runtime remoto do Host Agent e processo
+Skyrim local do Launcher são independentes.
 
 Responsabilidades **locais** (Electron ↔ Launcher via IPC local, fora do backend):
 verificar instalação do Skyrim, paths, updates, download de mods/arquivos e
@@ -1539,7 +1561,8 @@ Sem Agent real, todas as operações de runtime aceitam e persistem (202) mas nu
 concluem. Não existem, e 11.0 não cria: telas/rotas Admin para players, character
 links, trades, marketplace, economia, grant/revoke HTTP de VIP entitlements e
 credenciais do Agent. A de credenciais é necessária para operar 11.1 (ou CLI); as
-demais são decisões de produto. Admin Web e Electron continuam sem acoplamento.
+demais são decisões de produto. Admin Web e Electron continuam consumidores independentes: nenhuma comunicação
+Electron → Admin Web ou Admin Web → Electron foi criada na 11.5.
 
 ## 19. Realtime boundaries
 
@@ -1656,14 +1679,14 @@ Nunca aparecem segredo, hash, JWT nem payloads. O histórico por motivo continua
 | Códigos de erro remoto mais específicos por domínio (hoje `EXECUTION_FAILED` / `BRIDGE_ERROR`), se o Agent real precisar | quando houver uso |
 | Backpressure do socket (bufferedAmount) no `AgentGameGateway` | Etapa 12 / hardening |
 | Regras de aceitação pelo estado de processo reportado (ex.: START com `RUNNING` → 409 no backend); hoje o Agent recusa com `INVALID_PROCESS_STATE` | quando houver uso |
-| Contador/métrica exportada de UNCERTAIN (hoje log estruturado) e endpoint/lista de operações UNCERTAIN para o Admin Web | Etapa 12 / 11.5 |
+| Contador/métrica exportada de UNCERTAIN (hoje log estruturado) e endpoint/lista de operações UNCERTAIN para o Admin Web | Etapa 12 / Admin Web futuro |
 | Expiração/resolução de trades e purchases AWAITING (e releases PENDING/FAILED) sem resposta do Agent: timeout operacional ou ação de operador | produto / Etapa 12 |
 | Fluxo explícito de claim/target para rewards in-game de entitlements PLAYER | produto |
 | Deliveries VIP para entitlements CHARACTER concedidos antes da 11.4 (sem snapshot); nova tentativa de delivery FAILED/UNCERTAIN por operador | produto |
-| Evento realtime de link verificado e de work concluído para o Electron | 11.5 |
+| Recuperação de memberships Groups sem groupIds conhecidos; listagem histórica Player de operações | produto / etapa futura |
 | Quais ações de gameplay geram XP e quanto | produto |
 | Sincronização de gold do jogo com o ledger (hoje: não existe) | produto |
-| Descoberta de servidores pelo Player; eventos realtime de link verificado e operação concluída | 11.5 |
+| Transporte/shapes finais do IPC local e callback/PKCE Electron | validar contra repos externos |
 | Multi-instância do backend (roteamento de sockets, broker) | Etapa 12 |
 
 ## 24. Mapping para 11.1–11.6
@@ -1677,7 +1700,7 @@ A divisão proposta foi **confirmada**, com o escopo abaixo. Nenhuma subetapa no
 | **11.2** GameCommand Execution + Results — **implementada** | `AgentGameGateway` como provider de produção; `GameCommandWorker`; COMMAND/COMMAND_ACK/COMMAND_RESULT/COMMAND_RESULT_ACK; gate por runtime + capability antes da reserva; capabilities fechadas e dedup obrigatório para mutations; RESULT independente da sessão; UNCERTAIN → TIMEOUT; expiração de PENDING; em voo contado no banco; rate limit por sessão | nenhuma (23 migrations) |
 | **11.3** Server Control Real Transport — **implementada** | `AgentServerControlGateway`; `ServerControlWorker` sem retry; SERVER_CONTROL / SERVER_CONTROL_RESULT / SERVER_CONTROL_RESULT_ACK (sem ACK de recepção); `UNCERTAIN` terminal; claim como fronteira de entrega; `notAfter`; prazos persistidos; RESULT por `gameServerId` + `operationId` após reconexão; uma operação em voo por servidor | `1790030000000-ServerControlTransport` (24 migrations) |
 | **11.4** Agent Domain Events + Gameplay Delivery — **implementada** | `DOMAIN_EVENT`/`DOMAIN_EVENT_ACK` com kinds fechados; receipts atômicos (`agent_domain_event_receipts`); ownership, profession, trade, marketplace custody/settlement/release; `gameServerId` da sessão nos serviços de Trade/Marketplace; `WORK_SYNC`/`WORK_ITEMS` paginado + push best-effort; `player_marketplace_item_releases`; VIP CHARACTER delivery por GameCommand `SYSTEM:VIP_DELIVERY` | `1790040000000-AgentDomainEvents` (25 migrations) |
-| **11.5** Electron / Launcher Integration Contract | matriz §16 validada contra o cliente real; descoberta de servidores; eventos realtime de link/operação; contrato local Launcher documentado | talvez não |
+| **11.5** Electron / Launcher Integration Contract — **implementada** | Player GameServer discovery; realtime de link e operação terminal Player após commit; contrato HTTP/realtime, auth/startup e IPC local em `electron-integration.md`; sem UI/Launcher externos | nenhuma (25 migrations) |
 | **11.6** End-to-End Realtime + Integration Validation | Agent de teste (fake no repo) cobrindo a failure matrix; realtime ponta a ponta; observabilidade mínima; revisão de segurança | não |
 
 11.4 é a mais extensa; se crescer demais, a divisão natural é "eventos de

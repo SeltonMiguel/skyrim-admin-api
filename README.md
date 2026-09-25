@@ -681,3 +681,5 @@ vinte e cinco.
 | `SERVER_CONTROL_WORKER_INTERVAL_MS` | 1000 | 50–60000; cadência do worker de Server Control |
 | `AGENT_WORK_PUSH_INTERVAL_MS` | 2000 | 100–60000; push best-effort de trabalho novo ao Agent |
 | `VIP_DELIVERY_WORKER_INTERVAL_MS` | 2000 | 50–60000; criação/reconciliação das entregas VIP |
+
+Contrato do painel Player e fronteira local com o Launcher: [Electron integration](docs/electron-integration.md).

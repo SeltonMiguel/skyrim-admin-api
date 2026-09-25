@@ -1851,7 +1851,7 @@ as decisões acima:
 | Tema | Subetapa |
 | --- | --- |
 | Revogação administrativa de vínculos; expiração de trades e de listings; limite de listings por character | futura |
-| Evento realtime de link verificado para o Electron | 11.5 |
+| Contrato Electron/Launcher, discovery Player e eventos de link/operação | Implementados na 11.5; ver [electron-integration.md](electron-integration.md) |
 | Implementação real de perfil e skills pelo Agent, conforme os contratos da 10.5 | 11 |
 | Settings por character e novas chaves de preferência (ex.: notificações) | futura |
 | Rate limiting distribuído, confiança em proxy e cotas por conta | Etapa 12 |
