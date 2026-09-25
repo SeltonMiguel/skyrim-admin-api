@@ -614,6 +614,7 @@ ser próprios e VERIFIED, senão 404 `Character not found`):
 | --- | --- |
 | `POST /api/v1/player/groups` `{ characterLinkId }` | 201; character sem group ativo, servidor habilitado |
 | `GET /api/v1/player/groups/:groupId` | só membros ativos; outros → 404 |
+| `GET /api/v1/player/me/characters/:characterLinkId/group` (11.6) | `{ group }` ativo daquele character próprio e VERIFIED, ou `{ group: null }`; mesma projeção do GET por id; sem histórico. Recuperação quando o cliente não conhece o groupId |
 | `POST .../:groupId/invites` `{ actorCharacterLinkId, targetCharacterId }` | leader apenas (membro → 403, não membro → 404); target resolvido pelo servidor do group; não resolvido → 404 `Character not available`; já em group → 409 `Character unavailable`; group cheio → 409. Repetir convite pendente → 200 com o mesmo convite |
 | `GET /api/v1/player/group-invites` | convites PENDING e não expirados para characters próprios |
 | `POST /api/v1/player/group-invites/:inviteId/accept` | só o dono do target; PENDING, não expirado, group ACTIVE, vaga livre, target ainda sem group |
@@ -1411,7 +1412,8 @@ continua bloqueando imediatamente).
 **Fan-out:** o servidor escolhe os destinatários; o cliente não entra em rooms nem
 informa player/group. Eventos de Group vão aos donos atuais (VERIFIED) dos membros
 ativos e ao dono do target do convite, em todas as conexões do player. Conexões
-STAFF são autenticadas mas ainda não recebem eventos. O fechamento remove a
+STAFF recebem apenas os wake-ups `STAFF_*` da 11.6, filtrados por permissão
+(`docs/admin-web-integration.md`); nunca eventos Player. O fechamento remove a
 conexão do registry.
 
 **Limitação:** entrega em memória, best-effort e de processo único: sem Redis,

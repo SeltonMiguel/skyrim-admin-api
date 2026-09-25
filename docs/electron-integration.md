@@ -1,7 +1,13 @@
-# Electron / Launcher integration contract — 11.5
+# Electron / Launcher integration contract — 11.5, fechado na 11.6
 
 Electron/Launcher source code não está neste repo; 11.5 define o contrato e fecha
-os gaps do Backend. Não há UI ou implementação de IPC neste repositório.
+os gaps do Backend, e a 11.6 fecha o último gap de cold-start (Groups). Não há UI
+ou implementação de IPC neste repositório.
+
+**Permanece externo a este repositório:** o comportamento real de OAuth/PKCE do
+provider (Discord) no cliente, a implementação do Electron, o C# Launcher e o
+IPC concreto entre eles. Este documento descreve apenas o contrato que o Backend
+cumpre e os requisitos que o código externo precisa validar.
 
 ## Inventário final de Player APIs
 
@@ -21,7 +27,7 @@ Nenhuma Player API desta matriz depende de IPC do Launcher local.
 | Profile | O | POST Q/profile-query, body `{}` | PLAYER_GAME_OPERATION_UPDATED | snapshot Skyrim persistido no result | sim | GET operação até terminal | não |
 | Skills | O | POST Q/skills-query, body `{}` | PLAYER_GAME_OPERATION_UPDATED | snapshot Skyrim persistido no result | sim | GET operação até terminal | não |
 | Professions | GET C/profession | POST C/profession | nenhum | profissão/XP backend | apenas XP | GET ao abrir/refresh/periódico para XP | não |
-| Groups | GET P/groups/:groupId; GET P/group-invites | POST P/groups; POST P/groups/:groupId/{invites,leave,disband}; POST P/groups/:groupId/members/:memberId/kick; POST P/group-invites/:inviteId/{accept,decline} | GROUP_* | backend | não | refetch grupo conhecido + invites | não |
+| Groups | GET C/group (11.6); GET P/groups/:groupId; GET P/group-invites | POST P/groups; POST P/groups/:groupId/{invites,leave,disband}; POST P/groups/:groupId/members/:memberId/kick; POST P/group-invites/:inviteId/{accept,decline} | GROUP_* | backend | não | GET C/group por character + invites | não |
 | Guilds | GET C/guild; GET P/guilds/:guildId?characterLinkId=…; GET P/guild-invites?characterLinkId=… | POST P/guilds; POST P/guilds/:guildId/{invites,leave,disband}; POST P/guilds/:guildId/members/:memberId/{kick,role,transfer-master}; POST P/guild-invites/:inviteId/{accept,decline} | GUILD_* | backend | não | refetch guild/membership/invites | não |
 | Properties/houses | O | POST Q/properties-query, body `{}` | PLAYER_GAME_OPERATION_UPDATED | snapshot Skyrim persistido no result | sim | GET operação | não |
 | Holds | O | POST Q/holds-query, body `{}` | PLAYER_GAME_OPERATION_UPDATED | snapshot Skyrim persistido no result | sim | GET operação | não |
@@ -120,16 +126,24 @@ GOLD de snapshots do jogo ao saldo do backend. VIP PLAYER não escolhe personage
 automaticamente, e o painel não presume direito ativo apenas por receber evento
 antigo de grant: refaz GET.
 
-### Limitação de recuperação de Groups
+### Recuperação de Groups (11.6)
 
-Existe GET `/player/groups/:groupId` e listagem de **invites pendentes**, mas não
-existe listagem de grupos atuais da conta nem GET group por character. O diretório
-de characters também não contém memberships. O Electron pode guardar groupIds
-obtidos ao criar/aceitar ou por eventos e revalidá-los por HTTP; dados locais não
-são prova de membership. Em instalação nova ou perda desses IDs não há recuperação
-completa de grupos atuais pelas APIs existentes. Invites pendentes não resolvem
-isso. A 11.5 não inventa nova Group API; uma leitura de memberships fica como
-open decision de produto/backend.
+A 11.5 registrou que um cliente sem groupId não conseguia descobrir seus grupos
+atuais. Confirmado na 11.6 que não havia rota equivalente (só GET por groupId e
+invites pendentes), foi criada a menor leitura possível, espelhando a de Guild:
+
+`GET /api/v1/player/me/characters/:characterLinkId/group` → `{ "group": GroupDto | null }`
+
+- PlayerAuthGuard; o link precisa ser do Player autenticado e VERIFIED. Link
+  desconhecido, de outra conta, PENDING ou REVOKED → o mesmo 404. Não existe
+  parâmetro playerId.
+- O banco garante no máximo uma membership ativa por character link (índice
+  parcial `player_group_members_active_key`), então a resposta é um grupo
+  opcional, não uma lista. Um Player com vários characters faz uma chamada por
+  character do diretório.
+- Retorna só o grupo ACTIVE atual, com a mesma projeção do GET por groupId; não é
+  histórico. Após sair ou após o disband, volta `{ "group": null }`.
+- `Cache-Control: no-store`, sem Audit, sem migration.
 
 ## GameServer discovery e disponibilidade remota
 
@@ -286,6 +300,9 @@ mude depois. Apenas esse ator pode ler sua operação histórica; commands Staff
 SYSTEM não geram esse evento Player.
 
 Em qualquer evento, marcar estado afetado como desatualizado e refazer HTTP.
+O evento significa apenas "algo mudou, faça refetch": é publicado **depois do
+commit**, sem ordem global entre eventos, sem sequence e podendo chegar
+duplicado ou não chegar. Nunca aplicar o payload como estado.
 Não substituir um snapshot HTTP mais novo com payload de evento atrasado.
 Após AUTHENTICATED/reconnect, refazer GET das telas relevantes e operações ainda
 pendentes. Um evento pode chegar antes da resposta do POST: armazenar o
@@ -325,12 +342,40 @@ próprio. Não confundir esses eventos com DOMAIN_EVENT/WORK_SYNC do Host Agent.
 4. Carregar discovery de GameServers (todas as páginas necessárias).
 5. Carregar diretório de characters e reconciliar vínculos conhecidos.
 6. Carregar estado das features relevantes; refazer GET de operações pendentes
-   conhecidas, guild/invites, grupos conhecidos, Trade/Marketplace, wallet,
-   direitos VIP e histórico Chat. Não disparar queries Skyrim ilimitadas.
+   conhecidas, guild/invites, group por character (C/group), Trade/Marketplace,
+   wallet, direitos VIP e histórico Chat. Não disparar queries Skyrim ilimitadas.
 7. Conectar IPC local ao Launcher, negociar versão/capabilities locais.
 8. Pedir status/installation state e reconciliar operações locais; apresentar o
    painel com disponibilidade por feature. Launcher indisponível não bloqueia
    account, chat, settings, wallet ou outras leituras HTTP autorizadas.
+
+## Cold start sem cache local (11.6)
+
+Cenário: Electron recém-instalado, sem nenhum ID guardado e sem histórico de
+realtime. Com apenas Player Auth + HTTP o painel reconstrói tudo; realtime não
+conta para a reconstrução inicial. Verificado em
+`test/stage11-integration.e2e-spec.ts` com um novo login da mesma conta.
+
+| Área | Reconstrução por HTTP |
+| --- | --- |
+| GameServers | GET P/game-servers (paginado) |
+| Characters | GET P/me/characters → characterLinkId de cada character; GET P/character-links/:linkId para REVOKED conhecido |
+| Groups | GET C/group por character (11.6) + GET P/group-invites |
+| Guilds | GET C/guild + GET P/guild-invites?characterLinkId=… |
+| Wallet | GET C/wallet (+ /transactions) |
+| Trade | GET C/trades |
+| Marketplace | GET C/marketplace/{listings,purchases} + browse GET P/marketplace/listings |
+| Settings | GET P/settings |
+| VIP | GET P/vip/entitlements + GET C/vip/{entitlements,effective} |
+
+**Operações Player pendentes:** não foi criada listagem. Toda operação Player é
+uma query read-only (`PLAYER_CHARACTER_QUERY_TYPES`, todas QUERY em
+`COMMAND_KINDS`); perder o operationId de uma query pendente não deixa estado
+irrecuperável nem efeito pendurado, porque a query termina sozinha (resultado ou
+deadline) e um novo POST obtém um snapshot equivalente. Operações que mudam
+estado do Player (Trade, Marketplace, VIP) já são recuperáveis pelas próprias
+entidades acima. Uma listagem de operações fica para quando existir operação
+Player que não seja query.
 
 ## Electron ↔ C# Launcher: fronteira local
 
@@ -406,19 +451,25 @@ playerId, dados de sessão Agent ou credenciais. PlayerA não recebe dados de
 PlayerB, e surface STAFF não recebe Player events. Não há Audit por discovery ou
 notificação. Audit dos domínios permanece uma vez por efeito já previsto.
 
+A bateria final `test/stage11-integration.e2e-spec.ts` (11.6) repete os fluxos
+Player ponta a ponta junto com Staff/Agent, prova o cold start acima, a
+recuperação offline sem replay e a separação de credenciais entre superfícies.
+
 A suíte `test/electron-integration.e2e-spec.ts` exercita login Player → discovery →
 challenge → DOMAIN_EVENT → evento owner-only → GET; Player query → COMMAND_RESULT
 → evento terminal → GET; também inclui ownership alterado, rollback/commit,
 payload maior que o frame, duplicate, Staff isolation, expirações e recuperação
 HTTP de eventos perdidos. Não valida Electron/Launcher externos nem SKSE real.
 
-Persistência inalterada: 25 migrations, nenhuma nova, synchronize=false.
+Persistência inalterada: 25 migrations, nenhuma nova na 11.5 nem na 11.6,
+synchronize=false.
 
-Decisões externas/pendentes: memberships de Groups para recuperação sem IDs;
+Decisões externas/pendentes (a de Groups foi resolvida na 11.6):
 OAuth callback/PKCE no cliente real; transporte, segurança local, versões,
 limites/shapes e catálogo final de IPC; fontes/manifests e política de update;
-comportamento de launch totalmente offline; ausência de listagem Player de
-operações históricas; distribuição multi-instance do realtime (Etapa 12).
+comportamento de launch totalmente offline; listagem Player de operações
+(desnecessária enquanto só existirem queries); distribuição multi-instance do
+realtime (Etapa 12).
 Timeout/ação de operador para Trade/Marketplace, retry de VIP FAILED/UNCERTAIN e
 target claim PLAYER permanecem fora da 11.5. Nenhuma dessas decisões implica
 endpoint, migration ou implementação externa criada aqui.

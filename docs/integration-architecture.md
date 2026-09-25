@@ -10,6 +10,8 @@ subetapas 11.1–11.6.
 GameCommand + resultados, §8.3) e 11.3 (Server Control pelo Host Agent,
 at-most-once, §9.1) e 11.4 (eventos de domínio do Agent + trabalho de gameplay,
 §10.2) e 11.5 (contrato Electron/Launcher e gaps backend, §16) estão implementadas.
+11.6 (realtime Staff, recuperação de cold start e bateria final) fecha a Etapa 11:
+ver §25 e `docs/admin-web-integration.md`.
 Implementações dos clientes externos e trabalho posterior continuam propostos.
 
 Tudo o que é descrito como "proposto" ou "11.x" **não existe** no código. Tudo o
@@ -1554,8 +1556,12 @@ APIs existentes que o Admin Web já pode consumir (Staff JWT + RBAC):
 | Moderation | 8 POSTs em `game-servers/:serverId/moderation/...`, `GET moderation-operations/:commandId` |
 | World | 4 POSTs em `game-servers/:serverId/world/...`, `GET world-operations/:commandId` |
 | VIP Store | `GET/POST admin/vip-store/offers`, `GET/PATCH admin/vip-store/offers/:id`, `PATCH …/:id/active` |
-| Server Control | `POST game-servers/:serverId/control/{start,pause,restart}`, `GET server-control-operations/:operationId` |
-| Realtime | surface `STAFF` autentica, mas **nenhum evento é entregue a staff** hoje |
+| Server Control | `POST game-servers/:serverId/control/{start,pause,restart}`, `GET game-servers/:serverId/control/operations` (11.6), `GET server-control-operations/:operationId` |
+| Realtime | surface `STAFF`: desde a 11.6 recebe `STAFF_GAME_SERVER_UPDATED`, `STAFF_GAME_OPERATION_UPDATED` e `STAFF_SERVER_CONTROL_UPDATED`, filtrados pela permissão do GET correspondente |
+
+O contrato completo do Admin Web (matriz, eventos, permissões, cold start) está em
+`docs/admin-web-integration.md`. Na 11.6 `GET game-servers/:id` também passou a
+expor `currentConnection.gameProcessState` e `skseReady`.
 
 Sem Agent real, todas as operações de runtime aceitam e persistem (202) mas nunca
 concluem. Não existem, e 11.0 não cria: telas/rotas Admin para players, character
@@ -1569,7 +1575,7 @@ Electron → Admin Web ou Admin Web → Electron foi criada na 11.5.
 | Superfície | Path | Auth | Direção | Fonte de verdade |
 | --- | --- | --- | --- | --- |
 | Player realtime | `/api/v1/realtime`, `surface: PLAYER` | Player access JWT no frame AUTH | só servidor → cliente (cliente só envia AUTH) | não; HTTP é |
-| Staff realtime | `/api/v1/realtime`, `surface: STAFF` | Staff access JWT no frame AUTH | só servidor → cliente; hoje sem eventos | não |
+| Staff realtime | `/api/v1/realtime`, `surface: STAFF` | Staff access JWT no frame AUTH; grants relidos a cada entrega | só servidor → cliente; 3 wake-ups `STAFF_*` (11.6) | não |
 | Agent transport | `/api/v1/agent` (proposto) | credencial do Agent no HELLO | **bidirecional**, request/response | participa de fluxos de estado |
 
 Por que o Agent **não** reutiliza `/api/v1/realtime`:
@@ -1679,11 +1685,12 @@ Nunca aparecem segredo, hash, JWT nem payloads. O histórico por motivo continua
 | Códigos de erro remoto mais específicos por domínio (hoje `EXECUTION_FAILED` / `BRIDGE_ERROR`), se o Agent real precisar | quando houver uso |
 | Backpressure do socket (bufferedAmount) no `AgentGameGateway` | Etapa 12 / hardening |
 | Regras de aceitação pelo estado de processo reportado (ex.: START com `RUNNING` → 409 no backend); hoje o Agent recusa com `INVALID_PROCESS_STATE` | quando houver uso |
-| Contador/métrica exportada de UNCERTAIN (hoje log estruturado) e endpoint/lista de operações UNCERTAIN para o Admin Web | Etapa 12 / Admin Web futuro |
+| Contador/métrica exportada de UNCERTAIN (hoje log estruturado); a lista para o Admin Web existe desde a 11.6 (`GET game-servers/:serverId/control/operations?status=UNCERTAIN`) | Etapa 12 |
 | Expiração/resolução de trades e purchases AWAITING (e releases PENDING/FAILED) sem resposta do Agent: timeout operacional ou ação de operador | produto / Etapa 12 |
 | Fluxo explícito de claim/target para rewards in-game de entitlements PLAYER | produto |
 | Deliveries VIP para entitlements CHARACTER concedidos antes da 11.4 (sem snapshot); nova tentativa de delivery FAILED/UNCERTAIN por operador | produto |
-| Recuperação de memberships Groups sem groupIds conhecidos; listagem histórica Player de operações | produto / etapa futura |
+| Listagem Player de operações (desnecessária enquanto toda operação Player for query; Groups foi resolvido na 11.6 com `GET player/me/characters/:characterLinkId/group`) | quando existir operação Player que não seja query |
+| Backpressure avançado do realtime além do corte por `bufferedAmount` (256 KiB) e distribuição multi-instância do bus | Etapa 12 |
 | Quais ações de gameplay geram XP e quanto | produto |
 | Sincronização de gold do jogo com o ledger (hoje: não existe) | produto |
 | Transporte/shapes finais do IPC local e callback/PKCE Electron | validar contra repos externos |
@@ -1701,8 +1708,76 @@ A divisão proposta foi **confirmada**, com o escopo abaixo. Nenhuma subetapa no
 | **11.3** Server Control Real Transport — **implementada** | `AgentServerControlGateway`; `ServerControlWorker` sem retry; SERVER_CONTROL / SERVER_CONTROL_RESULT / SERVER_CONTROL_RESULT_ACK (sem ACK de recepção); `UNCERTAIN` terminal; claim como fronteira de entrega; `notAfter`; prazos persistidos; RESULT por `gameServerId` + `operationId` após reconexão; uma operação em voo por servidor | `1790030000000-ServerControlTransport` (24 migrations) |
 | **11.4** Agent Domain Events + Gameplay Delivery — **implementada** | `DOMAIN_EVENT`/`DOMAIN_EVENT_ACK` com kinds fechados; receipts atômicos (`agent_domain_event_receipts`); ownership, profession, trade, marketplace custody/settlement/release; `gameServerId` da sessão nos serviços de Trade/Marketplace; `WORK_SYNC`/`WORK_ITEMS` paginado + push best-effort; `player_marketplace_item_releases`; VIP CHARACTER delivery por GameCommand `SYSTEM:VIP_DELIVERY` | `1790040000000-AgentDomainEvents` (25 migrations) |
 | **11.5** Electron / Launcher Integration Contract — **implementada** | Player GameServer discovery; realtime de link e operação terminal Player após commit; contrato HTTP/realtime, auth/startup e IPC local em `electron-integration.md`; sem UI/Launcher externos | nenhuma (25 migrations) |
-| **11.6** End-to-End Realtime + Integration Validation | Agent de teste (fake no repo) cobrindo a failure matrix; realtime ponta a ponta; observabilidade mínima; revisão de segurança | não |
+| **11.6** End-to-End Realtime + Integration Validation — **implementada** | realtime Staff com filtro de permissão revalidado na entrega; wake-ups de GameServer, GameCommand Staff e Server Control; runtime do Agent no GET de servidor; lista de Server Control; group por character; corte de cliente lento; bateria final combinada (§25) | nenhuma (25 migrations) |
 
 11.4 é a mais extensa; se crescer demais, a divisão natural é "eventos de
 confirmação" (ownership, XP) antes de "custódia e entrega" (trade, marketplace,
 VIP), mantendo a numeração.
+
+## 25. Encerramento da Etapa 11 (11.6)
+
+### 25.1 O que a 11.6 acrescentou
+
+- **Realtime Staff.** `RealtimeEventBus` aceita destino Player (`playerIds`) ou
+  Staff (`staffPermission`), nunca os dois; tipos `STAFF_*` só vão para Staff e os
+  demais só para Players (o bus descarta a publicação trocada). O gateway entrega
+  evento Staff apenas a sockets cuja sessão, conta e role atuais, relidas por
+  `AuthService.authenticate` a cada entrega, têm a permissão. Sessão inválida
+  fecha o socket com 4001.
+- **`STAFF_GAME_SERVER_UPDATED`** (GAME_BRIDGE_READ), por
+  `GameServerStatusNotifier` em game-bridge: chamado depois de cada commit que
+  pode mudar o estado (HELLO ativado, fim de sessão, supersede, stale, revogação,
+  runtime em heartbeat ou em resultado de Server Control); relê o banco e publica
+  só se o estado difere do último publicado. game-agent continua sem importar
+  realtime.
+- **`STAFF_GAME_OPERATION_UPDATED`** (GAME_BRIDGE_READ), no mesmo ponto de
+  transição terminal de `GameCommandStore.locked` que já produzia o evento
+  Player, para commands com actor STAFF.
+- **`STAFF_SERVER_CONTROL_UPDATED`** (permissão do tipo), após cada escrita
+  terminal: resultado do Agent, UNCERTAIN por deadline e FAILED antes da entrega.
+- **Leituras de recuperação**: runtime do Agent em `GET game-servers/:id`;
+  `GET game-servers/:serverId/control/operations`;
+  `GET player/me/characters/:characterLinkId/group`. Nenhuma migration.
+- **Cliente lento**: socket com mais de 256 KiB não lidos é derrubado; não existe
+  fila por cliente.
+
+Ordem: nenhum evento realtime promete ordem global nem sequence; todos são
+publicados depois do commit, podem duplicar ou faltar, e significam só "refaça o
+GET". Cada protocolo mantém sua garantia: GameCommand at-least-once (dedup no
+journal do Agent por commandId), Server Control at-most-once (claim como fronteira),
+work de domínio at-least-once + journal por workId + receipt por eventId,
+realtime best effort.
+
+### 25.2 Matriz de aceitação
+
+"Evidência" são testes deste repositório contra PostgreSQL real, HTTP e sockets
+reais. O Host Agent é o `FakeAgent` do repo (protocolo v1 real, journal simulado);
+Agent/SKSE, Electron, Launcher e o provider OAuth reais não estão aqui e não são
+cobertos.
+
+| Item | Resultado | Evidência |
+| --- | --- | --- |
+| Agent auth/connect | PASS | `game-agent.e2e-spec.ts`; separação de credenciais em `stage11-integration.e2e-spec.ts` |
+| GameCommand dispatch/result | PASS | `game-command-agent.e2e-spec.ts`; Staff GameCommand ponta a ponta em `stage11-integration` |
+| GameCommand reconnect result | PASS | `game-command-agent` (RESULT por nova sessão, retry); matriz de reconnect em `stage11-integration` |
+| ServerControl at-most-once | PASS | `server-control-agent.e2e-spec.ts`; nunca reenviado após reconnect e após restart real em `stage11-integration` |
+| ServerControl UNCERTAIN | PASS | `server-control-agent`; UNCERTAIN + wake-up + GET + lista em `stage11-integration` |
+| Domain event dedup | PASS | `agent-domain-events.e2e-spec.ts`; retry do mesmo eventId após reconnect em `stage11-integration` |
+| WORK_SYNC recovery | PASS | `agent-domain-events`; mesmo workId após conexão caída, concluído uma vez, em `stage11-integration` |
+| Ownership via Agent | PASS | `agent-domain-events`, `electron-integration.e2e-spec.ts`, `stage11-integration` |
+| Professions via Agent | PASS | `agent-domain-events` (eventId único, servidor da sessão), `professions.e2e-spec.ts` |
+| Trade | PASS | `player-trades.e2e-spec.ts`, `agent-domain-events`, `stage11-integration` |
+| Marketplace | PASS | `player-marketplace.e2e-spec.ts`, `agent-domain-events` (custody, settlement, release) |
+| VIP CHARACTER delivery | PASS | `agent-domain-events` (SYSTEM:VIP_DELIVERY, revoke antes/depois do command) |
+| Player server discovery | PASS | `electron-integration`, `stage11-integration` |
+| Player realtime recovery | PASS | `electron-integration`; offline → GET sem replay e cold start em `stage11-integration` |
+| Staff realtime recovery | PASS | `stage11-integration` (reconnect sem replay, restart real, cold start por HTTP) |
+| Electron contract | PASS | `docs/electron-integration.md` + `electron-integration` + cold start em `stage11-integration` |
+| Admin Web contract | PASS | `docs/admin-web-integration.md` + `stage11-integration` |
+
+### 25.3 O que fica para a Etapa 12
+
+Multi-instância (roteamento de sockets do Agent, bus realtime distribuído,
+workers coordenados), backpressure avançado, métricas exportadas (UNCERTAIN,
+work pendente), timeout/ação de operador para Trade/Marketplace AWAITING e
+releases, retry de delivery VIP por operador, deployment e hardening.

@@ -32,6 +32,15 @@ worker, com garantia **at-most-once**. O contrato do protocolo está em
 | `POST /api/v1/game-servers/:serverId/control/pause` | `SERVER_PAUSE` | `SERVER_PAUSE` | `SERVER_PAUSE_REQUESTED` |
 | `POST /api/v1/game-servers/:serverId/control/restart` | `SERVER_RESTART` | `SERVER_RESTART` | `SERVER_RESTART_REQUESTED` |
 | `GET /api/v1/server-control-operations/:operationId` | — | a do tipo armazenado | — |
+| `GET /api/v1/game-servers/:serverId/control/operations` (11.6) | — | ao menos uma das três; lista só os tipos do chamador | — |
+
+**Recuperação e wake-up (11.6).** A lista por servidor (`status`, `type`, `page`,
+`limit ≤ 100`, ordem `createdAt DESC, id DESC`, mesma projeção do detalhe) deixa o
+Admin Web achar a operação em voo ou UNCERTAIN sem conhecer o id. Toda escrita
+terminal (resultado do Agent, UNCERTAIN por deadline, FAILED antes da entrega)
+publica, após o commit, `STAFF_SERVER_CONTROL_UPDATED`
+`{ operationId, gameServerId, type, status, errorCode, completedAt }` só para
+Staff com a permissão do tipo; ver `docs/admin-web-integration.md`.
 
 - START solicita a inicialização; PAUSE, uma pausa operacional com semântica a
   cargo do Agent; RESTART, um reinício controlado. Nenhuma suposição de processo,

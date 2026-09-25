@@ -293,7 +293,10 @@ Health é derivado pelo `BridgeClock` e pelo timeout de heartbeat existente:
 com heartbeat ainda válido; `STALE` significa CONNECTED com heartbeat vencido
 (inclusive no instante exato do timeout); `OFFLINE` significa ausência de CONNECTED.
 Detectar STALE não atualiza a conexão. `currentConnection` é a conexão CONNECTED,
-ou null, inclusive quando há apenas histórico de conexões encerradas.
+ou null, inclusive quando há apenas histórico de conexões encerradas. Desde a
+11.6 a conexão traz também `gameProcessState` e `skseReady` do último runtime
+reportado pelo Host Agent (null em sessões sem o transporte do Agent); nunca a
+credencial nem as capabilities.
 
 Listagens retornam `{ items, total, page, limit, totalPages }`, com page=1,
 limit=20, máximo 100 por página e page até 1000000, como Audit. Total zero implica
@@ -683,3 +686,16 @@ vinte e cinco.
 | `VIP_DELIVERY_WORKER_INTERVAL_MS` | 2000 | 50–60000; criação/reconciliação das entregas VIP |
 
 Contrato do painel Player e fronteira local com o Launcher: [Electron integration](docs/electron-integration.md).
+
+A Subetapa 11.6 fecha a Etapa 11. O realtime Staff passa a entregar três
+wake-ups pequenos, publicados depois do commit e filtrados pela permissão do GET
+correspondente, revalidada a cada entrega: `STAFF_GAME_SERVER_UPDATED` (mudança
+real de Agent/runtime), `STAFF_GAME_OPERATION_UPDATED` (GameCommand Staff
+terminal) e `STAFF_SERVER_CONTROL_UPDATED` (SUCCEEDED/FAILED/UNCERTAIN). Para
+cold start sem realtime foram adicionadas três leituras: runtime do Agent em
+`GET /api/v1/game-servers/:id`, `GET /api/v1/game-servers/:serverId/control/operations`
+e `GET /api/v1/player/me/characters/:characterLinkId/group`. Socket realtime com
+mais de 256 KiB não lidos é derrubado. Nenhuma migration nova (vinte e cinco) e
+nenhuma variável de ambiente nova. Contrato do Admin Web:
+[Admin Web integration](docs/admin-web-integration.md); matriz de aceitação da
+Etapa 11 em [Integration architecture §25](docs/integration-architecture.md).
