@@ -6,9 +6,9 @@ para integração, fixa as decisões de transporte, autenticação, protocolo e
 garantias de entrega do Game Agent, e distribui o trabalho restante entre as
 subetapas 11.1–11.6.
 
-**Estado:** a 11.1 (transporte + autenticação do Host Agent) está implementada;
-§4 descreve o contrato em vigor e cada seção marca o que é da 11.1. O restante
-(11.2+) continua sendo contrato proposto.
+**Estado:** 11.1 (transporte + autenticação do Host Agent, §4) e 11.2 (execução de
+GameCommand + resultados, §8.3) estão implementadas. O restante (11.3+) continua
+sendo contrato proposto.
 
 Tudo o que é descrito como "proposto" ou "11.x" **não existe** no código. Tudo o
 que é descrito como "atual" foi verificado neste repositório, com referência ao
@@ -535,7 +535,8 @@ Códigos de close: `4000 AUTH_TIMEOUT`, `4001 UNAUTHORIZED`, `4003 PROTOCOL_ERRO
 runtime, `connectedAt`, `lastHeartbeatAt` e o socket; sem regra de domínio. API
 para as próximas subetapas: `getSession`, `isConnected`, `isRuntimeReady`,
 `supports(capability)`, `send(gameServerId, connectionId, frame)` (só para aquela
-sessão, nunca redirecionado). **Nenhum dispatcher o usa ainda** (11.2).
+sessão, nunca redirecionado) e `supportsCommand(type)` (11.2). O `AgentGameGateway`
+e o worker da 11.2 os usam (§8.3).
 
 `AgentMessageRouter` recebe só frames autenticados: `gameServerId` do frame ≠ da
 sessão → `4010`; `HEARTBEAT` → tratado; `COMMAND_RESULT`, `DOMAIN_EVENT` e
@@ -596,9 +597,10 @@ envelope ser idêntico em entrada e saída.
 | `AUTHENTICATED` | B → A | `connectionId`, intervalos, limite de frame, `serverTime` | — | 11.1 ✔ |
 | `HEARTBEAT` | A → B | estado do processo, `skseReady`, capabilities opcionais (a sessão vem do socket) | `HEARTBEAT_ACK` | 11.1 ✔ |
 | `HEARTBEAT_ACK` | B → A | `inReplyTo`, `serverTime` | — | 11.1 ✔ |
-| `COMMAND` | B → A | `CommandEnvelope` (inalterado) | `COMMAND_ACK` e depois `COMMAND_RESULT` | 11.2 |
-| `COMMAND_ACK` | A → B | `BridgeMessage` | — | 11.2 |
-| `COMMAND_RESULT` | A → B | `ResultMessage` | `ERROR` só se rejeitado | 11.2 |
+| `COMMAND` | B → A | `commandId`, `correlationId`, `attempt`, `type`, `payload`, `issuedAt`, `ackDeadlineAt`, `executionDeadlineAt` (§8.3) | `COMMAND_ACK` e depois `COMMAND_RESULT` | 11.2 ✔ |
+| `COMMAND_ACK` | A → B | `commandId`, `correlationId`, `attempt` | nenhuma | 11.2 ✔ |
+| `COMMAND_RESULT` | A → B | `commandId`, `correlationId`, `outcome` (+ `result` ou `errorCode`) | `COMMAND_RESULT_ACK` ou `ERROR` | 11.2 ✔ |
+| `COMMAND_RESULT_ACK` | B → A | `inReplyTo`, `commandId`, `status`, `accepted`, `duplicate` | — | 11.2 ✔ |
 | `SERVER_CONTROL` | B → A | `ServerControlRequest` + `notAfter` (proposto) | `SERVER_CONTROL_ACK` | 11.3 |
 | `SERVER_CONTROL_ACK` | A → B | `operationId`, `correlationId` | — | 11.3 |
 | `SERVER_CONTROL_RESULT` | A → B | `operationId`, `correlationId`, `outcome`, `errorCode?` | — | 11.3 |
@@ -677,12 +679,10 @@ Agent: executa (≤ executionDeadlineAt)
 Agent: grava resultado ─── COMMAND_RESULT ─► Router ──► GameCommandReceiver.result (tx)
 ```
 
-A 11.2 adiciona o **worker** (hoje inexistente): dispatch logo após o commit do
-request (como `ServerControlService` já faz com `dispatchSafely`), mais varreduras
-periódicas de `dispatchPending`, `retryTimedOutDispatches` e `expireCommands`.
-`markStaleConnections` é periódica desde a 11.1.
+O **worker** da 11.2 (§8.3) é o chamador de produção do lifecycle: não há dispatch
+síncrono no request; o próximo tick (padrão 500 ms) despacha o command.
 
-### 8.1 ACK vs RESULT (decidido; implementação na 11.2)
+### 8.1 ACK vs RESULT (decidido; **implementado na 11.2**)
 
 **COMMAND_ACK é relativo à tentativa de entrega.** Confirma que *aquela*
 tentativa chegou ao Agent. Continua validando `gameServerId` da sessão,
@@ -768,6 +768,110 @@ migration. **UNCERTAIN nunca é FAILED**, porque FAILED significa "não executou
   se o Agent não declarar (capability) que mantém esse journal; sem ela, o
   backend não envia tipos mutáveis àquele Agent.
 - Não se enfraquece silenciosamente at-least-once para "executa de novo".
+
+### 8.3 Implementado na 11.2
+
+**Gateway real.** `AgentGameGateway` (`src/game-agent/agent-game.gateway.ts`) é o
+provider de produção de `GameGateway`; `DisconnectedGameGateway` continua existindo
+para testes/fallback. Ele é chamado pelo dispatcher depois do commit da reserva, sem
+transação aberta, e só escreve no socket da **sessão exata** da reserva
+(`connectionId`). Devolve `UNAVAILABLE` (não-entrega comprovada, nada escrito) se a
+sessão mudou ou sumiu, se o runtime deixou de estar pronto ou se a capability não
+existe mais; nunca escolhe outra sessão. O registry vive em `AgentSessionModule`,
+compartilhado pelo Game Bridge e pelo transporte sem ciclo de módulos.
+
+**COMMAND (B → A).** Payload: `commandId`, `correlationId`, `attempt` (número da
+tentativa = `dispatchAttempts` na reserva), `type`, `payload` tipado, `issuedAt`,
+`ackDeadlineAt`, `executionDeadlineAt`. Servidor e sessão vêm do envelope/socket. Não
+vão: `idempotencyKey` HTTP (escopo do backend; a identidade de execução é
+`commandId`), ator, staff/player, Audit, tokens. `CommandEnvelope` interno ganhou
+`attempt`.
+
+**COMMAND_ACK (A → B)** `{ commandId, correlationId, attempt }`: pertence à
+tentativa. A sessão (connectionId) vem do socket; é aceito só se for a sessão da
+tentativa atual e o `attempt` for o atual. ACK duplicado é no-op; ACK de tentativa
+antiga (outra sessão ou outro `attempt`) é ignorado e logado (`STALE_ATTEMPT`), sem
+resposta e sem mudar a tentativa nova; commandId desconhecido → `ERROR
+UNKNOWN_COMMAND`; command de outro servidor → close `4010`. ACK não prova sucesso.
+
+**COMMAND_RESULT (A → B)** `{ commandId, correlationId, outcome }` com:
+`SUCCEEDED` + `result` (contrato tipado do tipo, ≤ 64 KiB; o frame de 128 KiB não
+amplia o limite de domínio), `FAILED` + `errorCode` (`EXECUTION_FAILED`,
+`BRIDGE_ERROR`; `PING_REJECTED` só para ping) ou `UNCERTAIN` (sem campos extras).
+Nenhuma mensagem livre é aceita (o backend grava a do catálogo). Pertence ao
+command: aceito por qualquer sessão ativa e saudável do mesmo servidor, inclusive
+depois de reconexão; `connectionId` da tentativa fica como procedência.
+
+| Caso | Resposta |
+| --- | --- |
+| aceito | `COMMAND_RESULT_ACK { status, accepted: true, duplicate: false }` |
+| idêntico repetido | `COMMAND_RESULT_ACK { duplicate: true }`, sem escrita nem Audit |
+| deadline vencido antes | `COMMAND_RESULT_ACK { status: TIMEOUT, accepted: false }` (não reabre) |
+| conflitante com o terminal | `ERROR RESULT_CONFLICT` |
+| commandId desconhecido | `ERROR UNKNOWN_COMMAND` |
+| command nunca despachado (PENDING sem reserva) | `ERROR NOT_DISPATCHED` |
+| payload/contrato/tamanho inválido, correlationId divergente | `ERROR INVALID_MESSAGE`, nada persistido |
+| command de outro servidor | close `4010 SERVER_MISMATCH` |
+| banco indisponível | `ERROR TEMPORARILY_UNAVAILABLE`, `retryable: true` |
+
+`SUCCEEDED → SUCCEEDED`, `FAILED → FAILED`, `UNCERTAIN → TIMEOUT /
+EXECUTION_UNCERTAIN` (nunca FAILED). Rejeições tipadas vêm de `BridgeRejection`
+(`src/game-bridge/bridge-rejection.ts`), ainda 409 para chamadores HTTP.
+
+**Capabilities (fechadas).** `GAME_COMMAND_V1` (protocolo), uma capability por
+tipo com o nome exato do `CommandType`, e `COMMAND_DEDUP_V1` (journal durável). A
+classificação QUERY/MUTATION é única (`COMMAND_KINDS`,
+`src/game-bridge/command-kinds.ts`, `Record` completo sobre os 32 tipos; 9 queries).
+`supportsCommand(capabilities, type)` = protocolo + tipo + (QUERY ou dedup). Sem
+dedup, queries seguem e mutations ficam PENDING (logado). Capability nunca substitui
+RBAC/ownership, e o Agent não cria commands nem escolhe ator (teste de fronteira).
+
+**Worker** (`GameCommandWorker`, um `setInterval` sem sobreposição,
+`GAME_COMMAND_WORKER_INTERVAL_MS`, padrão 500 ms): `expireCommands`, depois
+`expirePending`, depois, para cada sessão ACTIVE com runtime pronto
+(`RUNNING` + `skseReady`), despacha retries devidos e PENDING dos tipos suportados
+dentro do orçamento em voo. **Elegibilidade antes da reserva:** Agent ausente,
+runtime não pronto ou capability ausente não consomem tentativa. A corrida entre o
+check e o send existe; se o runtime cair depois da reserva, a tentativa falha pelo
+lifecycle normal (`UNAVAILABLE`) e o retry continua permitido.
+
+**Expiração de PENDING (decisão da 11.2).** No modelo existente o prazo total só
+começa na primeira reserva; sem Agent elegível um command ficaria PENDING para
+sempre. Agora PENDING sem reserva há `GAME_COMMAND_PENDING_TIMEOUT_MS` (padrão 60 s)
+termina `FAILED / DISPATCH_EXPIRED`: PENDING sem lease comprova que nada foi
+entregue. Sem migration (status e transição já existiam).
+
+**Em voo.** `AGENT_MAX_IN_FLIGHT_COMMANDS` (padrão 32) por servidor, contado **no
+banco** (DISPATCHED, ACKNOWLEDGED e PENDING com reserva viva), então sobrevive a
+restart. No limite o worker não despacha PENDING novos (sem gastar tentativa);
+retries de commands já em voo continuam.
+
+**Rate limit.** `AGENT_MESSAGE_RATE_LIMIT_COUNT` / `_WINDOW_MS` (padrão 200 / 10 s),
+janela fixa em memória por sessão, só frames autenticados. Excedido → log e close
+`4012 RATE_LIMITED`. In-memory porque protege o socket/processo local (instância
+única; Etapa 12).
+
+**Liveness única.** O gateway Agent (heartbeat em memória + varredura) é o dono da
+sessão; `game_connections.last_heartbeat_at` é atualizado a cada heartbeat e
+`healthy()` usa `GAME_BRIDGE_HEARTBEAT_TIMEOUT_MS ≥ AGENT_HEARTBEAT_TIMEOUT`, então
+as duas leituras concordam. `markStaleConnections` **não** é agendado: seria um
+segundo dono da mesma sessão; permanece como manutenção interna.
+
+**Restart.** Registry vazio; sessões reconciliadas (§4.5); PENDING continuam no
+banco e são despachados quando um Agent elegível se conecta; DISPATCHED/ACKNOWLEDGED
+seguem a política existente (retry com o mesmo `commandId` ou TIMEOUT pelo prazo);
+nada é reexecutado às cegas.
+
+**Audit.** Inalterado: só a criação do command (quando o domínio audita). ACK e
+RESULT não geram Audit.
+
+**Logs** (`chave=valor`, sem payloads): `Game command dispatched/retried`, `not sent:
+session changed | runtime not ready | capability missing`, `acknowledged`, `Stale
+game command ACK ignored`, `result accepted | duplicate | superseded by deadline`,
+`Conflicting game command result rejected`, `Unknown game command`, `execution
+uncertain`, `held: runtime not ready | Agent capability missing`, `expired without an
+eligible Agent`, `message rate limit exceeded`; com `commandId`, `gameServerId`,
+`commandType`, `connectionId` e `attempt`.
 
 ### Backend → Agent: catálogo atual (32 tipos, fechado)
 
@@ -1203,9 +1307,9 @@ Por que o Agent **não** reutiliza `/api/v1/realtime`:
 | Credencial revogada | banco (credenciais) | close; HELLO rejeitado; sem retry com a mesma | sim | emitir nova credencial |
 | Banco indisponível | — | HELLO/eventos → `TEMPORARILY_UNAVAILABLE` retryable; dispatcher não reserva | sim (retry com backoff) | restaurar banco |
 | Dispatch committed, socket morre antes do send | banco (lease) | lease expira → DISPATCHED; retry na nova sessão com os mesmos ids | sim (Agent dedup) | nenhuma |
-| Agent executa, result se perde (conexão cai) | journal do Agent + banco | Agent reconecta e reenvia o RESULT pela nova sessão; aceito por ser do mesmo GameServer e do mesmo command (§8.1, 11.2). Hoje o receiver ainda o rejeitaria; a 11.2 fecha isso | sim após 11.2 | nenhuma |
+| Agent executa, result se perde (conexão cai) | journal do Agent + banco | Agent reconecta e reenvia o RESULT pela nova sessão; aceito por ser do mesmo GameServer e do mesmo command (§8.1, implementado na 11.2) | sim | nenhuma |
 | Agent encaminha ao SKSE e cai antes de saber o resultado (command mutável) | journal (`FORWARDED` sem resultado) | **não reexecuta**; recupera o resultado pelo SKSE se possível, senão reporta UNCERTAIN → TIMEOUT `EXECUTION_UNCERTAIN` | sim (sem duplicar efeito) | verificar no jogo e corrigir manualmente |
-| Backend commita result e a conexão cai antes de responder | banco | Agent reenvia o mesmo result por qualquer sessão válida → no-op idêntico | sim após 11.2 | nenhuma |
+| Backend commita result e a conexão cai antes de responder | banco | Agent reenvia o mesmo result por qualquer sessão válida → `COMMAND_RESULT_ACK { duplicate: true }` | sim | nenhuma |
 | Server Control: send ambíguo ou reconexão | banco + conhecimento durável do Agent | **nunca** reenviado nem reexecutado automaticamente; RESULT da mesma operação pode chegar pela nova sessão | — (at-most-once) | verificar o servidor; nova solicitação se necessário |
 | Result tardio após TIMEOUT | banco (TIMEOUT imutável) | 409 conflito | não reabre | **efeito pode ter ocorrido**: métrica + reconciliação manual |
 
@@ -1220,7 +1324,7 @@ Por que o Agent **não** reutiliza `/api/v1/realtime`:
 | Eventos forjados | só sessões autenticadas chegam ao router; eventos validados por tipo; o Agent é confiável **apenas para o seu servidor** |
 | Credencial roubada | revogação imediata com close da sessão; rotação com 2 ativas; `last_used_at`; alerta em conexão duplicada inesperada; nunca em URL/log |
 | Payload grande | `maxPayload` do WS (128 KiB proposto); limites de 4096/65536 bytes já existentes; profundidade 32 |
-| Flood de mensagens | 11.1: HELLO com prazo (`AGENT_AUTH_TIMEOUT_MS`), um frame processado por vez por socket, frame ≤ 128 KiB. Pendente (11.2): cota de frames por segundo e de in-flight, close `RATE_LIMITED` |
+| Flood de mensagens | 11.1: HELLO com prazo (`AGENT_AUTH_TIMEOUT_MS`), um frame processado por vez por socket, frame ≤ 128 KiB. 11.2: cota por sessão (`AGENT_MESSAGE_RATE_LIMIT_*`, close `4012 RATE_LIMITED`) e limite de GameCommands em voo por servidor contado no banco |
 | Protocolo malformado | parser estrito (chaves exatas, sem binário); N erros → close |
 | Cruzamento Player/Staff/Agent | três superfícies e três modelos de credencial sem reuso; ator `SYSTEM:AGENT` nunca vem do fio; router não chama serviços de Player/Staff; players só originam as 5 queries |
 
@@ -1265,9 +1369,8 @@ Nunca aparecem segredo, hash, JWT nem payloads. O histórico por motivo continua
 
 | Decisão | Quando |
 | --- | --- |
-| Rate limit de frames e de mensagens em voo por sessão Agent (hoje: um frame por vez por socket, limite de tamanho e HELLO com prazo; sem cota por segundo) | 11.2 |
-| Catálogo tipado de erros remotos por domínio (sem migration: `error_code` sem CHECK) | 11.2 |
-| Worker deixa de consumir tentativas enquanto o runtime não está pronto, ou mantém a política atual | 11.2 |
+| Códigos de erro remoto mais específicos por domínio (hoje `EXECUTION_FAILED` / `BRIDGE_ERROR`), se o Agent real precisar | quando houver uso |
+| Backpressure do socket (bufferedAmount) no `AgentGameGateway` | Etapa 12 / hardening |
 | Nome e semântica do estado "desfecho desconhecido" de Server Control; ACK; `notAfter` | 11.3 |
 | Política de concorrência de Server Control por servidor e regras pelo estado de processo reportado | 11.3 |
 | Catálogo final de `kind` de `WORK_ITEMS` e se a entrega VIP também passa por ele ou só por GameCommands | 11.4 |
@@ -1287,7 +1390,7 @@ A divisão proposta foi **confirmada**, com o escopo abaixo. Nenhuma subetapa no
 | --- | --- | --- |
 | **11.0** Integration Discovery + Contracts | este documento | não |
 | **11.1** Game Agent Transport + Authentication — **implementada** | roteador de upgrade único; `WebSocketServer` do Agent; credenciais (SHA-256, até 2 ACTIVE, revogação com close imediato) e Staff API; HELLO/AUTHENTICATED/HEARTBEAT/HEARTBEAT_ACK/ERROR; `game_connections` como sessão do Host Agent com runtime/SKSE/capabilities; varredura de heartbeat; supersede; reconciliação de startup e shutdown; limite de frame; `AgentMessageRouter` com `NOT_IMPLEMENTED` e testes de fronteira. Fora: rate limit por segundo e `BRIDGE_PING` ponta a ponta (dependem do dispatch, 11.2) | `1790020000000-GameAgentTransport` (23 migrations; permission + 2 grants) |
-| **11.2** GameCommand Execution + Results | `AgentGameGateway` substituindo `DisconnectedGameGateway`; worker de dispatch pós-commit e varreduras; COMMAND/ACK/RESULT; gate por prontidão de runtime + capability; erros tipados; RESULT independente da sessão (§8.1); journal/UNCERTAIN (§8.2) | provavelmente não |
+| **11.2** GameCommand Execution + Results — **implementada** | `AgentGameGateway` como provider de produção; `GameCommandWorker`; COMMAND/COMMAND_ACK/COMMAND_RESULT/COMMAND_RESULT_ACK; gate por runtime + capability antes da reserva; capabilities fechadas e dedup obrigatório para mutations; RESULT independente da sessão; UNCERTAIN → TIMEOUT; expiração de PENDING; em voo contado no banco; rate limit por sessão | nenhuma (23 migrations) |
 | **11.3** Server Control Real Transport | `AgentServerControlGateway`; ACK/RESULT; estado desconhecido; reconciliação de claims; `notAfter`; RESULT por `gameServerId` + `operationId` após reconexão; conflitos por estado de processo | sim (CHECK de status/timestamps) |
 | **11.4** Agent Domain Events + Gameplay Delivery | adapters de ownership, profession, trade, marketplace; `gameServerId` nos serviços de Trade/Marketplace; `WORK_SYNC`; release de custódia; VIP delivery | sim (release de custódia, `vip_reward_deliveries`) |
 | **11.5** Electron / Launcher Integration Contract | matriz §16 validada contra o cliente real; descoberta de servidores; eventos realtime de link/operação; contrato local Launcher documentado | talvez não |

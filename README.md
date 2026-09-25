@@ -635,12 +635,22 @@ A Subetapa 11.1 implementa o transporte e a autenticação do **Host Agent**:
   (a nova substitui a anterior), timeout de heartbeat e reconciliação no startup.
   Agent conectado não significa jogo pronto.
 
-Ainda não há dispatch de GameCommand, resultados, Server Control real nem eventos
-de domínio pelo Agent (11.2+); essas mensagens recebem `NOT_IMPLEMENTED`. A
-migration `1790020000000-GameAgentTransport` completa vinte e três migrations.
+A Subetapa 11.2 liga os GameCommands ao Host Agent: um worker despacha os
+commands PENDING só para Agents com runtime pronto (processo RUNNING e SKSE pronto)
+e capability do tipo, sem gastar tentativas enquanto o Agent não é elegível;
+mutations exigem a capability de journal `COMMAND_DEDUP_V1`. O Agent confirma a
+tentativa com `COMMAND_ACK` e devolve `COMMAND_RESULT`, aceito mesmo depois de
+reconexão; `UNCERTAIN` vira TIMEOUT/EXECUTION_UNCERTAIN. Server Control real e
+eventos de domínio ainda recebem `NOT_IMPLEMENTED` (11.3+). Nenhuma migration nova:
+continuam vinte e três.
 
 | Variável | Padrão | Regra |
 | --- | --- | --- |
 | `AGENT_AUTH_TIMEOUT_MS` | 5000 | 100–60000; prazo para o HELLO |
 | `AGENT_HEARTBEAT_INTERVAL` | `10s` | intervalo anunciado ao Agent |
 | `AGENT_HEARTBEAT_TIMEOUT` | `30s` | maior que o intervalo e ≤ `GAME_BRIDGE_HEARTBEAT_TIMEOUT_MS` |
+| `AGENT_MAX_IN_FLIGHT_COMMANDS` | 32 | 1–1000; GameCommands em voo por servidor, contados no banco |
+| `AGENT_MESSAGE_RATE_LIMIT_COUNT` | 200 | 10–100000 frames autenticados por sessão e janela |
+| `AGENT_MESSAGE_RATE_LIMIT_WINDOW_MS` | 10000 | 100–3600000; excesso fecha com 4012 |
+| `GAME_COMMAND_WORKER_INTERVAL_MS` | 500 | 50–60000; cadência do worker |
+| `GAME_COMMAND_PENDING_TIMEOUT_MS` | 60000 | 1000–86400000; PENDING nunca reservado vira FAILED/DISPATCH_EXPIRED |
