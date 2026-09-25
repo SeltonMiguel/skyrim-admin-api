@@ -602,4 +602,13 @@ A Subetapa 10.16 adiciona Player Settings account-scoped em
 Group e Guild invites) com o mesmo 404 genérico de target indisponível; nada
 existente é cancelado. A migration `1790000000000-PlayerSettings` completa vinte
 e uma migrations.
+
+A Subetapa 10.17, última da Etapa 10, integra o catálogo VIP da Etapa 08 ao
+player por entitlements: cada oferta ganha `entitlementScope` explícito (PLAYER ou
+CHARACTER; ofertas antigas ficam CHARACTER) e `VipEntitlementService` concede e
+revoga direitos internamente (STAFF/SYSTEM, idempotente, auditado). O player só lê:
+`GET /api/v1/player/vip/entitlements` e
+`GET /api/v1/player/me/characters/:characterLinkId/vip/{entitlements,effective}`.
+Não há pagamento, checkout nem entrega pelo Agent (Etapa 11). A migration
+`1790010000000-VipEntitlements` completa vinte e duas migrations.
 Consulte [arquitetura, decisões e roadmap da Etapa 10](docs/player-services.md).

@@ -82,7 +82,7 @@ domínio. A Player API nunca chama controllers administrativos. O prefixo
 | 10.14 Marketplace | **Implementada.** Listing de um GAME_ITEM por GOLD que só fica ACTIVE com custódia confirmada pelo Agent, compra com GOLD reservado em MARKET_ESCROW, settlement/falha pelo Agent (contratos internos); migration `1789980000000-PlayerMarketplace` |
 | 10.15 Chat | **Implementada.** Chat persistente de texto plano GLOBAL/GROUP/GUILD/DIRECT com retenção (7d), histórico HTTP, entrega por `CHAT_MESSAGE_CREATED` no realtime da 10.8, DIRECT privado por ownership link; migration `1789990000000-PlayerChat` |
 | 10.16 Player Settings | **Implementada.** Preferências account-scoped (`locale`, `timeZone` e quatro flags de privacidade de interação), defaults sem row, Audit e realtime próprios; flags aplicados a DIRECT, Trade, Group e Guild; migration `1790000000000-PlayerSettings` |
-| 10.17 VIP Player Integration | Integração do catálogo existente na superfície do player |
+| 10.17 VIP Player Integration | **Implementada.** Entitlements PLAYER/CHARACTER sobre o catálogo `vip_offers` da Etapa 08 (scope explícito no produto), grant/revoke internos por STAFF/SYSTEM com idempotência, leituras Player, sem pagamento nem entrega pelo Agent; migration `1790010000000-VipEntitlements` |
 
 Dependências de fundação: 10.1 → 10.2 → 10.3 → 10.4. Domínios que atuam sobre
 characters (10.5, 10.6, 10.7, 10.10, 10.11) exigem ownership VERIFIED. Trade e
@@ -1574,6 +1574,113 @@ no-op e rollback não publicam.
 - A integração do player adiciona **entitlement, order e delivery**, referenciando
   `vip_offers.id` e `players.id`, com entrega pelo ator SYSTEM.
 
+#### Implementação (10.17)
+
+Módulo `src/vip-entitlements/`. Um **entitlement** é o direito persistente de uma
+conta ou de um character a uma oferta do catálogo VIP: **não representa
+pagamento**. Não há checkout, Pix/cartão ou gateway; a Etapa 10 não processa
+dinheiro real.
+
+**Catálogo:** reutiliza integralmente `vip_offers` da Etapa 08 (código, nome,
+descrição, preço, rewards tipados, `active`) e o catálogo público
+`GET /api/v1/vip-store/offers[/:code]` com a mesma regra (só ofertas ativas). O
+catálogo não tinha informação suficiente para decidir o scope, então a 10.17
+adiciona o campo explícito **`entitlementScope` PLAYER | CHARACTER** (coluna
+`entitlement_scope`, CHECK), editável pela Admin API existente e exposto nos DTOs
+público e admin. Nunca é inferido de código ou nome. Ofertas existentes recebem
+**CHARACTER** (default conservador): todos os tipos de reward (ITEM, HORSE, TITLE,
+SPELL) são benefícios de gameplay do character, e restringir a um character é o
+menor alcance.
+
+**Scope congelado após o primeiro entitlement:** `entitlementScope` pode mudar
+enquanto a oferta nunca recebeu entitlement. Depois do primeiro grant ele é
+imutável, qualquer que seja o status dos entitlements (ACTIVE, REVOKED ou
+EXPIRED: revoke e expiração não liberam a mudança). O PATCH que tenta mudá-lo
+recebe 409 `Entitlement scope is frozen once the offer has entitlements`, a
+oferta fica inalterada (nem os outros campos do mesmo request são aplicados) e
+nenhum Audit é gravado; PATCHes de outros campos, ou com o mesmo scope, seguem
+normais. Para mudar a semântica depois disso, cria-se outra oferta. Assim o
+`entitlement.scope` de todo o histórico continua compatível com o
+`product.entitlementScope` e nenhum produto mistura scopes. Contra corridas, o
+PATCH trava a oferta `FOR UPDATE` antes de verificar o histórico, incompatível com
+o `FOR SHARE` de todo grant: ou o grant commita antes (e o PATCH recebe 409) ou a
+mudança commita antes (e o grant recebe `SCOPE_MISMATCH`), nunca um estado
+misto.
+
+| Tabela | Colunas e garantias |
+| --- | --- |
+| `player_vip_entitlements` | `id`, `vip_offer_id` (FK), `scope`, `player_id`, `game_server_id`, `character_external_id`, `status` ACTIVE/REVOKED/EXPIRED, `granted_at`, `expires_at` (null = permanente), `revoked_at`, `source` (`STAFF` ou `SYSTEM:<source>`), `external_reference`, `created_at`, `updated_at`; CHECK de shape (PLAYER: só `player_id`; CHARACTER: só servidor + character), de status e de `expires_at > granted_at`; índices únicos parciais: um ACTIVE por oferta + player e por oferta + servidor + character; trigger: titular, oferta e concessão imutáveis, só ACTIVE → REVOKED/EXPIRED, sem DELETE/TRUNCATE (histórico) |
+| `vip_entitlement_requests` | idempotência de grant/revoke por scope do ator (`STAFF` ou `SYSTEM:<source>`), `operation`, `request_fingerprint`, `entitlement_id`; `UNIQUE(scope, key)`; append-only |
+
+**Scope e ownership:** PLAYER pertence à conta (`players.id`) e não acompanha um
+character que troque de dono. CHARACTER pertence ao **character identity**
+(servidor + external id), não ao ownership link: se a ownership muda, o novo dono
+VERIFIED vê o mesmo entitlement e o antigo perde acesso na hora. Um grant CHARACTER
+não exige dono atual.
+
+**Grant/revoke (internos, sem rota Player):** `VipEntitlementService.grant({
+offerId, target, expiresAt?, actor, idempotencyKey, externalReference? })` e
+`revoke({ entitlementId, actor, idempotencyKey })`, só com ator STAFF ou SYSTEM
+(PLAYER → `ACTOR_NOT_ALLOWED`). O grant exige oferta existente e **ativa** (o
+catálogo controla novas concessões), scope do alvo igual ao da oferta
+(`SCOPE_MISMATCH`), player ou servidor existentes e `expiresAt` futuro. Mesma key
++ mesmo conteúdo → `ALREADY_GRANTED` (mesmo entitlement); mesma key com outro
+conteúdo → `IDEMPOTENCY_CONFLICT`; outra key para um direito equivalente já
+efetivo → `ALREADY_ACTIVE`, devolvido sem mudança (não estende a expiração). O
+revoke só vale para entitlements efetivos: REVOKED de novo → `ALREADY_REVOKED`,
+já expirado → `NOT_ACTIVE`. O histórico permanece; um grant depois de revoke ou
+expiração cria um novo entitlement.
+
+**Expiração (lazy, sem scheduler):** efetivo = `status = ACTIVE` e (`expires_at`
+nulo ou futuro). As leituras derivam isso; o status EXPIRED só é materializado
+quando um grant ou revoke encontra a linha vencida (o que também libera o índice
+único para um novo grant). Não há evento EXPIRED nesta etapa.
+
+**Player API** (`PlayerAuthGuard`; somente leitura):
+
+| Rota | Retorno |
+| --- | --- |
+| `GET /api/v1/player/vip/entitlements` | `{ items }`: entitlements PLAYER efetivos da conta |
+| `GET /api/v1/player/me/characters/:characterLinkId/vip/entitlements` | `{ items }`: CHARACTER efetivos do character (link próprio VERIFIED, senão 404) |
+| `GET /api/v1/player/me/characters/:characterLinkId/vip/effective` | `{ player, character }`: os dois lado a lado, com o scope de cada entrada (nada é colapsado) |
+
+Item: `{ entitlementId, product, scope, grantedAt, expiresAt }`, com `product` na
+projeção pública do catálogo. Nunca: ator, source, idempotência,
+`externalReference` ou ids de player. Players SUSPENDED/BANNED perdem o acesso
+(403) enquanto bloqueados, mas o entitlement **não** é revogado.
+
+**Oferta desativada:** um entitlement já concedido continua valendo e aparece com
+a projeção segura da oferta, mesmo fora do catálogo público; só revoke ou expiração
+explícitos o encerram. A oferta inativa apenas impede novos grants.
+
+**Entrega (boundary da Etapa 11):** o entitlement é a fonte do direito. A entrega
+de gameplay dos rewards tipados exige o Agent confiável:
+`VipDeliveryService.requestDelivery` devolve `UNAVAILABLE / AGENT_NOT_INTEGRATED`,
+nada é marcado como entregue e não há estado de entrega persistido. A Etapa 11
+implementa a entrega só por operações tipadas e validadas; nunca console,
+Papyrus, shell ou GameCommand livre.
+
+**Consultas internas:** `hasPlayerEntitlement(playerId, offerCode)` e
+`hasCharacterEntitlement(gameServerId, characterExternalId, offerCode)` para
+futuros benefícios, sem que outros módulos acessem as tabelas.
+
+**Audit:** `VIP_ENTITLEMENT_GRANTED` e `VIP_ENTITLEMENT_REVOKED` (`resourceType =
+VIP_ENTITLEMENT`, ator = o STAFF/SYSTEM informado), na mesma transação da mutação;
+metadata `entitlementId`, `productId`, `productCode`, `scope`, servidor e character
+(CHARACTER), `status`, `expiresAt` e `source`; sem player id, idempotency key ou
+`externalReference`. Replays e no-ops não auditam; se o Audit falha, nada muda.
+
+**Realtime:** `VIP_ENTITLEMENT_GRANTED`/`VIP_ENTITLEMENT_REVOKED` depois do commit:
+PLAYER → o próprio player; CHARACTER → o dono VERIFIED atual do character, se
+houver. Nenhum outro player ou Staff recebe.
+
+**Concorrência:** oferta `FOR SHARE` (mudanças do catálogo travam `FOR UPDATE`) →
+entitlement ACTIVE do titular `FOR UPDATE`; os índices únicos parciais são a
+garantia final e uma violação concorrente é relida (resultando em
+`ALREADY_ACTIVE`/`ALREADY_GRANTED`). Cobertos: grants equivalentes concorrentes
+(um ACTIVE), retries concorrentes da mesma key (um entitlement, um Audit), revokes
+concorrentes (um REVOKED) e grant × revoke (resultado consistente).
+
 ### Electron
 
 - Consome **Player API + realtime**.
@@ -1726,3 +1833,14 @@ as decisões acima:
 | Implementação real de perfil e skills pelo Agent, conforme os contratos da 10.5 | 11 |
 | Settings por character e novas chaves de preferência (ex.: notificações) | futura |
 | Rate limiting distribuído, confiança em proxy e cotas por conta | Etapa 12 |
+
+## Etapa 10 concluída
+
+Com a 10.17, todas as subetapas do roadmap (10.0–10.17) estão implementadas: conta,
+autenticação, ownership, profile/skills, múltiplos characters, profissões, groups
+e realtime, guilds, properties/holds, horses, economy, trade, marketplace, chat,
+settings e VIP. O que depende do jogo (confirmação de ownership, XP, custódia e
+entrega de itens, settlement de trade/marketplace, entrega VIP) está exposto como
+contratos internos `confirmFromAgent`/`grant`/`requestDelivery` e aguarda a Etapa
+11; entrega multi-instância, rate limiting distribuído e purga de chat são da
+Etapa 12.

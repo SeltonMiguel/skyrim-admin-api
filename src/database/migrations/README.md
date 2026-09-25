@@ -177,3 +177,11 @@ A Subetapa 10.16 adiciona `1790000000000-PlayerSettings`: `player_settings` com
 privacidade (default true). Players sem row usam os defaults. `down` recusa
 reverter se existir alguma preferência salva. Detalhes em
 `docs/player-services.md`.
+
+A Subetapa 10.17 adiciona `1790010000000-VipEntitlements`: coluna
+`vip_offers.entitlement_scope` (PLAYER/CHARACTER, default CHARACTER para ofertas
+existentes; a migration da Etapa 08 não muda), `player_vip_entitlements` (CHECK de
+shape por scope, status e expiração, índices únicos parciais de um ACTIVE por
+oferta + titular, trigger de histórico imutável) e `vip_entitlement_requests`
+(idempotência por scope de ator, append-only). `down` recusa reverter com
+entitlements existentes. Detalhes em `docs/player-services.md`.
