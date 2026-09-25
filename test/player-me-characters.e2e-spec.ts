@@ -107,7 +107,7 @@ describeDatabase('Player characters directory with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(19);
+    expect(await database.runMigrations()).toHaveLength(20);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
       .overrideProvider(DataSource)
@@ -156,7 +156,7 @@ describeDatabase('Player characters directory with real PostgreSQL', () => {
   });
 
   it('needs no migration and returns an empty page for a player without characters', async () => {
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(19);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(20);
     expect(await database.showMigrations()).toBe(false);
     expect(database.options.synchronize).toBe(false);
     const diff = await database.driver.createSchemaBuilder().log();
@@ -422,6 +422,12 @@ describeDatabase('Player characters directory with real PostgreSQL', () => {
       ],
       [
         '/api/v1/player/me/characters/{characterLinkId}/marketplace/purchases',
+        ['get'],
+      ],
+      // 10.15: GLOBAL and DIRECT chat history of a character.
+      ['/api/v1/player/me/characters/{characterLinkId}/chat/global', ['get']],
+      [
+        '/api/v1/player/me/characters/{characterLinkId}/chat/direct/{targetCharacterId}',
         ['get'],
       ],
     ]);

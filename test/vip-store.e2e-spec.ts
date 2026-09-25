@@ -64,7 +64,8 @@ describeDatabase('VIP Store with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(19);
+    expect(await database.runMigrations()).toHaveLength(20);
+    await database.undoLastMigration(); // Etapa 10.15 Player Chat
     await database.undoLastMigration(); // Etapa 10.14 Player Marketplace
     await database.undoLastMigration(); // Etapa 10.13 Player Trades
     await database.undoLastMigration(); // Etapa 10.12 Economy
@@ -94,7 +95,7 @@ describeDatabase('VIP Store with real PostgreSQL', () => {
     ).toEqual([
       { role_name: 'COORDINATOR', permission_name: 'VIP_STORE_WRITE' },
     ]);
-    expect(await database.runMigrations()).toHaveLength(12);
+    expect(await database.runMigrations()).toHaveLength(13);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })

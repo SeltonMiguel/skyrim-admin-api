@@ -83,7 +83,7 @@ describeDatabase('Server Control with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(19);
+    expect(await database.runMigrations()).toHaveLength(20);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -138,7 +138,7 @@ describeDatabase('Server Control with real PostgreSQL', () => {
     expect(
       (await database.driver.createSchemaBuilder().log()).upQueries,
     ).toEqual([]);
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(19);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(20);
     expect(await database.query('SELECT * FROM permissions')).toHaveLength(36);
     expect(await database.query('SELECT * FROM role_permissions')).toHaveLength(
       93,
@@ -172,6 +172,9 @@ describeDatabase('Server Control with real PostgreSQL', () => {
       'permissions',
       'player_character_link_challenges',
       'player_characters',
+      'player_chat_direct_threads',
+      'player_chat_messages',
+      'player_chat_requests',
       'player_group_invites',
       'player_group_members',
       'player_groups',
@@ -630,6 +633,7 @@ describeDatabase('Server Control with real PostgreSQL', () => {
     expect(await count()).toBe(0);
   });
   it('reverts only the operation table and reapplies cleanly', async () => {
+    await database.undoLastMigration(); // Etapa 10.15 Player Chat
     await database.undoLastMigration(); // Etapa 10.14 Player Marketplace
     await database.undoLastMigration(); // Etapa 10.13 Player Trades
     await database.undoLastMigration(); // Etapa 10.12 Economy
@@ -651,7 +655,7 @@ describeDatabase('Server Control with real PostgreSQL', () => {
     expect(await database.query('SELECT * FROM role_permissions')).toHaveLength(
       93,
     );
-    expect(await database.runMigrations()).toHaveLength(11);
+    expect(await database.runMigrations()).toHaveLength(12);
     expect(await database.runMigrations()).toHaveLength(0);
     expect(
       (await database.driver.createSchemaBuilder().log()).upQueries,

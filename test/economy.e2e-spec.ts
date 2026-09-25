@@ -207,7 +207,8 @@ describeDatabase('Economy ledger and wallet with real PostgreSQL', () => {
     });
     await database.initialize();
     // Apply, revert (empty ledger) and reapply the economy migration.
-    expect(await database.runMigrations()).toHaveLength(19);
+    expect(await database.runMigrations()).toHaveLength(20);
+    await database.undoLastMigration(); // Etapa 10.15 Player Chat
     await database.undoLastMigration(); // Etapa 10.14 Player Marketplace
     await database.undoLastMigration(); // Etapa 10.13 Player Trades
     await database.undoLastMigration();
@@ -217,7 +218,7 @@ describeDatabase('Economy ledger and wallet with real PostgreSQL', () => {
         [schema],
       ),
     ).toEqual([]);
-    expect(await database.runMigrations()).toHaveLength(3);
+    expect(await database.runMigrations()).toHaveLength(4);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -260,7 +261,7 @@ describeDatabase('Economy ledger and wallet with real PostgreSQL', () => {
   it('adds the ledger tables with no schema diff and database-enforced account shape', async () => {
     expect(database.options.synchronize).toBe(false);
     expect(await database.showMigrations()).toBe(false);
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(19);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(20);
     const diff = await database.driver.createSchemaBuilder().log();
     expect([diff.upQueries, diff.downQueries]).toEqual([[], []]);
     const account = (
@@ -1003,15 +1004,16 @@ describeDatabase('Economy ledger and wallet with real PostgreSQL', () => {
     );
     expect(sums).toEqual([]);
     const before = await ledgerCounts();
-    // No listings or trades here, so 10.14 and 10.13 revert; 10.12 then
-    // refuses and is kept.
+    // No messages, listings or trades here, so 10.15, 10.14 and 10.13
+    // revert; 10.12 then refuses and is kept.
+    await database.undoLastMigration();
     await database.undoLastMigration();
     await database.undoLastMigration();
     await expect(database.undoLastMigration()).rejects.toThrow(
       'economy ledger is not empty',
     );
     expect(await ledgerCounts()).toEqual(before);
-    expect(await database.runMigrations()).toHaveLength(2);
+    expect(await database.runMigrations()).toHaveLength(3);
     expect(await database.showMigrations()).toBe(false);
   });
 });

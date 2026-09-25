@@ -333,3 +333,39 @@ describe('Player guilds environment validation', () => {
       ).toThrow('PLAYER_GUILD_INVITE_TTL');
   });
 });
+
+describe('Player chat environment validation', () => {
+  it('defaults retention to 7 days and the send limit to 5 per 10 seconds', () => {
+    expect(validateEnvironment(example).playerChat).toEqual({
+      retention: 7 * 86400,
+      rateLimitCount: 5,
+      rateLimitWindow: 10,
+    });
+    expect(
+      validateEnvironment({
+        ...example,
+        PLAYER_CHAT_RETENTION: '1d',
+        PLAYER_CHAT_RATE_LIMIT_COUNT: '20',
+        PLAYER_CHAT_RATE_LIMIT_WINDOW: '1m',
+      }).playerChat,
+    ).toEqual({ retention: 86400, rateLimitCount: 20, rateLimitWindow: 60 });
+    for (const value of ['23h', '31d', '0d', 'x'])
+      expect(() =>
+        validateEnvironment({ ...example, PLAYER_CHAT_RETENTION: value }),
+      ).toThrow('PLAYER_CHAT_RETENTION');
+    for (const value of ['0', '101', '1.5', 'x'])
+      expect(() =>
+        validateEnvironment({
+          ...example,
+          PLAYER_CHAT_RATE_LIMIT_COUNT: value,
+        }),
+      ).toThrow('PLAYER_CHAT_RATE_LIMIT_COUNT');
+    for (const value of ['0s', '2h', 'x'])
+      expect(() =>
+        validateEnvironment({
+          ...example,
+          PLAYER_CHAT_RATE_LIMIT_WINDOW: value,
+        }),
+      ).toThrow('PLAYER_CHAT_RATE_LIMIT_WINDOW');
+  });
+});

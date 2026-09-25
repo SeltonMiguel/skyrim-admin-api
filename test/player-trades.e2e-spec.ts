@@ -238,7 +238,8 @@ describeDatabase('Player trades with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(19);
+    expect(await database.runMigrations()).toHaveLength(20);
+    await database.undoLastMigration(); // Etapa 10.15 Player Chat
     await database.undoLastMigration(); // Etapa 10.14 Player Marketplace
     await database.undoLastMigration();
     expect(
@@ -247,7 +248,7 @@ describeDatabase('Player trades with real PostgreSQL', () => {
         [schema],
       ),
     ).toEqual([]);
-    expect(await database.runMigrations()).toHaveLength(2);
+    expect(await database.runMigrations()).toHaveLength(3);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -303,7 +304,7 @@ describeDatabase('Player trades with real PostgreSQL', () => {
   it('adds the trade tables and TRADE_ESCROW with database-enforced lifecycle', async () => {
     expect(database.options.synchronize).toBe(false);
     expect(await database.showMigrations()).toBe(false);
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(19);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(20);
     const diff = await database.driver.createSchemaBuilder().log();
     expect([diff.upQueries, diff.downQueries]).toEqual([[], []]);
     const insertTrade = (a: string, b: string) =>
@@ -1286,12 +1287,14 @@ describeDatabase('Player trades with real PostgreSQL', () => {
   });
   it('refuses to revert while trades exist', async () => {
     await reconciled();
-    // No listings here: 10.14 reverts, then 10.13 refuses and is kept.
+    // No messages or listings here: 10.15 and 10.14 revert, then 10.13
+    // refuses and is kept.
+    await database.undoLastMigration();
     await database.undoLastMigration();
     await expect(database.undoLastMigration()).rejects.toThrow(
       'player trades exist',
     );
-    expect(await database.runMigrations()).toHaveLength(1);
+    expect(await database.runMigrations()).toHaveLength(2);
     expect(await database.showMigrations()).toBe(false);
   });
 });
