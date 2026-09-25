@@ -5,6 +5,8 @@ import { randomUUID } from 'node:crypto';
 // know how (or whether) they are transported. Realtime is not a source of
 // truth; clients that miss an event re-read state over HTTP.
 export const REALTIME_EVENT_TYPES = [
+  'PLAYER_CHARACTER_LINK_UPDATED',
+  'PLAYER_GAME_OPERATION_UPDATED',
   'GROUP_CREATED',
   'GROUP_INVITE_CREATED',
   'GROUP_INVITE_ACCEPTED',

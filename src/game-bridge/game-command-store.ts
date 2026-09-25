@@ -1,3 +1,5 @@
+import { RealtimeEventBus } from '../realtime-events/realtime-event-bus.js';
+import type { RealtimeData } from '../realtime-events/realtime-event-bus.js';
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { DataSource, EntityManager } from 'typeorm';
@@ -32,6 +34,7 @@ export class GameCommandStore {
     private readonly database: DataSource,
     private readonly servers: GameServerService,
     private readonly clock: BridgeClock,
+    private readonly events: RealtimeEventBus,
   ) {}
   async locked<T>(
     id: string,
@@ -46,7 +49,8 @@ export class GameCommandStore {
       .getRepository<GameCommand>('GameCommand')
       .findOneBy({ id });
     if (!initial) throw new NotFoundException('Game command not found');
-    return this.database.transaction(async (manager) => {
+    let notification: { playerId: string; data: RealtimeData } | undefined;
+    const result = await this.database.transaction(async (manager) => {
       // Consistent lock order for connect/heartbeat, dispatch, ACK, RESULT and timeout.
       const server = await this.servers.get(
         initial.gameServerId,
@@ -65,8 +69,37 @@ export class GameCommandStore {
         this.markPossiblyDelivered(command);
         await manager.getRepository<GameCommand>('GameCommand').save(command);
       }
-      return operation(manager, command, server);
+      const wasTerminal = isTerminal(command.status);
+      const value = await operation(manager, command, server);
+      if (
+        !wasTerminal &&
+        isTerminal(command.status) &&
+        command.actorType === 'PLAYER' &&
+        command.requestedByPlayerId
+      ) {
+        const result = await manager
+          .getRepository<GameCommandResult>('GameCommandResult')
+          .findOneByOrFail({ gameCommandId: command.id });
+        notification = {
+          playerId: command.requestedByPlayerId,
+          data: {
+            operationId: command.id,
+            status: command.status,
+            errorCode: result.errorCode,
+            completedAt: command.completedAt!.toISOString(),
+          },
+        };
+      }
+      return value;
     });
+    // Every terminal path uses locked/finish: Agent result, deadline or dispatch
+    // failure. No notification on rollback, duplicate, ACK or internal retry.
+    // Attribution is frozen at creation, independent of current ownership.
+    if (notification)
+      this.events.publish('PLAYER_GAME_OPERATION_UPDATED', notification.data, {
+        playerIds: [notification.playerId],
+      });
+    return result;
   }
   markPossiblyDelivered(command: GameCommand): void {
     if (command.status === CommandStatus.PENDING && command.dispatchLeaseId)

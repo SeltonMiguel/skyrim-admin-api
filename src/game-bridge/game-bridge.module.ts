@@ -1,3 +1,4 @@
+import { RealtimeEventsModule } from '../realtime-events/realtime-events.module.js';
 import { Module } from '@nestjs/common';
 import { CommonModule } from '../common/common.module.js';
 import { BridgeClock } from './bridge-clock.js';
@@ -12,7 +13,7 @@ import { AgentSessionModule } from '../game-agent/agent-session.module.js';
 import { GameServerService } from './game-server.service.js';
 
 @Module({
-  imports: [CommonModule, AgentSessionModule],
+  imports: [RealtimeEventsModule, CommonModule, AgentSessionModule],
   providers: [
     BridgeClock,
     GameServerService,

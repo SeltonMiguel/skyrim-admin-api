@@ -1,3 +1,4 @@
+import { PlayerGameServersModule } from './player-game-servers/player-game-servers.module.js';
 import { RealtimeEventsModule } from './realtime-events/realtime-events.module.js';
 import { RealtimeModule } from './realtime/realtime.module.js';
 import { GameAgentModule } from './game-agent/game-agent.module.js';
@@ -49,6 +50,7 @@ import { HealthModule } from './health/health.module.js';
     PlayerAccountsModule,
     PlayerAuthModule,
     PlayerCharactersModule,
+    PlayerGameServersModule,
     PlayerCharacterOperationsModule,
     ProfessionsModule,
     RealtimeEventsModule,

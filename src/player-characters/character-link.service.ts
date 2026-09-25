@@ -1,3 +1,4 @@
+import { RealtimeEventBus } from '../realtime-events/realtime-event-bus.js';
 import type { AgentEventHook } from '../actors/agent-event.contracts.js';
 import {
   ConflictException,
@@ -52,6 +53,7 @@ export class CharacterLinkService {
   constructor(
     private readonly database: DataSource,
     private readonly audit: AuditService,
+    private readonly events: RealtimeEventBus,
     config: ConfigService<{ application: ApplicationConfig }, true>,
   ) {
     this.ttlMs =
@@ -78,7 +80,7 @@ export class CharacterLinkService {
     const characterExternalId = externalId(input.characterExternalId);
     const challenge = generateChallenge();
     const hash = challengeHash(normalizeChallenge(challenge)!);
-    return this.database.transaction(async (manager) => {
+    const result = await this.database.transaction(async (manager) => {
       const server = await manager
         .getRepository<GameServer>('GameServer')
         .findOneBy({ id: gameServerId });
@@ -142,6 +144,8 @@ export class CharacterLinkService {
       );
       return { link, challenge, expiresAt };
     });
+    this.notify(result.link);
+    return result;
   }
   async get(actor: PlayerActor, linkId: string): Promise<PlayerCharacter> {
     const link = isUUID(linkId)
@@ -157,13 +161,15 @@ export class CharacterLinkService {
   async revoke(actor: PlayerActor, linkId: string): Promise<PlayerCharacter> {
     if (!isUUID(linkId))
       throw new NotFoundException('Character link not found');
-    return this.database.transaction(async (manager) => {
+    let changed = false;
+    const result = await this.database.transaction(async (manager) => {
       const link = await this.links(manager).findOne({
         where: { id: linkId, playerId: actor.playerId },
         lock: { mode: 'pessimistic_write' },
       });
       if (!link) throw new NotFoundException('Character link not found');
       if (link.status === S.REVOKED) return link;
+      changed = true;
       const previousStatus = link.status;
       const now = new Date();
       link.status = S.REVOKED;
@@ -182,6 +188,8 @@ export class CharacterLinkService {
       );
       return link;
     });
+    if (changed) this.notify(result);
+    return result;
   }
   // Trusted internal entry point for the authenticated Agent transport
   // (Etapa 11). Never exposed over HTTP. A replay of a consumed challenge for
@@ -208,81 +216,87 @@ export class CharacterLinkService {
     }
     if (!isUUID(input.gameServerId)) return reject('CHALLENGE_MISMATCH');
     const hash = challengeHash(canonical);
+    let changed: PlayerCharacter | undefined;
     try {
-      return await this.database.transaction(async (manager) => {
-        const located = await this.challenges(manager)
-          .createQueryBuilder('challenge')
-          .select(['challenge.id', 'challenge.playerCharacterId'])
-          .where('challenge.challengeHash = :hash', { hash })
-          .getOne();
-        if (!located) return reject('INVALID_CHALLENGE');
-        const link = await this.links(manager).findOneOrFail({
-          where: { id: located.playerCharacterId },
-          lock: { mode: 'pessimistic_write' },
-        });
-        const challenge = await this.challenges(manager).findOneOrFail({
-          where: { id: located.id },
-          lock: { mode: 'pessimistic_write' },
-        });
-        const matches =
-          link.gameServerId === input.gameServerId &&
-          link.characterExternalId === characterExternalId;
-        if (challenge.consumedAt) {
-          if (!matches || link.status !== S.VERIFIED)
+      const result = await this.database.transaction<OwnershipConfirmation>(
+        async (manager) => {
+          const located = await this.challenges(manager)
+            .createQueryBuilder('challenge')
+            .select(['challenge.id', 'challenge.playerCharacterId'])
+            .where('challenge.challengeHash = :hash', { hash })
+            .getOne();
+          if (!located) return reject('INVALID_CHALLENGE');
+          const link = await this.links(manager).findOneOrFail({
+            where: { id: located.playerCharacterId },
+            lock: { mode: 'pessimistic_write' },
+          });
+          const challenge = await this.challenges(manager).findOneOrFail({
+            where: { id: located.id },
+            lock: { mode: 'pessimistic_write' },
+          });
+          const matches =
+            link.gameServerId === input.gameServerId &&
+            link.characterExternalId === characterExternalId;
+          if (challenge.consumedAt) {
+            if (!matches || link.status !== S.VERIFIED)
+              return reject('INVALID_CHALLENGE');
+            await onAccepted?.(manager);
+            return {
+              outcome: 'ALREADY_VERIFIED',
+              linkId: link.id,
+              playerId: link.playerId,
+            };
+          }
+          if (challenge.revokedAt || link.status !== S.PENDING)
             return reject('INVALID_CHALLENGE');
+          if (challenge.expiresAt.getTime() <= Date.now())
+            return reject('EXPIRED_CHALLENGE');
+          if (!matches) return reject('CHALLENGE_MISMATCH');
+          const server = await manager
+            .getRepository<GameServer>('GameServer')
+            .findOneBy({ id: link.gameServerId });
+          if (!server?.enabled) return reject('SERVER_UNAVAILABLE');
+          // Re-read the account: a suspension after the request blocks it.
+          const player = await manager.getRepository<Player>('Player').findOne({
+            where: { id: link.playerId },
+            lock: { mode: 'pessimistic_read' },
+          });
+          if (player?.status !== PlayerStatus.ACTIVE)
+            return reject('PLAYER_UNAVAILABLE');
+          if (
+            await this.links(manager).existsBy({
+              gameServerId: link.gameServerId,
+              characterExternalId: link.characterExternalId,
+              status: S.VERIFIED,
+            })
+          )
+            return reject('CHARACTER_UNAVAILABLE');
+          const now = new Date();
+          challenge.consumedAt = now;
+          await this.challenges(manager).update(challenge.id, {
+            consumedAt: now,
+          });
+          link.status = S.VERIFIED;
+          link.verifiedAt = now;
+          await this.links(manager).save(link);
+          await this.record(
+            manager,
+            systemActor(SystemSource.AGENT),
+            AuditAction.PLAYER_CHARACTER_LINK_VERIFIED,
+            link,
+            { playerId: link.playerId },
+          );
           await onAccepted?.(manager);
+          changed = link;
           return {
-            outcome: 'ALREADY_VERIFIED',
+            outcome: 'VERIFIED',
             linkId: link.id,
             playerId: link.playerId,
           };
-        }
-        if (challenge.revokedAt || link.status !== S.PENDING)
-          return reject('INVALID_CHALLENGE');
-        if (challenge.expiresAt.getTime() <= Date.now())
-          return reject('EXPIRED_CHALLENGE');
-        if (!matches) return reject('CHALLENGE_MISMATCH');
-        const server = await manager
-          .getRepository<GameServer>('GameServer')
-          .findOneBy({ id: link.gameServerId });
-        if (!server?.enabled) return reject('SERVER_UNAVAILABLE');
-        // Re-read the account: a suspension after the request blocks it.
-        const player = await manager.getRepository<Player>('Player').findOne({
-          where: { id: link.playerId },
-          lock: { mode: 'pessimistic_read' },
-        });
-        if (player?.status !== PlayerStatus.ACTIVE)
-          return reject('PLAYER_UNAVAILABLE');
-        if (
-          await this.links(manager).existsBy({
-            gameServerId: link.gameServerId,
-            characterExternalId: link.characterExternalId,
-            status: S.VERIFIED,
-          })
-        )
-          return reject('CHARACTER_UNAVAILABLE');
-        const now = new Date();
-        challenge.consumedAt = now;
-        await this.challenges(manager).update(challenge.id, {
-          consumedAt: now,
-        });
-        link.status = S.VERIFIED;
-        link.verifiedAt = now;
-        await this.links(manager).save(link);
-        await this.record(
-          manager,
-          systemActor(SystemSource.AGENT),
-          AuditAction.PLAYER_CHARACTER_LINK_VERIFIED,
-          link,
-          { playerId: link.playerId },
-        );
-        await onAccepted?.(manager);
-        return {
-          outcome: 'VERIFIED',
-          linkId: link.id,
-          playerId: link.playerId,
-        };
-      });
+        },
+      );
+      if (changed) this.notify(changed);
+      return result;
     } catch (error) {
       // Concurrent confirmation for another player lost the VERIFIED index race.
       if (
@@ -293,6 +307,20 @@ export class CharacterLinkService {
         return reject('CHARACTER_UNAVAILABLE');
       throw error;
     }
+  }
+  // Called only after the owning transaction (including Agent receipt) commits.
+  private notify(link: PlayerCharacter): void {
+    this.events.publish(
+      'PLAYER_CHARACTER_LINK_UPDATED',
+      {
+        characterLinkId: link.id,
+        gameServerId: link.gameServerId,
+        characterExternalId: link.characterExternalId,
+        status: link.status,
+        updatedAt: link.updatedAt.toISOString(),
+      },
+      { playerIds: [link.playerId] },
+    );
   }
   private revokeActiveChallenges(
     manager: EntityManager,
