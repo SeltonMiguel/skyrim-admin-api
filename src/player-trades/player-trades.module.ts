@@ -1,3 +1,4 @@
+import { PlayerSettingsModule } from '../player-settings/player-settings.module.js';
 import { Module } from '@nestjs/common';
 import { AuditModule } from '../audit/audit.module.js';
 import { EconomyModule } from '../economy/economy.module.js';
@@ -14,7 +15,7 @@ import { TradeSettlementService } from './trade-settlement.service.js';
 // Agent confirmation (TradeSettlementService, exported for Etapa 11); no
 // game command is used. Realtime goes through the global event bus.
 @Module({
-  imports: [AuditModule, EconomyModule, PlayerAuthModule],
+  imports: [AuditModule, EconomyModule, PlayerAuthModule, PlayerSettingsModule],
   providers: [PlayerTradeService, TradeEscrowService, TradeSettlementService],
   controllers: [PlayerTradeController, CharacterTradeController],
   exports: [TradeSettlementService, TradeEscrowService],

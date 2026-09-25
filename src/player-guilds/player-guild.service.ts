@@ -27,6 +27,8 @@ import type { PlayerActor } from '../actors/actor.contracts.js';
 import type { GameServer } from '../game-bridge/entities/game-server.entity.js';
 import type { PlayerCharacter } from '../player-characters/entities/player-character.entity.js';
 import { CharacterLinkStatus } from '../player-characters/player-character.contracts.js';
+import { PlayerSettingsService } from '../player-settings/player-settings.service.js';
+import { PlayerInteraction } from '../player-settings/player-settings.contracts.js';
 import { RealtimeEventBus } from '../realtime-events/realtime-event-bus.js';
 import type {
   RealtimeData,
@@ -102,6 +104,7 @@ export class PlayerGuildService {
     private readonly database: DataSource,
     private readonly audit: AuditService,
     private readonly events: RealtimeEventBus,
+    private readonly settings: PlayerSettingsService,
     config: ConfigService<{ application: ApplicationConfig }, true>,
   ) {
     this.inviteTtlMs =
@@ -531,7 +534,18 @@ export class PlayerGuildService {
         },
         lock: { mode: 'pessimistic_write' },
       });
-      if (!target) throw new NotFoundException('Character not available');
+      // A target whose owner refuses new invites from other players looks
+      // exactly like an unavailable one.
+      if (
+        !target ||
+        (target.playerId !== actor.playerId &&
+          !(await this.settings.allows(
+            manager,
+            target.playerId,
+            PlayerInteraction.GUILD_INVITE,
+          )))
+      )
+        throw new NotFoundException('Character not available');
       if (
         members.some(
           (m) => m.characterExternalId === target.characterExternalId,

@@ -24,6 +24,8 @@ import { GroupStatus } from '../player-groups/player-group.contracts.js';
 import type { PlayerGuild } from '../player-guilds/entities/player-guild.entity.js';
 import type { PlayerGuildMember } from '../player-guilds/entities/player-guild-member.entity.js';
 import { GuildStatus } from '../player-guilds/player-guild.contracts.js';
+import { PlayerSettingsService } from '../player-settings/player-settings.service.js';
+import { PlayerInteraction } from '../player-settings/player-settings.contracts.js';
 import { RealtimeEventBus } from '../realtime-events/realtime-event-bus.js';
 import {
   ChatRateLimitedException,
@@ -69,6 +71,7 @@ export class PlayerChatService {
     private readonly database: DataSource,
     private readonly events: RealtimeEventBus,
     private readonly limiter: ChatRateLimiter,
+    private readonly settings: PlayerSettingsService,
     config: ConfigService<{ application: ApplicationConfig }, true>,
   ) {
     this.retention = config.get('application', {
@@ -399,7 +402,18 @@ export class PlayerChatService {
       const player = await manager
         .getRepository<Player>('Player')
         .findOneBy({ id: other.playerId });
-      if (player?.status !== PlayerStatus.ACTIVE) throw targetUnavailable();
+      // An owner refusing DIRECT messages from other players looks the same
+      // (existing threads included; their history stays readable).
+      if (
+        player?.status !== PlayerStatus.ACTIVE ||
+        (other.playerId !== actor.playerId &&
+          !(await this.settings.allows(
+            manager,
+            other.playerId,
+            PlayerInteraction.DIRECT_MESSAGE,
+          )))
+      )
+        throw targetUnavailable();
     } else
       link = await this.ownLink(manager, actor, input.characterLinkId, true);
     const server = await manager

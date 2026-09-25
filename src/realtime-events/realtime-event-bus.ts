@@ -38,6 +38,7 @@ export const REALTIME_EVENT_TYPES = [
   'MARKETPLACE_LISTING_FAILED',
   'MARKETPLACE_PURCHASE_FAILED',
   'CHAT_MESSAGE_CREATED',
+  'PLAYER_SETTINGS_UPDATED',
 ] as const;
 export type RealtimeEventType = (typeof REALTIME_EVENT_TYPES)[number];
 export type RealtimeData = Record<string, string | number | boolean | null>;

@@ -22,6 +22,8 @@ import type { GameServer } from '../game-bridge/entities/game-server.entity.js';
 import { PlayerStatus } from '../player-accounts/player-account.contracts.js';
 import type { PlayerCharacter } from '../player-characters/entities/player-character.entity.js';
 import { CharacterLinkStatus } from '../player-characters/player-character.contracts.js';
+import { PlayerSettingsService } from '../player-settings/player-settings.service.js';
+import { PlayerInteraction } from '../player-settings/player-settings.contracts.js';
 import { RealtimeEventBus } from '../realtime-events/realtime-event-bus.js';
 import type {
   RealtimeData,
@@ -69,6 +71,7 @@ export class PlayerTradeService {
     private readonly audit: AuditService,
     private readonly events: RealtimeEventBus,
     private readonly escrow: TradeEscrowService,
+    private readonly settings: PlayerSettingsService,
   ) {}
 
   // Runs the mutation; events are published only after commit.
@@ -408,7 +411,17 @@ export class PlayerTradeService {
       const target = (
         await this.owners(manager, link.gameServerId, [input.targetCharacterId])
       ).get(input.targetCharacterId);
-      if (!target || target.player.status !== PlayerStatus.ACTIVE)
+      // An owner refusing new trades from other players looks the same.
+      if (
+        !target ||
+        target.player.status !== PlayerStatus.ACTIVE ||
+        (target.playerId !== actor.playerId &&
+          !(await this.settings.allows(
+            manager,
+            target.playerId,
+            PlayerInteraction.TRADE_REQUEST,
+          )))
+      )
         throw new NotFoundException('Character not available');
       const trade = this.trades(manager).create({
         id: tradeId,

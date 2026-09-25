@@ -1,3 +1,4 @@
+import { PlayerSettingsModule } from '../player-settings/player-settings.module.js';
 import { Module } from '@nestjs/common';
 import { AuditModule } from '../audit/audit.module.js';
 import { PlayerAuthModule } from '../player-auth/player-auth.module.js';
@@ -11,7 +12,7 @@ import { PlayerGuildService } from './player-guild.service.js';
 // Backend-owned: no game command, Agent event or Skyrim faction. Publishes
 // through RealtimeEventBus (global); no WebSocket dependency.
 @Module({
-  imports: [AuditModule, PlayerAuthModule],
+  imports: [AuditModule, PlayerAuthModule, PlayerSettingsModule],
   providers: [PlayerGuildService],
   controllers: [
     PlayerGuildController,
