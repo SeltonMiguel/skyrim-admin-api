@@ -6,11 +6,13 @@ import { GameCommandDispatcher } from './game-command-dispatcher.js';
 import { GameCommandReceiver } from './game-command-receiver.js';
 import { GameCommandStore } from './game-command-store.js';
 import { GameConnectionService } from './game-connection.service.js';
-import { DisconnectedGameGateway, GameGateway } from './game-gateway.js';
+import { GameGateway } from './game-gateway.js';
+import { AgentGameGateway } from '../game-agent/agent-game.gateway.js';
+import { AgentSessionModule } from '../game-agent/agent-session.module.js';
 import { GameServerService } from './game-server.service.js';
 
 @Module({
-  imports: [CommonModule],
+  imports: [CommonModule, AgentSessionModule],
   providers: [
     BridgeClock,
     GameServerService,
@@ -19,7 +21,9 @@ import { GameServerService } from './game-server.service.js';
     GameCommandStore,
     GameCommandDispatcher,
     GameCommandReceiver,
-    { provide: GameGateway, useClass: DisconnectedGameGateway },
+    // Real Host Agent transport (11.2). DisconnectedGameGateway remains
+    // available for tests and as an explicit fallback.
+    { provide: GameGateway, useClass: AgentGameGateway },
   ],
   exports: [
     BridgeClock,

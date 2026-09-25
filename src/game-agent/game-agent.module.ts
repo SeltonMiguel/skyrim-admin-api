@@ -7,24 +7,33 @@ import { AgentAuthService } from './agent-auth.service.js';
 import { AgentCredentialController } from './agent-credential.controller.js';
 import { AgentCredentialService } from './agent-credential.service.js';
 import { AgentMessageRouter } from './agent-message.router.js';
-import { AgentSessionRegistry } from './agent-session.registry.js';
+import { AgentSessionModule } from './agent-session.module.js';
 import { AgentGateway } from './agent.gateway.js';
+import { AgentCommandAdapter } from './agent-command.adapter.js';
+import { GameCommandWorker } from './game-command.worker.js';
 
-// Host Agent transport + authentication (11.1): credentials managed by
-// Staff, the /api/v1/agent WebSocket, the session registry and the message
-// router skeleton. Nothing here dispatches GameCommands, receives results,
-// talks to Server Control or routes domain events (11.2+). The registry is
-// exported for those substeps.
+// Host Agent transport + authentication (11.1) and GameCommand execution
+// (11.2): credentials managed by Staff, the /api/v1/agent WebSocket, the
+// session registry, the message router with the GameCommand adapter and the
+// dispatch worker. Nothing here talks to Server Control or routes domain
+// events (11.3+).
 @Module({
-  imports: [AuthModule, AuditModule, GameBridgeModule, WebSocketModule],
+  imports: [
+    AuthModule,
+    AuditModule,
+    GameBridgeModule,
+    AgentSessionModule,
+    WebSocketModule,
+  ],
   providers: [
-    AgentSessionRegistry,
     AgentAuthService,
     AgentCredentialService,
     AgentMessageRouter,
+    AgentCommandAdapter,
     AgentGateway,
+    GameCommandWorker,
   ],
   controllers: [AgentCredentialController],
-  exports: [AgentSessionRegistry],
+  exports: [AgentSessionModule],
 })
 export class GameAgentModule {}

@@ -19,6 +19,10 @@ export const COMMAND_ERRORS = {
   ACK_TIMEOUT: 'Acknowledgement deadline expired',
   EXECUTION_TIMEOUT: 'Execution deadline expired',
   SERVER_DISABLED: 'Game server disabled',
+  // 11.2: remote execution outcomes and the never-deliverable PENDING expiry.
+  EXECUTION_FAILED: 'Game execution failed',
+  EXECUTION_UNCERTAIN: 'Game execution outcome unknown',
+  DISPATCH_EXPIRED: 'No eligible Agent before the dispatch deadline',
 } as const;
 export type CommandErrorCode = keyof typeof COMMAND_ERRORS;
 

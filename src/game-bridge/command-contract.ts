@@ -77,7 +77,20 @@ export interface BridgeMessage {
   connectionId: string;
   commandId: string;
   correlationId: string;
+  // ACK only: the delivery attempt it confirms (see CommandEnvelope).
+  attempt?: number;
 }
+// Closed remote failure catalog; TIMEOUT is never reported by the Agent.
+export const REMOTE_FAILURE_CODES = [
+  'PING_REJECTED',
+  'BRIDGE_ERROR',
+  'EXECUTION_FAILED',
+] as const;
+export type RemoteFailureCode = (typeof REMOTE_FAILURE_CODES)[number];
+// UNCERTAIN: the Agent cannot prove whether a side effect happened (its
+// journal shows the command was forwarded without a result). Stored as the
+// terminal TIMEOUT with EXECUTION_UNCERTAIN, never as FAILED.
+export const UNCERTAIN_OUTCOME = 'UNCERTAIN' as const;
 export type ResultMessage<T extends CommandType = CommandType> = BridgeMessage &
   (
     | {
@@ -86,8 +99,9 @@ export type ResultMessage<T extends CommandType = CommandType> = BridgeMessage &
       }
     | {
         outcome: CommandStatus.FAILED;
-        errorCode: 'PING_REJECTED' | 'BRIDGE_ERROR';
+        errorCode: RemoteFailureCode;
       }
+    | { outcome: typeof UNCERTAIN_OUTCOME }
   );
 export interface CommandEnvelope<T extends CommandType = CommandType> {
   protocolVersion: typeof PROTOCOL_VERSION;
@@ -95,6 +109,9 @@ export interface CommandEnvelope<T extends CommandType = CommandType> {
   correlationId: string;
   serverId: string;
   connectionId: string;
+  // Delivery attempt number (dispatchAttempts at reservation): identifies
+  // the attempt an ACK belongs to, together with connectionId.
+  attempt: number;
   idempotencyKey: string;
   type: T;
   payload: CommandPayload<T>;
@@ -217,6 +234,7 @@ export function envelope(command: GameCommand): CommandEnvelope {
     correlationId: command.correlationId,
     serverId: command.gameServerId,
     connectionId: command.dispatchedConnectionId,
+    attempt: command.dispatchAttempts,
     idempotencyKey: command.idempotencyKey,
     type: command.type,
     payload: commandPayload(command.type, command.payload),

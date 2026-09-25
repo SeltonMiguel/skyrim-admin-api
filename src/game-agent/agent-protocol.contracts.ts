@@ -1,6 +1,12 @@
 import { isUUID } from 'class-validator';
+import { randomUUID } from 'node:crypto';
 import { MAX_COMMAND_RESULT_BYTES } from '../game-bridge/command-limits.js';
-import { PROTOCOL_VERSION } from '../game-bridge/command-contract.js';
+import {
+  PROTOCOL_VERSION,
+  REMOTE_FAILURE_CODES,
+  UNCERTAIN_OUTCOME,
+} from '../game-bridge/command-contract.js';
+import type { RemoteFailureCode } from '../game-bridge/command-contract.js';
 
 // Host Agent WebSocket protocol v1 (Etapa 11.1). The version is the one the
 // Game Bridge already persists in game_connections.protocol_version; there
@@ -15,24 +21,26 @@ export const MAX_AGENT_CAPABILITIES = 64;
 if (MAX_AGENT_FRAME_BYTES < 2 * MAX_COMMAND_RESULT_BYTES)
   throw new Error('Agent frame limit must hold a maximal command result');
 
-// Frames the Agent may send. HELLO only as the first frame; COMMAND_RESULT,
-// DOMAIN_EVENT and SERVER_CONTROL_RESULT are typed but answered with
-// NOT_IMPLEMENTED until 11.2–11.4.
+// Frames the Agent may send. HELLO only as the first frame; DOMAIN_EVENT
+// and SERVER_CONTROL_RESULT are typed but answered with NOT_IMPLEMENTED
+// until 11.3–11.4.
 export const AGENT_INBOUND_TYPES = [
   'HELLO',
   'HEARTBEAT',
+  'COMMAND_ACK',
   'COMMAND_RESULT',
   'DOMAIN_EVENT',
   'SERVER_CONTROL_RESULT',
   'ERROR',
 ] as const;
-// Frames the backend sends. COMMAND, SERVER_CONTROL and WORK_ITEMS are
-// declared for later substeps and never sent in 11.1.
+// Frames the backend sends. SERVER_CONTROL and WORK_ITEMS are declared for
+// later substeps and never sent yet.
 export const AGENT_OUTBOUND_TYPES = [
   'AUTHENTICATED',
   'HEARTBEAT_ACK',
   'ERROR',
   'COMMAND',
+  'COMMAND_RESULT_ACK',
   'SERVER_CONTROL',
   'WORK_ITEMS',
 ] as const;
@@ -73,14 +81,17 @@ export const AgentClose = {
   CREDENTIAL_REVOKED: 4009,
   SERVER_MISMATCH: 4010,
   SESSION_CLOSED: 4011,
+  RATE_LIMITED: 4012,
   SHUTDOWN: 1001,
 } as const;
 export type AgentCloseReason = keyof typeof AgentClose;
 // Closed catalog carried by ERROR frames; never exception text or stacks.
 export type AgentErrorCode =
   | 'NOT_IMPLEMENTED'
-  | 'PROTOCOL_UNSUPPORTED'
-  | 'UNAUTHORIZED'
+  | 'INVALID_MESSAGE'
+  | 'UNKNOWN_COMMAND'
+  | 'NOT_DISPATCHED'
+  | 'RESULT_CONFLICT'
   | 'TEMPORARILY_UNAVAILABLE';
 
 export interface AgentEnvelope<T extends string = string> {
@@ -231,5 +242,91 @@ export function heartbeatPayload(
     ...(payload.capabilities === undefined
       ? {}
       : { capabilities: capabilities(payload.capabilities) }),
+  };
+}
+
+// COMMAND_ACK: the Agent received this delivery attempt. The session (and
+// so the connection) comes from the socket, never from the payload.
+export interface CommandAckPayload {
+  commandId: string;
+  correlationId: string;
+  attempt: number;
+}
+export function commandAckPayload(
+  payload: Record<string, unknown>,
+): CommandAckPayload {
+  exactKeys(payload, ['commandId', 'correlationId', 'attempt']);
+  if (
+    typeof payload.attempt !== 'number' ||
+    !Number.isSafeInteger(payload.attempt) ||
+    payload.attempt < 1
+  )
+    invalid();
+  return {
+    commandId: uuid(payload.commandId),
+    correlationId: uuid(payload.correlationId),
+    attempt: payload.attempt as number,
+  };
+}
+// COMMAND_RESULT: the outcome of the command (any attempt, any session of
+// the server). No free-text message is accepted: the backend stores its
+// own catalog message. The typed result is validated per command type by
+// the Game Bridge.
+export type CommandResultPayload = {
+  commandId: string;
+  correlationId: string;
+} & (
+  | { outcome: 'SUCCEEDED'; result: unknown }
+  | { outcome: 'FAILED'; errorCode: RemoteFailureCode }
+  | { outcome: typeof UNCERTAIN_OUTCOME }
+);
+export function commandResultPayload(
+  payload: Record<string, unknown>,
+): CommandResultPayload {
+  const ids = {
+    commandId: uuid(payload.commandId),
+    correlationId: uuid(payload.correlationId),
+  };
+  switch (payload.outcome) {
+    case 'SUCCEEDED':
+      exactKeys(payload, ['commandId', 'correlationId', 'outcome', 'result']);
+      return { ...ids, outcome: 'SUCCEEDED', result: payload.result };
+    case 'FAILED':
+      exactKeys(payload, [
+        'commandId',
+        'correlationId',
+        'outcome',
+        'errorCode',
+      ]);
+      if (
+        !REMOTE_FAILURE_CODES.includes(payload.errorCode as RemoteFailureCode)
+      )
+        invalid();
+      return {
+        ...ids,
+        outcome: 'FAILED',
+        errorCode: payload.errorCode as RemoteFailureCode,
+      };
+    case UNCERTAIN_OUTCOME:
+      exactKeys(payload, ['commandId', 'correlationId', 'outcome']);
+      return { ...ids, outcome: UNCERTAIN_OUTCOME };
+    default:
+      return invalid();
+  }
+}
+
+export function outbound(
+  type: AgentOutboundType,
+  gameServerId: string,
+  payload: Record<string, unknown>,
+  now: Date,
+): AgentEnvelope<AgentOutboundType> {
+  return {
+    protocolVersion: AGENT_PROTOCOL_VERSION,
+    type,
+    messageId: randomUUID(),
+    gameServerId,
+    occurredAt: now.toISOString(),
+    payload,
   };
 }

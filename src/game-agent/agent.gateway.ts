@@ -19,7 +19,7 @@ import type {
 } from '../game-bridge/entities/game-connection.entity.js';
 import { WebSocketUpgradeRouter } from '../websocket/websocket-upgrade.router.js';
 import { AgentAuthError, AgentAuthService } from './agent-auth.service.js';
-import { AgentMessageRouter, outbound } from './agent-message.router.js';
+import { AgentMessageRouter } from './agent-message.router.js';
 import {
   AGENT_PATH,
   AGENT_PROTOCOL_VERSION,
@@ -27,6 +27,7 @@ import {
   AgentProtocolError,
   helloPayload,
   MAX_AGENT_FRAME_BYTES,
+  outbound,
   parseEnvelope,
 } from './agent-protocol.contracts.js';
 import type {
@@ -139,6 +140,9 @@ export class AgentGateway
     let state: SocketState = 'AWAITING_HELLO';
     let session: AgentSessionSnapshot | undefined;
     let queue = Promise.resolve();
+    // Authenticated frames per window (in memory, per session).
+    let windowStart = 0;
+    let windowCount = 0;
     const close = (reason: AgentCloseReason) => {
       if (ws.readyState === WebSocket.OPEN)
         ws.close(AgentClose[reason], reason);
@@ -255,6 +259,22 @@ export class AgentGateway
       if (isBinary || state === 'AUTHENTICATING') {
         this.logger.warn('Agent protocol violation [reason=FRAME_ORDER]');
         return close('PROTOCOL_ERROR');
+      }
+      if (state === 'AUTHENTICATED') {
+        const now = Date.now();
+        if (now - windowStart >= this.config.messageRateLimitWindowMs) {
+          windowStart = now;
+          windowCount = 0;
+        }
+        if (++windowCount > this.config.messageRateLimitCount) {
+          const current = session;
+          this.logger.warn(
+            `Agent message rate limit exceeded [gameServerId=${current?.gameServerId} connectionId=${current?.connectionId} limit=${this.config.messageRateLimitCount}]`,
+          );
+          if (current)
+            this.sessions.remove(current.gameServerId, current.connectionId);
+          return close('RATE_LIMITED');
+        }
       }
       const text = raw.toString();
       // Switched synchronously: a frame in the same chunk as HELLO is refused.

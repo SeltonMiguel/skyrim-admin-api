@@ -12,6 +12,9 @@ export interface ApplicationConfig {
     ackTimeoutMs: number;
     executionTimeoutMs: number;
     maxDispatchAttempts: number;
+    // Never-reserved PENDING commands fail after this (11.2).
+    pendingTimeoutMs: number;
+    workerIntervalMs: number;
   };
   jwt: {
     accessSecret: string;
@@ -49,6 +52,11 @@ export interface ApplicationConfig {
     authTimeoutMs: number;
     heartbeatIntervalMs: number;
     heartbeatTimeoutMs: number;
+    // DB-counted GameCommands in flight per server (11.2).
+    maxInFlightCommands: number;
+    // Authenticated frames per session per window (in memory, 11.2).
+    messageRateLimitCount: number;
+    messageRateLimitWindowMs: number;
   };
   bootstrap: { username?: string; displayName?: string; password?: string };
   database: {
@@ -68,6 +76,8 @@ interface Environment {
   GAME_COMMAND_ACK_TIMEOUT_MS: number;
   GAME_COMMAND_EXECUTION_TIMEOUT_MS: number;
   GAME_COMMAND_MAX_DISPATCH_ATTEMPTS: number;
+  GAME_COMMAND_PENDING_TIMEOUT_MS: number;
+  GAME_COMMAND_WORKER_INTERVAL_MS: number;
   DB_HOST: string;
   DB_PORT: number;
   DB_USERNAME: string;
@@ -93,6 +103,9 @@ interface Environment {
   AGENT_AUTH_TIMEOUT_MS: number;
   AGENT_HEARTBEAT_INTERVAL: string;
   AGENT_HEARTBEAT_TIMEOUT: string;
+  AGENT_MAX_IN_FLIGHT_COMMANDS: number;
+  AGENT_MESSAGE_RATE_LIMIT_COUNT: number;
+  AGENT_MESSAGE_RATE_LIMIT_WINDOW_MS: number;
   DISCORD_CLIENT_ID?: string;
   DISCORD_CLIENT_SECRET?: string;
   DISCORD_REDIRECT_URIS?: string;
@@ -151,6 +164,16 @@ const schema = Joi.object<Environment>({
     .min(1)
     .max(10)
     .default(3),
+  GAME_COMMAND_PENDING_TIMEOUT_MS: Joi.number()
+    .integer()
+    .min(1000)
+    .max(86400000)
+    .default(60000),
+  GAME_COMMAND_WORKER_INTERVAL_MS: Joi.number()
+    .integer()
+    .min(50)
+    .max(60000)
+    .default(500),
   DB_HOST: Joi.string().trim().required(),
   DB_PORT: Joi.number().integer().min(1).max(65535).default(5432),
   DB_USERNAME: Joi.string().trim().required(),
@@ -222,6 +245,21 @@ const schema = Joi.object<Environment>({
     .default(5000),
   AGENT_HEARTBEAT_INTERVAL: ttl('10s'),
   AGENT_HEARTBEAT_TIMEOUT: ttl('30s'),
+  AGENT_MAX_IN_FLIGHT_COMMANDS: Joi.number()
+    .integer()
+    .min(1)
+    .max(1000)
+    .default(32),
+  AGENT_MESSAGE_RATE_LIMIT_COUNT: Joi.number()
+    .integer()
+    .min(10)
+    .max(100000)
+    .default(200),
+  AGENT_MESSAGE_RATE_LIMIT_WINDOW_MS: Joi.number()
+    .integer()
+    .min(100)
+    .max(3600000)
+    .default(10000),
   DISCORD_CLIENT_ID: Joi.string().trim().allow('').max(128),
   DISCORD_CLIENT_SECRET: Joi.string().allow('').max(256),
   DISCORD_REDIRECT_URIS: Joi.string().allow('').max(4096),
@@ -293,6 +331,9 @@ export function validateEnvironment(
       authTimeoutMs: value.AGENT_AUTH_TIMEOUT_MS,
       heartbeatIntervalMs: agentInterval,
       heartbeatTimeoutMs: agentTimeout,
+      maxInFlightCommands: value.AGENT_MAX_IN_FLIGHT_COMMANDS,
+      messageRateLimitCount: value.AGENT_MESSAGE_RATE_LIMIT_COUNT,
+      messageRateLimitWindowMs: value.AGENT_MESSAGE_RATE_LIMIT_WINDOW_MS,
     },
     playerCharacters: { challengeTtl },
     playerGroups: { inviteTtl },
@@ -316,6 +357,8 @@ export function validateEnvironment(
       ackTimeoutMs: value.GAME_COMMAND_ACK_TIMEOUT_MS,
       executionTimeoutMs: value.GAME_COMMAND_EXECUTION_TIMEOUT_MS,
       maxDispatchAttempts: value.GAME_COMMAND_MAX_DISPATCH_ATTEMPTS,
+      pendingTimeoutMs: value.GAME_COMMAND_PENDING_TIMEOUT_MS,
+      workerIntervalMs: value.GAME_COMMAND_WORKER_INTERVAL_MS,
     },
     jwt: {
       accessSecret: value.JWT_ACCESS_SECRET || testAccessSecret,

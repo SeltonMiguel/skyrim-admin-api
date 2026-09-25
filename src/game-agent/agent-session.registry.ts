@@ -1,5 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { AgentClose, isRuntimeReady } from './agent-protocol.contracts.js';
+import type { CommandType } from '../game-bridge/command-contract.js';
+import { supportsCommand } from './agent-capabilities.js';
 import type {
   AgentCloseReason,
   AgentEnvelope,
@@ -96,6 +98,12 @@ export class AgentSessionRegistry {
   supports(gameServerId: string, capability: string): boolean {
     return !!this.active.get(gameServerId)?.capabilities.includes(capability);
   }
+  // Whether the ACTIVE session can execute this command type (protocol,
+  // type and, for mutations, the durable dedup journal).
+  supportsCommand(gameServerId: string, type: CommandType): boolean {
+    const session = this.active.get(gameServerId);
+    return !!session && supportsCommand(session.capabilities, type);
+  }
   // Delivers to exactly this ACTIVE session; never to an AUTHENTICATING one
   // and never redirected to a newer one. Not used by GameCommand dispatch
   // until 11.2.
@@ -141,6 +149,10 @@ export class AgentSessionRegistry {
     return this.everything()
       .filter((session) => session.credentialId === credentialId)
       .map((session) => this.snapshot(session));
+  }
+  // ACTIVE sessions only (the ones the worker may dispatch to).
+  activeSessions(): AgentSessionSnapshot[] {
+    return [...this.active.values()].map((session) => this.snapshot(session));
   }
   // ACTIVE and AUTHENTICATING, for shutdown.
   all(): AgentSessionSnapshot[] {

@@ -1,45 +1,26 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { randomUUID } from 'node:crypto';
 import { BridgeClock } from '../game-bridge/bridge-clock.js';
 import { GameConnectionService } from '../game-bridge/game-connection.service.js';
 import {
   AGENT_FUTURE_INBOUND_TYPES,
-  AGENT_PROTOCOL_VERSION,
   AgentProtocolError,
   heartbeatPayload,
   isInboundType,
+  outbound,
 } from './agent-protocol.contracts.js';
 import type {
-  AgentCloseReason,
   AgentEnvelope,
   AgentErrorCode,
   AgentOutboundType,
 } from './agent-protocol.contracts.js';
+import { AgentCommandAdapter } from './agent-command.adapter.js';
+import type { RouteOutcome } from './agent-command.adapter.js';
 import { AgentSessionRegistry } from './agent-session.registry.js';
 import type { AgentSessionSnapshot } from './agent-session.registry.js';
 
-export interface RouteOutcome {
-  reply?: AgentEnvelope<AgentOutboundType>;
-  close?: AgentCloseReason;
-}
-export function outbound(
-  type: AgentOutboundType,
-  gameServerId: string,
-  payload: Record<string, unknown>,
-  now: Date,
-): AgentEnvelope<AgentOutboundType> {
-  return {
-    protocolVersion: AGENT_PROTOCOL_VERSION,
-    type,
-    messageId: randomUUID(),
-    gameServerId,
-    occurredAt: now.toISOString(),
-    payload,
-  };
-}
+export type { RouteOutcome } from './agent-command.adapter.js';
 // Flows owned by later substeps: typed, answered, never executed here.
 const NOT_IMPLEMENTED = new Set([
-  'COMMAND_RESULT', // 11.2
   'SERVER_CONTROL_RESULT', // 11.3
   'DOMAIN_EVENT', // 11.4
 ]);
@@ -54,6 +35,7 @@ export class AgentMessageRouter {
   constructor(
     private readonly connections: GameConnectionService,
     private readonly sessions: AgentSessionRegistry,
+    private readonly commands: AgentCommandAdapter,
     private readonly clock: BridgeClock,
   ) {}
   async route(
@@ -78,6 +60,10 @@ export class AgentMessageRouter {
       return { close: 'PROTOCOL_ERROR' };
     }
     if (type === 'HEARTBEAT') return this.heartbeat(session, envelope);
+    if (type === 'COMMAND_ACK')
+      return this.commands.acknowledge(session, envelope);
+    if (type === 'COMMAND_RESULT')
+      return this.commands.result(session, envelope);
     if (type === 'ERROR') {
       this.logger.warn(`Agent reported an error [${ids}]`);
       return {};
