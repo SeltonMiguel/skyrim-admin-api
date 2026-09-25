@@ -699,3 +699,8 @@ mais de 256 KiB não lidos é derrubado. Nenhuma migration nova (vinte e cinco) 
 nenhuma variável de ambiente nova. Contrato do Admin Web:
 [Admin Web integration](docs/admin-web-integration.md); matriz de aceitação da
 Etapa 11 em [Integration architecture §25](docs/integration-architecture.md).
+
+A Subetapa 12.0 audita o backend para produção e define o plano da Etapa 12:
+[Hardening audit](docs/hardening-audit.md) (inventário de runtime, multi-instância,
+segurança, recuperação, findings P0–P3 e roadmap) e
+[Release readiness](docs/release-readiness.md) (checklist verificável de release).
