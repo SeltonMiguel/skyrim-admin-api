@@ -29,19 +29,63 @@ export function sendFrame(socket: Socket, frame: string): boolean {
 }
 
 // Authenticated sockets indexed by identity; one identity may hold many.
+// Player sockets are also indexed by the session that authenticated them
+// (its id only, never a token), so a revoked session closes exactly its
+// own sockets (12.1).
 @Injectable()
 export class RealtimeConnectionRegistry {
   private readonly sockets = new Map<string, Set<WebSocket>>();
-  add(key: string, socket: WebSocket): void {
+  private readonly sessions = new Map<string, Set<WebSocket>>();
+  private readonly owners = new Map<
+    WebSocket,
+    { key: string; session?: string }
+  >();
+  add(key: string, socket: WebSocket, session?: string): void {
     const set = this.sockets.get(key) ?? new Set<WebSocket>();
     set.add(socket);
     this.sockets.set(key, set);
+    this.owners.set(socket, { key, session });
+    if (session) {
+      const bySession = this.sessions.get(session) ?? new Set<WebSocket>();
+      bySession.add(socket);
+      this.sessions.set(session, bySession);
+    }
   }
+  // Idempotent: unknown or already removed sockets are ignored.
   remove(key: string, socket: WebSocket): void {
+    const owner = this.owners.get(socket);
+    if (owner && owner.key !== key) return;
+    this.owners.delete(socket);
     const set = this.sockets.get(key);
-    if (!set) return;
-    set.delete(socket);
-    if (!set.size) this.sockets.delete(key);
+    if (set) {
+      set.delete(socket);
+      if (!set.size) this.sockets.delete(key);
+    }
+    if (owner?.session) {
+      const bySession = this.sessions.get(owner.session);
+      bySession?.delete(socket);
+      if (bySession && !bySession.size) this.sessions.delete(owner.session);
+    }
+  }
+  // Unregisters, then closes, every socket of one Player session: nothing
+  // published afterwards reaches them, even before their close completes.
+  // Idempotent, tolerant of sockets already closing, and never touches
+  // another session of the same account. Returns how many were closed.
+  closePlayerSession(session: string, code: number, reason: string): number {
+    const sockets = [...(this.sessions.get(session) ?? [])];
+    for (const socket of sockets) {
+      const owner = this.owners.get(socket);
+      if (owner) this.remove(owner.key, socket);
+      try {
+        if (socket.readyState === socket.OPEN) socket.close(code, reason);
+      } catch {
+        socket.terminate();
+      }
+    }
+    return sockets.length;
+  }
+  sessionCount(session: string): number {
+    return this.sessions.get(session)?.size ?? 0;
   }
   count(key?: string): number {
     if (key !== undefined) return this.sockets.get(key)?.size ?? 0;

@@ -10,6 +10,7 @@ import {
   Res,
   UseGuards,
 } from '@nestjs/common';
+import { PlayerRateLimit } from '../player-auth/player-action-rate-limit.js';
 import {
   ApiAcceptedResponse,
   ApiBadRequestResponse,
@@ -98,6 +99,7 @@ export class PlayerCharacterQueryController {
     return reference;
   }
   @Post('profile-query')
+  @PlayerRateLimit('characterQueries')
   @HttpCode(202)
   @ApiPlayerQueryAccepted()
   @ApiOperation({ summary: 'CHARACTER_PROFILE_QUERY for an owned character.' })
@@ -111,6 +113,7 @@ export class PlayerCharacterQueryController {
     return this.accepted('CHARACTER_PROFILE_QUERY', route, key, auth, response);
   }
   @Post('skills-query')
+  @PlayerRateLimit('characterQueries')
   @HttpCode(202)
   @ApiPlayerQueryAccepted()
   @ApiOperation({ summary: 'CHARACTER_SKILLS_QUERY for an owned character.' })
@@ -126,6 +129,7 @@ export class PlayerCharacterQueryController {
   // Read-only: properties are the player's houses. No purchase, sale, grant
   // or revoke is exposed to players.
   @Post('properties-query')
+  @PlayerRateLimit('characterQueries')
   @HttpCode(202)
   @ApiPlayerQueryAccepted()
   @ApiOperation({
@@ -147,6 +151,7 @@ export class PlayerCharacterQueryController {
     );
   }
   @Post('holds-query')
+  @PlayerRateLimit('characterQueries')
   @HttpCode(202)
   @ApiPlayerQueryAccepted()
   @ApiOperation({ summary: 'CHARACTER_HOLDS_QUERY for an owned character.' })
@@ -162,6 +167,7 @@ export class PlayerCharacterQueryController {
   // Read-only: horses are presented as mounts. No give, revoke, purchase or
   // summon is exposed to players.
   @Post('horses-query')
+  @PlayerRateLimit('characterQueries')
   @HttpCode(202)
   @ApiPlayerQueryAccepted()
   @ApiOperation({

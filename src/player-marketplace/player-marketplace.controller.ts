@@ -10,6 +10,7 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
+import { PlayerRateLimit } from '../player-auth/player-action-rate-limit.js';
 import {
   ApiBadRequestResponse,
   ApiBearerAuth,
@@ -68,6 +69,7 @@ const IdempotencyHeader = () =>
 export class PlayerMarketplaceController {
   constructor(private readonly market: PlayerMarketplaceService) {}
   @Post()
+  @PlayerRateLimit('marketMutations')
   @HttpCode(201)
   @IdempotencyHeader()
   @ApiOperation({
@@ -98,6 +100,7 @@ export class PlayerMarketplaceController {
     return this.market.get(route.listingId);
   }
   @Post(':listingId/purchase')
+  @PlayerRateLimit('marketMutations')
   @HttpCode(201)
   @IdempotencyHeader()
   @ApiOperation({
@@ -120,6 +123,7 @@ export class PlayerMarketplaceController {
     );
   }
   @Post(':listingId/cancel')
+  @PlayerRateLimit('marketMutations')
   @HttpCode(200)
   @IdempotencyHeader()
   @ApiOperation({

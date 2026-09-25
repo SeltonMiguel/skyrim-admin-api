@@ -21,9 +21,12 @@ export class HttpExceptionFilter implements ExceptionFilter {
     const request = http.getRequest<Request>();
     const response = http.getResponse<Response>();
     const known = exception instanceof HttpException;
+    // Client errors raised by the body parser before Nest (oversized or
+    // malformed body) keep their 4xx status with a generic message.
+    const parser = known ? undefined : clientError(exception);
     const statusCode = known
       ? exception.getStatus()
-      : HttpStatus.INTERNAL_SERVER_ERROR;
+      : (parser ?? HttpStatus.INTERNAL_SERVER_ERROR);
     const body = known ? exception.getResponse() : undefined;
     const details = typeof body === 'object' && body !== null ? body : {};
     const error =
@@ -42,9 +45,11 @@ export class HttpExceptionFilter implements ExceptionFilter {
           ? details.message
           : known
             ? exception.message
-            : 'Internal server error';
+            : parser
+              ? (STATUS_CODES[parser] ?? 'Bad request')
+              : 'Internal server error';
 
-    if (!known) {
+    if (!known && !parser) {
       this.logger.error(
         `Unhandled exception [requestId=${this.context.requestId ?? 'unknown'}]`,
         exception instanceof Error ? exception.name : 'Unknown error',
@@ -52,6 +57,19 @@ export class HttpExceptionFilter implements ExceptionFilter {
     }
 
     if (response.headersSent) return;
+    // 429s carry the wait in seconds (never which limit was exhausted).
+    const retryAfter = known
+      ? (exception as { retryAfter?: unknown }).retryAfter
+      : undefined;
+    if (
+      statusCode === HttpStatus.TOO_MANY_REQUESTS &&
+      typeof retryAfter === 'number' &&
+      Number.isFinite(retryAfter)
+    )
+      response.setHeader(
+        'Retry-After',
+        String(Math.max(1, Math.ceil(retryAfter))),
+      );
     response.status(statusCode).json({
       statusCode,
       error,
@@ -61,4 +79,19 @@ export class HttpExceptionFilter implements ExceptionFilter {
       timestamp: new Date().toISOString(),
     });
   }
+}
+
+// http-errors raised by body-parser: `expose` marks a safe client error.
+function clientError(exception: unknown): number | undefined {
+  if (typeof exception !== 'object' || exception === null) return undefined;
+  const { status, expose } = exception as {
+    status?: unknown;
+    expose?: unknown;
+  };
+  return expose === true &&
+    typeof status === 'number' &&
+    status >= 400 &&
+    status < 500
+    ? status
+    : undefined;
 }

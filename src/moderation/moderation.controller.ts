@@ -27,7 +27,10 @@ import {
 import type { Response } from 'express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard.js';
 import { PermissionGuard } from '../rbac/permission.guard.js';
-import { RequirePermissions } from '../rbac/require-permissions.decorator.js';
+import {
+  PermissionsCheckedInService,
+  RequirePermissions,
+} from '../rbac/require-permissions.decorator.js';
 import { Permission as P } from '../rbac/permissions.js';
 import { CurrentStaff } from '../auth/decorators/current-staff.decorator.js';
 import type { AuthenticatedStaff } from '../auth/auth.types.js';
@@ -340,6 +343,8 @@ export class ModerationController {
 export class ModerationOperationController {
   constructor(private readonly operations: ModerationService) {}
   @Get(':commandId')
+  // Permission of the stored type, checked by the service (12.1).
+  @PermissionsCheckedInService()
   @ApiOperation({
     summary: 'Read a typed Moderation operation.',
     description:

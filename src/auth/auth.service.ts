@@ -1,6 +1,11 @@
 import { AuditService } from '../audit/audit.service.js';
-import { AuditAction, AuditResource } from '../audit/audit.types.js';
+import {
+  AuditAction,
+  AuditOutcome,
+  AuditResource,
+} from '../audit/audit.types.js';
 import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
 import { DataSource, EntityManager, IsNull } from 'typeorm';
 import { PasswordService } from './password.service.js';
@@ -11,6 +16,9 @@ import { RolePermission } from '../rbac/entities/role-permission.entity.js';
 import { publicStaff } from '../staff/staff.presenter.js';
 import type { LoginDto } from './dto/auth.dto.js';
 import type { AuthenticatedStaff } from './auth.types.js';
+import type { ApplicationConfig } from '../config/environment.js';
+import { SecurityLog } from '../common/security/security-log.js';
+import { StaffAuthThrottle } from './staff-auth-throttle.js';
 
 @Injectable()
 export class AuthService {
@@ -19,11 +27,33 @@ export class AuthService {
     private readonly passwords: PasswordService,
     private readonly tokens: TokenService,
     private readonly audit: AuditService,
-  ) {}
+    private readonly throttle: StaffAuthThrottle,
+    private readonly security: SecurityLog,
+    config: ConfigService<{ application: ApplicationConfig }, true>,
+  ) {
+    this.reuseGraceMs = config.get('application', {
+      infer: true,
+    }).security.refreshReuseGraceMs;
+  }
+  private readonly reuseGraceMs: number;
 
   async login(
     dto: LoginDto,
     metadata: { ipAddress?: string; userAgent?: string } = {},
+  ) {
+    // Throttled before any database or Argon2 work (12.1).
+    const release = this.throttle.beginLogin(metadata.ipAddress, dto.username);
+    try {
+      const result = await this.authenticateLogin(dto, metadata);
+      this.throttle.loginSucceeded(dto.username);
+      return result;
+    } finally {
+      release();
+    }
+  }
+  private async authenticateLogin(
+    dto: LoginDto,
+    metadata: { ipAddress?: string; userAgent?: string },
   ) {
     const user = await this.database
       .getRepository<StaffUser>('StaffUser')
@@ -71,9 +101,16 @@ export class AuthService {
     );
   }
 
-  async refresh(token: string) {
+  // Rotation with reuse detection (12.1). A refresh token that is validly
+  // signed for this session but is not its current one was issued by us and
+  // already rotated away: within the grace window after the last rotation it
+  // is a concurrent refresh that lost the race (401, session kept); after it,
+  // it is a replay and the session (only this one) is revoked and audited.
+  async refresh(token: string, ipAddress?: string) {
+    this.throttle.refreshAttempt(ipAddress);
     const claims = await this.tokens.verify(token, 'refresh');
-    return this.database.transaction(async (manager) => {
+    this.throttle.refreshSession(ipAddress, claims.sid);
+    const outcome = await this.database.transaction(async (manager) => {
       // All writers lock user before session, including disable and logout.
       const user = await this.lockUser(manager, claims.sub);
       if (!user || user.status !== StaffStatus.ACTIVE)
@@ -85,21 +122,51 @@ export class AuthService {
         .where('session.id = :sid AND session.staffUserId = :sub', claims)
         .setLock('pessimistic_write')
         .getOne();
-      if (
-        !this.sessionIsActive(session) ||
-        !this.tokens.matches(token, session.refreshTokenHash)
-      )
-        throw this.invalidSession();
+      if (!this.sessionIsActive(session)) throw this.invalidSession();
+      if (!this.tokens.matches(token, session.refreshTokenHash)) {
+        const now = Date.now();
+        if (
+          session.lastUsedAt &&
+          now - session.lastUsedAt.getTime() <= this.reuseGraceMs
+        )
+          return { kind: 'STALE' as const, sessionId: session.id };
+        session.revokedAt = new Date(now);
+        await sessions.save(session);
+        await this.audit.record(
+          {
+            actor: user,
+            action: AuditAction.AUTH_REFRESH_REUSE_DETECTED,
+            resourceType: AuditResource.STAFF_SESSION,
+            resourceId: session.id,
+            outcome: AuditOutcome.SUCCESS,
+            statusCode: 401,
+          },
+          manager,
+        );
+        return { kind: 'REUSED' as const, sessionId: session.id };
+      }
       const pair = await this.tokens.issue(
         user.id,
         session.id,
         session.expiresAt,
       );
       session.refreshTokenHash = this.tokens.hash(pair.refreshToken);
-      session.lastUsedAt = new Date();
+      // Same clock as the reuse grace check above.
+      session.lastUsedAt = new Date(Date.now());
       await sessions.save(session);
-      return { ...pair, staff: publicStaff(user) };
+      return {
+        kind: 'ROTATED' as const,
+        value: { ...pair, staff: publicStaff(user) },
+      };
     });
+    if (outcome.kind === 'ROTATED') return outcome.value;
+    this.security.warn(
+      outcome.kind === 'REUSED'
+        ? 'staff_refresh_reuse_revoked'
+        : 'staff_refresh_stale',
+      { sessionId: outcome.sessionId, ip: ipAddress ?? 'unknown' },
+    );
+    throw this.invalidSession();
   }
 
   async authenticate(token: string): Promise<AuthenticatedStaff> {

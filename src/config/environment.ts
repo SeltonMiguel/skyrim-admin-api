@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { parse } from 'dotenv';
 import Joi from 'joi';
+import { parseTrustProxy } from '../common/net/client-ip.js';
 
 export interface ApplicationConfig {
   nodeEnv: 'development' | 'test' | 'production';
@@ -73,6 +74,43 @@ export interface ApplicationConfig {
   };
   // VIP CHARACTER reward delivery worker (11.4).
   vipDelivery: { workerIntervalMs: number };
+  // Abuse controls and HTTP/WebSocket boundary (12.1). Limits are per process
+  // (single replica until 12.5); the defaults are a conservative baseline to
+  // be tuned by the load tests of 12.6.
+  security: {
+    // Raw TRUST_PROXY value, compiled by src/common/net/client-ip.ts.
+    trustProxy: string;
+    // Exact browser origins allowed by CORS and by the realtime upgrade.
+    corsOrigins: string[];
+    realtimeOrigins: string[];
+    swaggerEnabled: boolean;
+    hstsMaxAgeSeconds: number;
+    // A rotated refresh token presented within this window after the last
+    // rotation is a stale concurrent refresh (401, session kept); later it
+    // is a replay and the session is revoked. 0 = strict.
+    refreshReuseGraceMs: number;
+    staffLogin: {
+      windowMs: number;
+      perIp: number;
+      perUsername: number;
+      maxConcurrent: number;
+    };
+    staffRefresh: { windowMs: number; perIp: number; perSession: number };
+    realtime: {
+      maxConnections: number;
+      maxPendingConnections: number;
+      maxConnectionsPerIdentity: number;
+      connectsPerIpPerMinute: number;
+    };
+    agent: {
+      maxPendingConnections: number;
+      maxConcurrentAuth: number;
+      connectsPerIpPerMinute: number;
+      authFailuresPerIpPerMinute: number;
+    };
+    // Per authenticated player, per minute.
+    playerLimits: { characterQueries: number; marketMutations: number };
+  };
   bootstrap: { username?: string; displayName?: string; password?: string };
   database: {
     host: string;
@@ -133,6 +171,29 @@ interface Environment {
   BOOTSTRAP_COORDINATOR_USERNAME?: string;
   BOOTSTRAP_COORDINATOR_DISPLAY_NAME?: string;
   BOOTSTRAP_COORDINATOR_PASSWORD?: string;
+  TRUST_PROXY: string;
+  CORS_ORIGINS?: string;
+  REALTIME_ALLOWED_ORIGINS?: string;
+  SWAGGER_ENABLED?: boolean;
+  SECURITY_HSTS_MAX_AGE_SECONDS: number;
+  AUTH_REFRESH_REUSE_GRACE_MS: number;
+  STAFF_LOGIN_RATE_LIMIT_WINDOW: string;
+  STAFF_LOGIN_RATE_LIMIT_PER_IP: number;
+  STAFF_LOGIN_RATE_LIMIT_PER_USERNAME: number;
+  STAFF_LOGIN_MAX_CONCURRENT: number;
+  STAFF_REFRESH_RATE_LIMIT_WINDOW: string;
+  STAFF_REFRESH_RATE_LIMIT_PER_IP: number;
+  STAFF_REFRESH_RATE_LIMIT_PER_SESSION: number;
+  REALTIME_MAX_CONNECTIONS: number;
+  REALTIME_MAX_PENDING_CONNECTIONS: number;
+  REALTIME_MAX_CONNECTIONS_PER_IDENTITY: number;
+  REALTIME_CONNECT_RATE_LIMIT_PER_MINUTE: number;
+  AGENT_MAX_PENDING_CONNECTIONS: number;
+  AGENT_MAX_CONCURRENT_AUTH: number;
+  AGENT_CONNECT_RATE_LIMIT_PER_MINUTE: number;
+  AGENT_AUTH_FAILURE_LIMIT_PER_MINUTE: number;
+  PLAYER_CHARACTER_QUERY_RATE_LIMIT_PER_MINUTE: number;
+  PLAYER_MARKET_MUTATION_RATE_LIMIT_PER_MINUTE: number;
 }
 
 // Ephemeral per-process secrets are allowed only by the test schema.
@@ -155,6 +216,28 @@ const ttl = (fallback: string) =>
   Joi.string()
     .pattern(/^[1-9][0-9]*(s|m|h|d)$/)
     .default(fallback);
+const count = (min: number, max: number, fallback: number) =>
+  Joi.number().integer().min(min).max(max).default(fallback);
+const list = (raw?: string) =>
+  (raw ?? '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+// Exact origins only (scheme://host[:port]); never a wildcard or a path.
+function origins(raw: string | undefined, name: string): string[] {
+  const values = list(raw);
+  for (const value of values) {
+    let url: URL;
+    try {
+      url = new URL(value);
+    } catch {
+      throw new Error(`Invalid environment variables: ${name}`);
+    }
+    if (url.origin !== value)
+      throw new Error(`Invalid environment variables: ${name}`);
+  }
+  return values;
+}
 function ttlSeconds(ttl: string): number {
   const units: Record<string, number> = { s: 1, m: 60, h: 3600, d: 86400 };
   return Number(ttl.slice(0, -1)) * units[ttl.slice(-1)];
@@ -317,6 +400,31 @@ const schema = Joi.object<Environment>({
   BOOTSTRAP_COORDINATOR_USERNAME: Joi.string().allow(''),
   BOOTSTRAP_COORDINATOR_DISPLAY_NAME: Joi.string().allow(''),
   BOOTSTRAP_COORDINATOR_PASSWORD: Joi.string().allow(''),
+  // Proxy trust is explicit: false (default), a hop count, or a
+  // comma-separated list of loopback/linklocal/uniquelocal, IPs and CIDRs.
+  TRUST_PROXY: Joi.string().trim().max(1024).default('false'),
+  CORS_ORIGINS: Joi.string().allow('').max(4096),
+  REALTIME_ALLOWED_ORIGINS: Joi.string().allow('').max(4096),
+  SWAGGER_ENABLED: Joi.boolean(),
+  SECURITY_HSTS_MAX_AGE_SECONDS: count(0, 63072000, 0),
+  AUTH_REFRESH_REUSE_GRACE_MS: count(0, 60000, 10000),
+  STAFF_LOGIN_RATE_LIMIT_WINDOW: ttl('15m'),
+  STAFF_LOGIN_RATE_LIMIT_PER_IP: count(1, 10000, 30),
+  STAFF_LOGIN_RATE_LIMIT_PER_USERNAME: count(1, 10000, 10),
+  STAFF_LOGIN_MAX_CONCURRENT: count(1, 64, 4),
+  STAFF_REFRESH_RATE_LIMIT_WINDOW: ttl('1m'),
+  STAFF_REFRESH_RATE_LIMIT_PER_IP: count(1, 100000, 60),
+  STAFF_REFRESH_RATE_LIMIT_PER_SESSION: count(1, 10000, 10),
+  REALTIME_MAX_CONNECTIONS: count(1, 1000000, 10000),
+  REALTIME_MAX_PENDING_CONNECTIONS: count(1, 100000, 500),
+  REALTIME_MAX_CONNECTIONS_PER_IDENTITY: count(1, 100, 5),
+  REALTIME_CONNECT_RATE_LIMIT_PER_MINUTE: count(1, 100000, 60),
+  AGENT_MAX_PENDING_CONNECTIONS: count(1, 10000, 32),
+  AGENT_MAX_CONCURRENT_AUTH: count(1, 1000, 8),
+  AGENT_CONNECT_RATE_LIMIT_PER_MINUTE: count(1, 100000, 30),
+  AGENT_AUTH_FAILURE_LIMIT_PER_MINUTE: count(1, 10000, 10),
+  PLAYER_CHARACTER_QUERY_RATE_LIMIT_PER_MINUTE: count(1, 10000, 30),
+  PLAYER_MARKET_MUTATION_RATE_LIMIT_PER_MINUTE: count(1, 10000, 30),
 });
 
 export function validateEnvironment(
@@ -384,7 +492,57 @@ export function validateEnvironment(
     throw new Error(
       'Invalid environment variables: SERVER_CONTROL_RESULT_TIMEOUT_MS, SERVER_CONTROL_DELIVERY_WINDOW_MS',
     );
+  try {
+    parseTrustProxy(value.TRUST_PROXY);
+  } catch {
+    throw new Error('Invalid environment variables: TRUST_PROXY');
+  }
+  const corsOrigins = origins(value.CORS_ORIGINS, 'CORS_ORIGINS');
+  const staffLoginWindow = ttlSeconds(value.STAFF_LOGIN_RATE_LIMIT_WINDOW);
+  const staffRefreshWindow = ttlSeconds(value.STAFF_REFRESH_RATE_LIMIT_WINDOW);
+  if (staffLoginWindow > 86400 || staffRefreshWindow > 3600)
+    throw new Error(
+      'Invalid environment variables: STAFF_LOGIN_RATE_LIMIT_WINDOW, STAFF_REFRESH_RATE_LIMIT_WINDOW',
+    );
   return {
+    security: {
+      trustProxy: value.TRUST_PROXY,
+      corsOrigins,
+      realtimeOrigins:
+        value.REALTIME_ALLOWED_ORIGINS === undefined
+          ? corsOrigins
+          : origins(value.REALTIME_ALLOWED_ORIGINS, 'REALTIME_ALLOWED_ORIGINS'),
+      swaggerEnabled: value.SWAGGER_ENABLED ?? value.NODE_ENV !== 'production',
+      hstsMaxAgeSeconds: value.SECURITY_HSTS_MAX_AGE_SECONDS,
+      refreshReuseGraceMs: value.AUTH_REFRESH_REUSE_GRACE_MS,
+      staffLogin: {
+        windowMs: staffLoginWindow * 1000,
+        perIp: value.STAFF_LOGIN_RATE_LIMIT_PER_IP,
+        perUsername: value.STAFF_LOGIN_RATE_LIMIT_PER_USERNAME,
+        maxConcurrent: value.STAFF_LOGIN_MAX_CONCURRENT,
+      },
+      staffRefresh: {
+        windowMs: staffRefreshWindow * 1000,
+        perIp: value.STAFF_REFRESH_RATE_LIMIT_PER_IP,
+        perSession: value.STAFF_REFRESH_RATE_LIMIT_PER_SESSION,
+      },
+      realtime: {
+        maxConnections: value.REALTIME_MAX_CONNECTIONS,
+        maxPendingConnections: value.REALTIME_MAX_PENDING_CONNECTIONS,
+        maxConnectionsPerIdentity: value.REALTIME_MAX_CONNECTIONS_PER_IDENTITY,
+        connectsPerIpPerMinute: value.REALTIME_CONNECT_RATE_LIMIT_PER_MINUTE,
+      },
+      agent: {
+        maxPendingConnections: value.AGENT_MAX_PENDING_CONNECTIONS,
+        maxConcurrentAuth: value.AGENT_MAX_CONCURRENT_AUTH,
+        connectsPerIpPerMinute: value.AGENT_CONNECT_RATE_LIMIT_PER_MINUTE,
+        authFailuresPerIpPerMinute: value.AGENT_AUTH_FAILURE_LIMIT_PER_MINUTE,
+      },
+      playerLimits: {
+        characterQueries: value.PLAYER_CHARACTER_QUERY_RATE_LIMIT_PER_MINUTE,
+        marketMutations: value.PLAYER_MARKET_MUTATION_RATE_LIMIT_PER_MINUTE,
+      },
+    },
     agent: {
       authTimeoutMs: value.AGENT_AUTH_TIMEOUT_MS,
       heartbeatIntervalMs: agentInterval,

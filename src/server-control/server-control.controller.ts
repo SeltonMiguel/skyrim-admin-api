@@ -28,7 +28,10 @@ import {
 import type { Response } from 'express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard.js';
 import { PermissionGuard } from '../rbac/permission.guard.js';
-import { RequirePermissions } from '../rbac/require-permissions.decorator.js';
+import {
+  PermissionsCheckedInService,
+  RequirePermissions,
+} from '../rbac/require-permissions.decorator.js';
 import { Permission as P } from '../rbac/permissions.js';
 import { CurrentStaff } from '../auth/decorators/current-staff.decorator.js';
 import type { AuthenticatedStaff } from '../auth/auth.types.js';
@@ -165,6 +168,8 @@ export class ServerControlController {
 export class ServerControlOperationController {
   constructor(private readonly operations: ServerControlService) {}
   @Get(':operationId')
+  // Permission of the stored type, checked by the service (12.1).
+  @PermissionsCheckedInService()
   @ApiOperation({
     summary: 'Read a Server Control operation.',
     description:
@@ -189,6 +194,8 @@ export class ServerControlOperationController {
 export class ServerControlOperationListController {
   constructor(private readonly operations: ServerControlService) {}
   @Get()
+  // Readable types filtered by the service (12.1).
+  @PermissionsCheckedInService()
   @ApiOperation({
     summary: 'List the Server Control operations of a server.',
     description:

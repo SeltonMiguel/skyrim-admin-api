@@ -19,6 +19,11 @@ import type {
   GameConnection,
 } from '../game-bridge/entities/game-connection.entity.js';
 import { WebSocketUpgradeRouter } from '../websocket/websocket-upgrade.router.js';
+import { rejectUpgrade } from '../websocket/reject-upgrade.js';
+import { ClientAddress } from '../common/net/client-address.service.js';
+import { ConcurrencyLimiter } from '../common/rate-limit/concurrency-limiter.js';
+import { RateLimiter } from '../common/rate-limit/rate-limiter.js';
+import { SecurityLog } from '../common/security/security-log.js';
 import { AgentAuthError, AgentAuthService } from './agent-auth.service.js';
 import { AgentMessageRouter } from './agent-message.router.js';
 import {
@@ -52,6 +57,9 @@ export class AgentGateway
 {
   private readonly logger = new Logger(AgentGateway.name);
   private readonly config: ApplicationConfig['agent'];
+  private readonly limits: ApplicationConfig['security']['agent'];
+  // Sockets that have not completed HELLO yet (bounded).
+  private pending = 0;
   private wss?: WebSocketServer;
   private sweep?: ReturnType<typeof setInterval>;
   private stopping = false;
@@ -66,8 +74,14 @@ export class AgentGateway
     private readonly clock: BridgeClock,
     config: ConfigService<{ application: ApplicationConfig }, true>,
     private readonly status: GameServerStatusNotifier,
+    private readonly addresses: ClientAddress,
+    private readonly limiter: RateLimiter,
+    private readonly concurrency: ConcurrencyLimiter,
+    private readonly security: SecurityLog,
   ) {
-    this.config = config.get('application', { infer: true }).agent;
+    const application = config.get('application', { infer: true });
+    this.config = application.agent;
+    this.limits = application.security.agent;
   }
   onModuleInit(): void {
     // ws closes frames above the limit with 1009 before any JSON parse.
@@ -131,15 +145,53 @@ export class AgentGateway
     }
     return expired.length;
   }
+  // Admission before any WebSocket state (12.1, per process). The Host
+  // Agent is headless: Origin is not a security signal and is ignored; the
+  // credential stays the authority. Limits: connection attempts per client
+  // IP, a cool-down after repeated HELLO failures from that IP, and a cap on
+  // sockets that have not completed HELLO.
   private readonly upgrade = (
     request: IncomingMessage,
     socket: Duplex,
     head: Buffer,
   ) => {
-    this.wss!.handleUpgrade(request, socket, head, (ws) => this.connect(ws));
+    const ip = this.addresses.of(request);
+    const failures = this.limiter.check('agent-auth-failure', ip, {
+      limit: this.limits.authFailuresPerIpPerMinute,
+      windowMs: 60_000,
+    });
+    if (!failures.allowed) {
+      this.security.warn('agent_hello_blocked', { ip, reason: 'failures' });
+      return rejectUpgrade(socket, 429, failures.retryAfterSeconds);
+    }
+    const attempt = this.limiter.consume('agent-connect', ip, {
+      limit: this.limits.connectsPerIpPerMinute,
+      windowMs: 60_000,
+    });
+    if (!attempt.allowed) {
+      this.security.warn('agent_hello_blocked', { ip, reason: 'rate' });
+      return rejectUpgrade(socket, 429, attempt.retryAfterSeconds);
+    }
+    if (this.pending >= this.limits.maxPendingConnections) {
+      this.security.warn('agent_capacity_refused', {
+        ip,
+        pending: this.pending,
+      });
+      return rejectUpgrade(socket, 503, 1);
+    }
+    this.wss!.handleUpgrade(request, socket, head, (ws) =>
+      this.connect(ws, ip),
+    );
   };
-  private connect(ws: WebSocket): void {
+  private connect(ws: WebSocket, ip: string): void {
     let state: SocketState = 'AWAITING_HELLO';
+    let counted = true;
+    this.pending++;
+    const settle = () => {
+      if (!counted) return;
+      counted = false;
+      this.pending--;
+    };
     let session: AgentSessionSnapshot | undefined;
     let queue = Promise.resolve();
     // Authenticated frames per window (in memory, per session).
@@ -171,6 +223,18 @@ export class AgentGateway
         return this.rejectFrame(error, close);
       }
       const gameServerId = envelope.gameServerId;
+      // Bounded verification work (hash + locking transaction) at once.
+      const slot = this.concurrency.tryAcquire(
+        'agent-hello',
+        this.limits.maxConcurrentAuth,
+      );
+      if (!slot) {
+        this.security.warn('agent_hello_busy', {
+          ip,
+          max: this.limits.maxConcurrentAuth,
+        });
+        return close('AUTH_BUSY');
+      }
       // A) + B) + C): verified and persisted in one transaction. Nothing is
       // published in memory, so a rollback leaves no registry entry and the
       // previous session (if any) is untouched.
@@ -183,7 +247,14 @@ export class AgentGateway
             ? `Agent authentication rejected [gameServerId=${gameServerId} credentialId=${payload.credentialId} reason=${error.reason}]`
             : `Agent authentication failed [gameServerId=${gameServerId}]`,
         );
+        if (error instanceof AgentAuthError)
+          this.limiter.consume('agent-auth-failure', ip, {
+            limit: this.limits.authFailuresPerIpPerMinute,
+            windowMs: 60_000,
+          });
         return close('UNAUTHORIZED');
+      } finally {
+        slot();
       }
       const candidate: AgentSessionSnapshot = {
         connectionId: connection.id,
@@ -215,6 +286,7 @@ export class AgentGateway
         return;
       }
       state = 'AUTHENTICATED';
+      settle();
       // Staff wake-up: connected, or a supersede of the previous session.
       void this.status.changed(gameServerId);
       const now = this.clock.now();
@@ -295,6 +367,7 @@ export class AgentGateway
         });
     });
     ws.on('close', (code: number) => {
+      settle();
       clearTimeout(timeout);
       const current = session;
       session = undefined;

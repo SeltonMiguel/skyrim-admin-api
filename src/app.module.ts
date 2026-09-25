@@ -24,6 +24,7 @@ import { AdminQueriesModule } from './admin-queries/admin-queries.module.js';
 import { GameBridgeModule } from './game-bridge/game-bridge.module.js';
 import { AuditHttpModule } from './audit/audit-http.module.js';
 import { AuthModule } from './auth/auth.module.js';
+import { RbacModule } from './rbac/rbac.module.js';
 import { StaffModule } from './staff/staff.module.js';
 import { Module } from '@nestjs/common';
 import { CommonModule } from './common/common.module.js';
@@ -38,6 +39,7 @@ import { HealthModule } from './health/health.module.js';
     DatabaseModule,
     HealthModule,
     AuthModule,
+    RbacModule,
     StaffModule,
     AuditHttpModule,
     GameBridgeModule,

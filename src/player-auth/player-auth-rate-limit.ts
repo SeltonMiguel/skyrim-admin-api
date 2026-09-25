@@ -8,42 +8,37 @@ import {
 import { ConfigService } from '@nestjs/config';
 import type { Request, Response } from 'express';
 import type { ApplicationConfig } from '../config/environment.js';
+import { RateLimiter } from '../common/rate-limit/rate-limiter.js';
 
 export const RATE_LIMIT_WINDOW_MS = 60_000;
-const MAX_TRACKED_KEYS = 10_000;
+const SCOPE = 'player-auth';
 
-// Baseline, per-process fixed window keyed by route and client IP. It is not
-// shared across instances; distributed limiting is hardened in Etapa 12.
+// Fixed window per route and client IP (request.ip, resolved by the
+// TRUST_PROXY policy, so X-Forwarded-For counts only through a trusted
+// proxy). Backed by the shared RateLimiter (per process until 12.5).
 @Injectable()
 export class PlayerAuthRateLimiter {
   readonly limit: number;
-  private readonly windows = new Map<
-    string,
-    { start: number; count: number }
-  >();
-  constructor(config: ConfigService<{ application: ApplicationConfig }, true>) {
+  constructor(
+    private readonly limiter: RateLimiter,
+    config: ConfigService<{ application: ApplicationConfig }, true>,
+  ) {
     this.limit = config.get('application', {
       infer: true,
     }).playerAuth.rateLimitPerMinute;
   }
   // Returns seconds to wait when the limit is exceeded, otherwise null.
   consume(key: string, now = Date.now()): number | null {
-    if (this.windows.size > MAX_TRACKED_KEYS)
-      for (const [tracked, window] of this.windows)
-        if (now - window.start >= RATE_LIMIT_WINDOW_MS)
-          this.windows.delete(tracked);
-    const window = this.windows.get(key);
-    if (!window || now - window.start >= RATE_LIMIT_WINDOW_MS) {
-      this.windows.set(key, { start: now, count: 1 });
-      return null;
-    }
-    if (window.count >= this.limit)
-      return Math.ceil((window.start + RATE_LIMIT_WINDOW_MS - now) / 1000);
-    window.count++;
-    return null;
+    const decision = this.limiter.consume(
+      SCOPE,
+      key,
+      { limit: this.limit, windowMs: RATE_LIMIT_WINDOW_MS },
+      now,
+    );
+    return decision.allowed ? null : decision.retryAfterSeconds;
   }
   reset(): void {
-    this.windows.clear();
+    this.limiter.reset(SCOPE);
   }
 }
 @Injectable()

@@ -52,8 +52,8 @@ export class AuthController {
   @HttpCode(200)
   @Header('Cache-Control', 'no-store')
   @ApiOkResponse({ type: AuthResponseDto })
-  refresh(@Body() dto: RefreshDto) {
-    return this.auth.refresh(dto.refreshToken);
+  refresh(@Body() dto: RefreshDto, @Req() request: Request) {
+    return this.auth.refresh(dto.refreshToken, request.ip);
   }
 
   @Post('logout')

@@ -11,6 +11,7 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
+import { PlayerRateLimit } from '../player-auth/player-action-rate-limit.js';
 import {
   ApiBadRequestResponse,
   ApiBearerAuth,
@@ -66,6 +67,7 @@ const IdempotencyHeader = () =>
 export class PlayerTradeController {
   constructor(private readonly trades: PlayerTradeService) {}
   @Post()
+  @PlayerRateLimit('marketMutations')
   @HttpCode(201)
   @IdempotencyHeader()
   @ApiOperation({

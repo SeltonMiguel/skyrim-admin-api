@@ -16,11 +16,16 @@ import { WebSocketUpgradeRouter } from '../websocket/websocket-upgrade.router.js
 import { AuthService } from '../auth/auth.service.js';
 import { PlayerAuthService } from '../player-auth/player-auth.service.js';
 import { RealtimeEventBus } from '../realtime-events/realtime-event-bus.js';
+import { RealtimeSessionControl } from '../realtime-events/realtime-session-control.js';
 import type {
   RealtimeEnvelope,
   RealtimeRecipients,
 } from '../realtime-events/realtime-event-bus.js';
 import type { Permission } from '../rbac/permissions.js';
+import { ClientAddress } from '../common/net/client-address.service.js';
+import { RateLimiter } from '../common/rate-limit/rate-limiter.js';
+import { SecurityLog } from '../common/security/security-log.js';
+import { rejectUpgrade } from '../websocket/reject-upgrade.js';
 import {
   connectionKey,
   RealtimeConnectionRegistry,
@@ -30,12 +35,21 @@ import type { RealtimeSurface } from './realtime-connection.registry.js';
 
 export const REALTIME_PATH = '/api/v1/realtime';
 export const MAX_REALTIME_FRAME_BYTES = 16 * 1024;
+// Longer than any Player access token (PLAYER_JWT_ACCESS_TTL ≤ 1 h).
+const REVOKED_TRACK_MS = 60 * 60 * 1000;
+const MAX_REVOKED_TRACKED = 10_000;
 // Application close codes (4000–4999).
 export const RealtimeClose = {
   AUTH_TIMEOUT: 4000,
   UNAUTHORIZED: 4001,
+  // 12.1: the Player session behind the socket was revoked by the backend
+  // (logout, refresh reuse). Same code as UNAUTHORIZED, distinct reason.
+  SESSION_REVOKED: 4001,
   TOKEN_EXPIRED: 4002,
   PROTOCOL_ERROR: 4003,
+  // 12.1: the identity already holds REALTIME_MAX_CONNECTIONS_PER_IDENTITY
+  // sockets; the new one is refused (existing ones are kept).
+  CONNECTION_LIMIT: 4004,
   SHUTDOWN: 1001,
 } as const;
 
@@ -49,6 +63,11 @@ export class RealtimeGateway
   implements OnModuleInit, OnApplicationBootstrap, OnModuleDestroy
 {
   private readonly authTimeoutMs: number;
+  private readonly limits: ApplicationConfig['security']['realtime'];
+  private readonly origins: readonly string[];
+  private readonly production: boolean;
+  // Sockets that have not authenticated yet (bounded).
+  private pending = 0;
   private wss?: WebSocketServer;
   private unsubscribe?: () => void;
   // Access token of each authenticated Staff socket, kept only in memory to
@@ -56,6 +75,10 @@ export class RealtimeGateway
   private readonly staffTokens = new Map<WebSocket, string>();
   // One in-flight re-check per socket, shared by concurrent deliveries.
   private readonly checks = new Map<WebSocket, Promise<Permission[] | null>>();
+  // Player sessions revoked recently (bounded): an AUTH verified just before
+  // the revocation committed is refused when it completes after it.
+  private readonly revoked = new Map<string, number>();
+  private unsubscribeSessions?: () => void;
   constructor(
     private readonly upgrades: WebSocketUpgradeRouter,
     private readonly bus: RealtimeEventBus,
@@ -63,10 +86,16 @@ export class RealtimeGateway
     private readonly players: PlayerAuthService,
     private readonly staff: AuthService,
     config: ConfigService<{ application: ApplicationConfig }, true>,
+    private readonly addresses: ClientAddress,
+    private readonly limiter: RateLimiter,
+    private readonly security: SecurityLog,
+    private readonly sessionControl: RealtimeSessionControl,
   ) {
-    this.authTimeoutMs = config.get('application', {
-      infer: true,
-    }).realtime.authTimeoutMs;
+    const application = config.get('application', { infer: true });
+    this.authTimeoutMs = application.realtime.authTimeoutMs;
+    this.limits = application.security.realtime;
+    this.origins = application.security.realtimeOrigins;
+    this.production = application.nodeEnv === 'production';
   }
   // The upgrade router owns path matching (exact path, no query string).
   onModuleInit(): void {
@@ -80,9 +109,36 @@ export class RealtimeGateway
     this.unsubscribe = this.bus.subscribe((envelope, recipients) =>
       this.deliver(envelope, recipients),
     );
+    this.unsubscribeSessions = this.sessionControl.subscribe((sessionId) =>
+      this.revokeSession(sessionId),
+    );
+  }
+  // After the revocation committed: close exactly this session's sockets.
+  private revokeSession(sessionId: string): void {
+    const now = Date.now();
+    if (this.revoked.size >= MAX_REVOKED_TRACKED)
+      for (const [id, at] of this.revoked)
+        if (
+          now - at > REVOKED_TRACK_MS ||
+          this.revoked.size >= MAX_REVOKED_TRACKED
+        )
+          this.revoked.delete(id);
+    this.revoked.set(sessionId, now);
+    const closed = this.registry.closePlayerSession(
+      sessionId,
+      RealtimeClose.SESSION_REVOKED,
+      'SESSION_REVOKED',
+    );
+    if (closed)
+      this.security.warn('realtime_session_revoked', { sessionId, closed });
+  }
+  private recentlyRevoked(sessionId: string): boolean {
+    const at = this.revoked.get(sessionId);
+    return at !== undefined && Date.now() - at <= REVOKED_TRACK_MS;
   }
   onModuleDestroy(): void {
     this.unsubscribe?.();
+    this.unsubscribeSessions?.();
     for (const socket of this.wss?.clients ?? [])
       socket.close(RealtimeClose.SHUTDOWN, 'SHUTDOWN');
     this.wss?.close();
@@ -124,18 +180,62 @@ export class RealtimeGateway
     this.checks.set(socket, check);
     return check;
   }
+  // Admission before any WebSocket state (12.1, per process): browser
+  // Origin allowlist, connection attempts per client IP (so AUTH floods,
+  // one attempt per socket, are bounded too), unauthenticated and total
+  // socket caps.
   private readonly upgrade = (
     request: IncomingMessage,
     socket: Duplex,
     head: Buffer,
   ) => {
+    const ip = this.addresses.of(request);
+    if (!this.originAllowed(request.headers.origin)) {
+      this.security.warn('realtime_origin_refused', { ip });
+      return rejectUpgrade(socket, 403);
+    }
+    const attempt = this.limiter.consume('realtime-connect', ip, {
+      limit: this.limits.connectsPerIpPerMinute,
+      windowMs: 60_000,
+    });
+    if (!attempt.allowed) {
+      this.security.warn('realtime_connect_throttled', { ip });
+      return rejectUpgrade(socket, 429, attempt.retryAfterSeconds);
+    }
+    if (
+      this.pending >= this.limits.maxPendingConnections ||
+      this.pending + this.registry.count() >= this.limits.maxConnections
+    ) {
+      this.security.warn('realtime_capacity_refused', {
+        ip,
+        pending: this.pending,
+        connected: this.registry.count(),
+      });
+      return rejectUpgrade(socket, 503, 1);
+    }
     this.wss!.handleUpgrade(request, socket, head, (ws) => this.connect(ws));
   };
+  // A request without Origin is not a browser (Electron main process, native
+  // client) and is judged by its token alone. A browser Origin must be in
+  // REALTIME_ALLOWED_ORIGINS; with no allowlist, any browser Origin is
+  // accepted only outside production.
+  private originAllowed(origin: string | undefined): boolean {
+    if (origin === undefined) return true;
+    if (this.origins.length) return this.origins.includes(origin);
+    return !this.production;
+  }
   private connect(ws: WebSocket): void {
     let state: 'AUTHENTICATING' | 'VERIFYING' | 'AUTHENTICATED' =
       'AUTHENTICATING';
     let key: string | undefined;
     let expiry: ReturnType<typeof setTimeout> | undefined;
+    let counted = true;
+    this.pending++;
+    const settle = () => {
+      if (!counted) return;
+      counted = false;
+      this.pending--;
+    };
     const timeout = setTimeout(
       () => ws.close(RealtimeClose.AUTH_TIMEOUT, 'AUTH_TIMEOUT'),
       this.authTimeoutMs,
@@ -159,10 +259,28 @@ export class RealtimeGateway
           return;
         }
         clearTimeout(timeout);
+        settle();
+        const identityKey = connectionKey(frame.surface, identity.id);
+        if (
+          this.registry.count(identityKey) >=
+          this.limits.maxConnectionsPerIdentity
+        ) {
+          this.security.warn('realtime_identity_limit', {
+            surface: frame.surface,
+            id: identity.id,
+            max: this.limits.maxConnectionsPerIdentity,
+          });
+          ws.close(RealtimeClose.CONNECTION_LIMIT, 'CONNECTION_LIMIT');
+          return;
+        }
+        if (identity.sessionId && this.recentlyRevoked(identity.sessionId)) {
+          ws.close(RealtimeClose.SESSION_REVOKED, 'SESSION_REVOKED');
+          return;
+        }
         state = 'AUTHENTICATED';
-        key = connectionKey(frame.surface, identity.id);
+        key = identityKey;
         if (frame.surface === 'STAFF') this.staffTokens.set(ws, frame.token);
-        this.registry.add(key, ws);
+        this.registry.add(key, ws, identity.sessionId);
         expiry = setTimeout(
           () => ws.close(RealtimeClose.TOKEN_EXPIRED, 'TOKEN_EXPIRED'),
           Math.max(0, identity.expiresAt.getTime() - Date.now()),
@@ -177,6 +295,7 @@ export class RealtimeGateway
       });
     });
     ws.on('close', () => {
+      settle();
       clearTimeout(timeout);
       if (expiry) clearTimeout(expiry);
       if (key) this.registry.remove(key, ws);
@@ -189,15 +308,18 @@ export class RealtimeGateway
   private async identify(
     surface: RealtimeSurface,
     token: string,
-  ): Promise<{ id: string; expiresAt: Date } | null> {
+  ): Promise<{ id: string; sessionId?: string; expiresAt: Date } | null> {
     try {
-      const id =
-        surface === 'PLAYER'
-          ? (await this.players.authenticate(token)).player.id
-          : (await this.staff.authenticate(token)).user.id;
+      let id: string;
+      let sessionId: string | undefined;
+      if (surface === 'PLAYER') {
+        const auth = await this.players.authenticate(token);
+        id = auth.player.id;
+        sessionId = auth.sessionId;
+      } else id = (await this.staff.authenticate(token)).user.id;
       const exp = decodeJwt(token).exp;
       if (typeof exp !== 'number') return null;
-      return { id, expiresAt: new Date(exp * 1000) };
+      return { id, sessionId, expiresAt: new Date(exp * 1000) };
     } catch {
       return null;
     }

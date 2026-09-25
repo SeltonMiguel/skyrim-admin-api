@@ -83,6 +83,9 @@ export enum AuditAction {
   STAFF_STATUS_CHANGE = 'STAFF_STATUS_CHANGE',
   AUTH_LOGIN = 'AUTH_LOGIN',
   AUTH_LOGOUT = 'AUTH_LOGOUT',
+  // 12.1: a rotated refresh token was replayed; the session was revoked.
+  AUTH_REFRESH_REUSE_DETECTED = 'AUTH_REFRESH_REUSE_DETECTED',
+  PLAYER_AUTH_REFRESH_REUSE_DETECTED = 'PLAYER_AUTH_REFRESH_REUSE_DETECTED',
   COORDINATOR_BOOTSTRAP = 'COORDINATOR_BOOTSTRAP',
 }
 export enum AuditOutcome {
@@ -107,6 +110,7 @@ export enum AuditResource {
   CHARACTER = 'CHARACTER',
   STAFF_USER = 'STAFF_USER',
   STAFF_SESSION = 'STAFF_SESSION',
+  PLAYER_SESSION = 'PLAYER_SESSION',
 }
 export interface AuditActor {
   id: string;

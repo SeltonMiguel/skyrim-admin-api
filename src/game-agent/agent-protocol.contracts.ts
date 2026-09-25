@@ -95,6 +95,8 @@ export const AgentClose = {
   SERVER_MISMATCH: 4010,
   SESSION_CLOSED: 4011,
   RATE_LIMITED: 4012,
+  // 12.1: too many HELLO verifications running at once; retry with backoff.
+  AUTH_BUSY: 4013,
   SHUTDOWN: 1001,
 } as const;
 export type AgentCloseReason = keyof typeof AgentClose;
