@@ -243,7 +243,8 @@ describeDatabase('VIP entitlements with real PostgreSQL', () => {
     });
     await database.initialize();
     // Apply 10.16, then 10.17 over a pre-existing offer; revert and reapply.
-    expect(await database.runMigrations()).toHaveLength(24);
+    expect(await database.runMigrations()).toHaveLength(25);
+    await database.undoLastMigration(); // Etapa 11.4 Agent Domain Events
     await database.undoLastMigration(); // Etapa 11.3 Server Control Transport
     await database.undoLastMigration(); // Etapa 11.1 Game Agent Transport
     await database.undoLastMigration();
@@ -257,7 +258,7 @@ describeDatabase('VIP entitlements with real PostgreSQL', () => {
         [schema],
       ),
     ).toEqual([]);
-    expect(await database.runMigrations()).toHaveLength(3);
+    expect(await database.runMigrations()).toHaveLength(4);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -316,7 +317,7 @@ describeDatabase('VIP entitlements with real PostgreSQL', () => {
   it('adds entitlements over the existing catalog with database-enforced shape and history', async () => {
     expect(database.options.synchronize).toBe(false);
     expect(await database.showMigrations()).toBe(false);
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(24);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(25);
     const diff = await database.driver.createSchemaBuilder().log();
     expect([diff.upQueries, diff.downQueries]).toEqual([[], []]);
     // Offers from before 10.17 got the conservative CHARACTER scope.
@@ -1193,14 +1194,23 @@ describeDatabase('VIP entitlements with real PostgreSQL', () => {
     }
   });
   it('refuses to revert while entitlements exist', async () => {
-    // No credentials here: 11.3, 11.1 reverts, then 10.17 refuses and is kept.
+    // CHARACTER grants left rewards to deliver: 11.4 refuses to forget them.
+    await expect(database.undoLastMigration()).rejects.toThrow(
+      'Pending marketplace item releases or VIP reward deliveries exist',
+    );
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(25);
+    await database.query(
+      "UPDATE vip_reward_deliveries SET status = 'CANCELLED', error_code = 'ENTITLEMENT_REVOKED', completed_at = now() WHERE status = 'PENDING'",
+    );
+    // No credentials here: 11.4, 11.3, 11.1 revert, then 10.17 refuses.
+    await database.undoLastMigration(); // Etapa 11.4 Agent Domain Events
     await database.undoLastMigration(); // Etapa 11.3 Server Control Transport
     await database.undoLastMigration();
     await expect(database.undoLastMigration()).rejects.toThrow(
       'VIP entitlements exist',
     );
-    expect(await database.runMigrations()).toHaveLength(2);
+    expect(await database.runMigrations()).toHaveLength(3);
     expect(await database.showMigrations()).toBe(false);
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(24);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(25);
   });
 });

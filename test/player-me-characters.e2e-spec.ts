@@ -107,7 +107,7 @@ describeDatabase('Player characters directory with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(24);
+    expect(await database.runMigrations()).toHaveLength(25);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
       .overrideProvider(DataSource)
@@ -156,7 +156,7 @@ describeDatabase('Player characters directory with real PostgreSQL', () => {
   });
 
   it('needs no migration and returns an empty page for a player without characters', async () => {
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(24);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(25);
     expect(await database.showMigrations()).toBe(false);
     expect(database.options.synchronize).toBe(false);
     const diff = await database.driver.createSchemaBuilder().log();

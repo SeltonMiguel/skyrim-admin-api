@@ -96,8 +96,9 @@ describeDatabase(
         extra: { ...options.extra, options: `-c search_path=${schema},public` },
       });
       await database.initialize();
-      expect(await database.runMigrations()).toHaveLength(24);
+      expect(await database.runMigrations()).toHaveLength(25);
       // Write pre-10.2 history, then re-apply the migrations over it.
+      await database.undoLastMigration(); // Etapa 11.4 Agent Domain Events
       await database.undoLastMigration(); // Etapa 11.3 Server Control Transport
       await database.undoLastMigration(); // Etapa 11.1 Game Agent Transport
       await database.undoLastMigration(); // Etapa 10.17 VIP Entitlements
@@ -139,7 +140,7 @@ describeDatabase(
           randomUUID(),
         ],
       );
-      expect(await database.runMigrations()).toHaveLength(14);
+      expect(await database.runMigrations()).toHaveLength(15);
       expect(await database.runMigrations()).toHaveLength(0);
       const { AppModule } = await import('../src/app.module.js');
       const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -682,6 +683,7 @@ describeDatabase(
         systemActor(SystemSource.AGENT),
       );
       // 11.3, 11.1, 10.17, 10.16, 10.15, 10.14, 10.13, 10.12, 10.9, 10.8, 10.7, 10.4 and 10.3 revert cleanly; 10.2 then refuses to drop PLAYER/SYSTEM data.
+      await database.undoLastMigration(); // Etapa 11.4 Agent Domain Events
       await database.undoLastMigration(); // Etapa 11.3 Server Control Transport
       await database.undoLastMigration();
       await database.undoLastMigration();
@@ -696,7 +698,7 @@ describeDatabase(
       await database.undoLastMigration();
       await database.undoLastMigration();
       await expect(database.undoLastMigration()).rejects.toThrow();
-      expect(await database.runMigrations()).toHaveLength(13);
+      expect(await database.runMigrations()).toHaveLength(14);
       expect(await database.showMigrations()).toBe(false);
       expect(
         await commands().countBy({ actorType: ActorType.SYSTEM }),

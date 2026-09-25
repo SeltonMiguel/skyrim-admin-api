@@ -205,6 +205,38 @@ export class FakeAgent {
       entry?.state === 'COMPLETED' ? entry.outcome! : { outcome: 'UNCERTAIN' },
     );
   }
+  // DOMAIN_EVENT with a durable eventId (reuse it to retry).
+  event(
+    kind: string,
+    data: Record<string, unknown>,
+    eventId: string = randomUUID(),
+  ): Frame {
+    return this.send('DOMAIN_EVENT', { eventId, kind, data });
+  }
+  async sync(request: Record<string, unknown> = {}): Promise<Frame> {
+    return this.reply(this.send('WORK_SYNC', request));
+  }
+  // Every page of a full WORK_SYNC pass.
+  async syncAll(request: Record<string, unknown> = {}): Promise<Frame[]> {
+    const pages: Frame[] = [];
+    let cursor: string | null | undefined;
+    do {
+      const page = await this.sync({
+        ...request,
+        ...(cursor ? { cursor } : {}),
+      });
+      pages.push(page);
+      cursor = page.payload!.nextCursor as string | null;
+    } while (cursor);
+    return pages;
+  }
+  pushes(): Frame[] {
+    return this.client.messages.filter(
+      (m) =>
+        m.type === 'WORK_ITEMS' &&
+        (m.payload as Frame['payload'])?.inReplyTo === null,
+    ) as Frame[];
+  }
   reply(frame: Frame, timeoutMs = 5000): Promise<Frame> {
     return this.client.until(
       () =>
@@ -216,5 +248,40 @@ export class FakeAgent {
   }
   close() {
     return this.client.closed ? this.client.closed : this.client.close();
+  }
+}
+
+// Simulated durable physical journal, retained across socket reconnects.
+// Each transfer is recorded by workId + line before the final event is sent.
+export class FakeTradeJournal {
+  readonly transfers = new Map<string, Set<number>>();
+  readonly effects = new Map<string, number>();
+  readonly eventIds = new Map<string, string>();
+  fulfill(
+    agent: FakeAgent,
+    work: { workId: string; data: unknown },
+    limit = Infinity,
+  ): Frame | undefined {
+    const terms = work.data as {
+      initiatorItems: unknown[];
+      targetItems: unknown[];
+    };
+    const lines = [...terms.initiatorItems, ...terms.targetItems];
+    const done = this.transfers.get(work.workId) ?? new Set<number>();
+    this.transfers.set(work.workId, done);
+    for (let i = 0; i < lines.length; i++) {
+      if (done.has(i)) continue;
+      if (limit-- <= 0) return undefined;
+      done.add(i);
+      const key = `${work.workId}:${i}`;
+      this.effects.set(key, (this.effects.get(key) ?? 0) + 1);
+    }
+    const eventId = this.eventIds.get(work.workId) ?? randomUUID();
+    this.eventIds.set(work.workId, eventId);
+    return agent.event(
+      'TRADE_SETTLEMENT',
+      { workId: work.workId, outcome: 'SUCCEEDED' },
+      eventId,
+    );
   }
 }

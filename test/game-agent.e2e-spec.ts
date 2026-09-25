@@ -192,7 +192,7 @@ describeDatabase('Host Agent transport with real PostgreSQL', () => {
     await admin.query(`CREATE SCHEMA "${schema}"`);
     database = await schemaSource(options);
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(24);
+    expect(await database.runMigrations()).toHaveLength(25);
     expect(await database.runMigrations()).toHaveLength(0);
     ({ created: app, url } = await bootApp(database));
     registry = app.get(AgentSessionRegistry);
@@ -240,7 +240,7 @@ describeDatabase('Host Agent transport with real PostgreSQL', () => {
     expect(
       (await database.driver.createSchemaBuilder().log()).upQueries,
     ).toEqual([]);
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(24);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(25);
     expect(await database.query('SELECT * FROM permissions')).toHaveLength(37);
     expect(await database.query('SELECT * FROM role_permissions')).toHaveLength(
       95,
@@ -256,6 +256,7 @@ describeDatabase('Host Agent transport with real PostgreSQL', () => {
         [schema],
       );
     expect(await columns()).toHaveLength(4);
+    await database.undoLastMigration(); // Etapa 11.4 Agent Domain Events
     await database.undoLastMigration(); // Etapa 11.3 Server Control Transport
     await database.undoLastMigration();
     expect(
@@ -269,7 +270,7 @@ describeDatabase('Host Agent transport with real PostgreSQL', () => {
     expect(await database.query('SELECT * FROM role_permissions')).toHaveLength(
       93,
     );
-    expect(await database.runMigrations()).toHaveLength(2);
+    expect(await database.runMigrations()).toHaveLength(3);
     expect(await database.runMigrations()).toHaveLength(0);
     expect(
       (await database.driver.createSchemaBuilder().log()).upQueries,
@@ -675,9 +676,10 @@ describeDatabase('Host Agent transport with real PostgreSQL', () => {
       const second = await authenticated(key);
       const message = envelope('DOMAIN_EVENT', { blob: 'z'.repeat(65536) });
       second.socket.send(message);
+      // Parsed (not closed as oversized), then refused by the typed contract.
       expect(
         (await reply(second.socket, message.messageId as string)).payload,
-      ).toMatchObject({ code: 'NOT_IMPLEMENTED' });
+      ).toMatchObject({ code: 'INVALID_MESSAGE' });
     });
     it('updates the runtime snapshot on HEARTBEAT: connected, then game ready', async () => {
       const key = await credential();
@@ -913,7 +915,7 @@ describeDatabase('Host Agent transport with real PostgreSQL', () => {
         'not json',
         envelope('HEARTBEAT', { skseReady: true }),
         hello(key),
-        envelope('WORK_SYNC', {}),
+        envelope('WORK_ITEMS', {}),
         envelope('COMMAND', {}),
         { ...envelope('ERROR', {}), protocolVersion: '2' },
       ];
@@ -925,7 +927,7 @@ describeDatabase('Host Agent transport with real PostgreSQL', () => {
         );
       }
     });
-    it('answers later-substep messages with NOT_IMPLEMENTED without touching the domain', async () => {
+    it('refuses malformed typed messages without touching the domain', async () => {
       const key = await credential();
       const { socket } = await authenticated(key);
       const before = await database.query(
@@ -951,17 +953,16 @@ describeDatabase('Host Agent transport with real PostgreSQL', () => {
         type: 'ERROR',
         payload: { code: 'INVALID_MESSAGE', retryable: false },
       });
-      for (const type of ['DOMAIN_EVENT']) {
-        const message = envelope(type, {
-          commandId: randomUUID(),
-          outcome: 'SUCCEEDED',
-        });
-        socket.send(message);
-        expect(await reply(socket, message.messageId as string)).toMatchObject({
-          type: 'ERROR',
-          payload: { code: 'NOT_IMPLEMENTED', retryable: false },
-        });
-      }
+      // And so is a DOMAIN_EVENT outside the closed catalog (11.4).
+      const event = envelope('DOMAIN_EVENT', {
+        commandId: randomUUID(),
+        outcome: 'SUCCEEDED',
+      });
+      socket.send(event);
+      expect(await reply(socket, event.messageId as string)).toMatchObject({
+        type: 'ERROR',
+        payload: { code: 'INVALID_MESSAGE', retryable: false },
+      });
       socket.send(envelope('ERROR', { code: 'LOCAL_FAILURE' }));
       const beat = envelope('HEARTBEAT', {
         gameProcessState: 'STOPPED',
@@ -1039,13 +1040,14 @@ describeDatabase('Host Agent transport with real PostgreSQL', () => {
   });
 
   it('refuses to revert while credentials exist', async () => {
+    await database.undoLastMigration(); // Etapa 11.4 Agent Domain Events
     await database.undoLastMigration(); // Etapa 11.3 Server Control Transport
     await expect(database.undoLastMigration()).rejects.toThrow(
       'Game Agent credentials exist',
     );
     expect(await database.query('SELECT * FROM migrations')).toHaveLength(23);
-    expect(await database.runMigrations()).toHaveLength(1);
+    expect(await database.runMigrations()).toHaveLength(2);
     expect(await database.showMigrations()).toBe(false);
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(24);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(25);
   });
 });

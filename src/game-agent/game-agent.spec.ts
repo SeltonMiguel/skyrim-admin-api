@@ -32,7 +32,15 @@ import {
   MAX_AGENT_FRAME_BYTES,
   parseEnvelope,
   serverControlResultPayload,
+  domainEventPayload,
+  workSyncPayload,
 } from './agent-protocol.contracts.js';
+import { AgentWorkService } from './agent-work.service.js';
+import {
+  AGENT_EVENT_KINDS,
+  AGENT_WORK_KINDS,
+  MAX_WORK_PAGE_BYTES,
+} from './agent-domain-event.contracts.js';
 import type { AgentEnvelope } from './agent-protocol.contracts.js';
 import { AgentSessionRegistry } from './agent-session.registry.js';
 import type {
@@ -502,6 +510,7 @@ describe('Host Agent gateway: HELLO commit vs registry visibility', () => {
         registry,
         { acknowledge: jest.fn(), result: jest.fn() } as never,
         { result: jest.fn() } as never,
+        { event: jest.fn(), sync: jest.fn() } as never,
         clock,
       ),
       registry,
@@ -740,16 +749,29 @@ describe('Host Agent message router', () => {
     const serverControl = {
       result: jest.fn(async () => ({ close: 'SERVER_MISMATCH' as const })),
     };
+    const domain = {
+      event: jest.fn(async () => ({ close: 'SERVER_MISMATCH' as const })),
+      sync: jest.fn(async () => ({})),
+    };
     const router = new AgentMessageRouter(
       connections,
       registry,
       commands as never,
       serverControl as never,
+      domain as never,
       clock as BridgeClock,
     );
     const session = snapshot();
     activate(registry, session, socket());
-    return { router, session, heartbeat, registry, commands, serverControl };
+    return {
+      router,
+      session,
+      heartbeat,
+      registry,
+      commands,
+      serverControl,
+      domain,
+    };
   };
   const envelope = (overrides: Record<string, unknown> = {}) =>
     parseEnvelope(JSON.stringify(frame(overrides)));
@@ -793,7 +815,8 @@ describe('Host Agent message router', () => {
     ).toEqual({ close: 'SERVER_MISMATCH' });
     for (const type of [
       'HELLO',
-      'WORK_SYNC',
+      'WORK_ITEMS',
+      'DOMAIN_EVENT_ACK',
       'COMMAND',
       'AUTHENTICATED',
       'RAW',
@@ -841,21 +864,23 @@ describe('Host Agent message router', () => {
     );
     expect(serverControl.result).toHaveBeenCalledTimes(1);
   });
-  it('answers later-substep flows with NOT_IMPLEMENTED and accepts Agent ERROR frames', async () => {
-    const { router, session, heartbeat } = setup();
-    for (const type of ['DOMAIN_EVENT']) {
-      const message = envelope({ type, payload: { anything: 1 } });
-      expect(await router.route(session, message)).toEqual({
-        reply: expect.objectContaining({
-          type: 'ERROR',
-          payload: {
-            inReplyTo: message.messageId,
-            code: 'NOT_IMPLEMENTED',
-            retryable: false,
-          },
-        }),
-      });
-    }
+  it('hands DOMAIN_EVENT and WORK_SYNC to the domain adapter and accepts Agent ERROR frames', async () => {
+    const { router, session, heartbeat, domain, commands } = setup();
+    const event = envelope({ type: 'DOMAIN_EVENT', payload: { any: 1 } });
+    expect(await router.route(session, event)).toEqual({
+      close: 'SERVER_MISMATCH',
+    });
+    expect(domain.event).toHaveBeenCalledWith(session, event);
+    const sync = envelope({ type: 'WORK_SYNC', payload: {} });
+    expect(await router.route(session, sync)).toEqual({});
+    expect(domain.sync).toHaveBeenCalledWith(session, sync);
+    // The server check still comes first.
+    await router.route(
+      session,
+      envelope({ type: 'DOMAIN_EVENT', gameServerId: randomUUID() }),
+    );
+    expect(domain.event).toHaveBeenCalledTimes(1);
+    expect(commands.result).not.toHaveBeenCalled();
     expect(await router.route(session, envelope({ type: 'ERROR' }))).toEqual(
       {},
     );
@@ -928,12 +953,32 @@ describe('Host Agent boundaries', () => {
       .map((file) => ({ file, source: readFileSync(file, 'utf8') }));
   const imports = (source: string) =>
     [...source.matchAll(/from '([^']+)'/g)].map((m) => m[1]);
-  it('never reaches domain modules, Player/Staff realtime or process control', () => {
+  it('never reaches Player/Staff realtime, economy, VIP or process control', () => {
     for (const { source } of sources('game-agent'))
       for (const module of imports(source))
         expect(module).not.toMatch(
-          /player-|professions|vip-|economy|character-management|moderation|world-management|realtime|socket\.io|electron|child_process/,
+          /economy|vip-|character-management|moderation|world-management|realtime|socket\.io|electron|child_process/,
         );
+  });
+  it('reaches gameplay domains only through their Agent entry points and work projections', () => {
+    const allowed: Record<string, RegExp> = {
+      'agent-domain-events.service.ts':
+        /(character-link\.service|profession-experience\.service|trade-settlement\.service|marketplace-(custody|settlement|release)\.service|player-trade\.contracts|player-marketplace\.contracts)\.js$/,
+      'agent-work.service.ts': /(trade-work|marketplace-work)\.source\.js$/,
+      'game-agent.module.ts':
+        /(player-characters|professions|player-trades|player-marketplace)\.module\.js$/,
+    };
+    for (const { file, source } of sources('game-agent')) {
+      const name = file.split('/').pop()!;
+      for (const module of imports(source).filter((m) =>
+        /player-|professions/.test(m),
+      ))
+        expect(module).toMatch(allowed[name] ?? /^$/);
+      // No domain repository or entity is used by the Agent transport.
+      expect(source).not.toMatch(
+        /getRepository<Player(Trade|Marketplace|Character)|CharacterProfession'/,
+      );
+    }
   });
   it('reaches Server Control only through its gateway, result adapter and contracts', () => {
     const allowed: Record<string, RegExp> = {
@@ -1354,5 +1399,215 @@ describe('Server Control capabilities, protocol and the real Agent gateway', () 
         skseReady: true,
       }),
     ).toBe(false);
+  });
+});
+
+describe('Host Agent domain events and work (11.4)', () => {
+  const eventId = randomUUID();
+  const workId = randomUUID();
+  it('keeps closed catalogs of event and work kinds', () => {
+    expect(AGENT_EVENT_KINDS).toEqual([
+      'CHARACTER_OWNERSHIP_PROOF',
+      'PROFESSION_EXPERIENCE',
+      'TRADE_SETTLEMENT',
+      'MARKETPLACE_CUSTODY',
+      'MARKETPLACE_SETTLEMENT',
+      'MARKETPLACE_RELEASE',
+    ]);
+    expect(AGENT_WORK_KINDS).toEqual([
+      'TRADE_SETTLEMENT',
+      'MARKETPLACE_CUSTODY',
+      'MARKETPLACE_SETTLEMENT',
+      'MARKETPLACE_RELEASE',
+    ]);
+  });
+  it('parses exactly one data schema per kind and nothing generic', () => {
+    expect(
+      domainEventPayload({
+        eventId,
+        kind: 'TRADE_SETTLEMENT',
+        data: { workId, outcome: 'SETTLED' },
+      }),
+    ).toEqual({
+      eventId,
+      kind: 'TRADE_SETTLEMENT',
+      data: { workId, outcome: 'SETTLED' },
+    });
+    expect(
+      domainEventPayload({
+        eventId,
+        kind: 'PROFESSION_EXPERIENCE',
+        data: { characterExternalId: 'char:1', amount: 3 },
+      }).data,
+    ).toEqual({ characterExternalId: 'char:1', amount: 3 });
+    for (const payload of [
+      { eventId, kind: 'GENERIC', data: {} },
+      { eventId, kind: 'TRADE_SETTLEMENT', data: { workId, outcome: 'DONE' } },
+      {
+        eventId,
+        kind: 'MARKETPLACE_CUSTODY',
+        data: { workId, outcome: 'SETTLED' },
+      },
+      {
+        eventId,
+        kind: 'TRADE_SETTLEMENT',
+        data: { workId, outcome: 'SETTLED', gold: 1 },
+      },
+      {
+        eventId,
+        kind: 'MARKETPLACE_SETTLEMENT',
+        data: { workId, outcome: 'SETTLED', priceGold: 1 },
+      },
+      {
+        eventId,
+        kind: 'PROFESSION_EXPERIENCE',
+        data: { characterExternalId: 'c', amount: 1, level: 50 },
+      },
+      {
+        eventId,
+        kind: 'CHARACTER_OWNERSHIP_PROOF',
+        data: { challenge: 'X', characterExternalId: 'c', playerId: 'p' },
+      },
+      {
+        eventId,
+        kind: 'CHARACTER_OWNERSHIP_PROOF',
+        data: { challenge: 'x'.repeat(65), characterExternalId: 'c' },
+      },
+      {
+        eventId: 'nope',
+        kind: 'TRADE_SETTLEMENT',
+        data: { workId, outcome: 'SETTLED' },
+      },
+      {
+        eventId,
+        kind: 'TRADE_SETTLEMENT',
+        data: { workId: 'x', outcome: 'SETTLED' },
+      },
+      {
+        eventId,
+        kind: 'TRADE_SETTLEMENT',
+        data: { workId, outcome: 'SETTLED' },
+        gameServerId: serverId,
+      },
+    ])
+      expect(reason(() => domainEventPayload(payload))).toBe('PROTOCOL_ERROR');
+  });
+  it('accepts only a bounded, server-less WORK_SYNC', () => {
+    expect(workSyncPayload({})).toEqual({});
+    expect(
+      workSyncPayload({
+        kind: 'MARKETPLACE_RELEASE',
+        limit: 10,
+        cursor: 'abc',
+      }),
+    ).toEqual({ kind: 'MARKETPLACE_RELEASE', limit: 10, cursor: 'abc' });
+    for (const payload of [
+      { limit: 0 },
+      { limit: 51 },
+      { kind: 'ARBITRARY_WORK' },
+      { gameServerId: serverId },
+      { cursor: 'has spaces' },
+    ])
+      expect(reason(() => workSyncPayload(payload))).toBe('PROTOCOL_ERROR');
+  });
+  // In-memory sources shaped like the domain projections.
+  const rows = (count: number, bytes = 10) =>
+    Array.from({ length: count }, (_, i) => ({
+      id: randomUUID(),
+      pos: String(1_000_000 + i),
+      createdAt: new Date(1_000 + i),
+      data: { blob: 'x'.repeat(bytes) },
+    }));
+  const service = (tables: Record<string, ReturnType<typeof rows>>) => {
+    const read =
+      (kind: string) =>
+      async (
+        _server: string,
+        after: { pos: string; id: string } | null,
+        limit: number,
+      ) =>
+        (tables[kind] ?? [])
+          .filter(
+            (r) =>
+              !after ||
+              BigInt(r.pos) > BigInt(after.pos) ||
+              (r.pos === after.pos && r.id > after.id),
+          )
+          .slice(0, limit);
+    return new AgentWorkService(
+      { pending: read('TRADE_SETTLEMENT') } as never,
+      {
+        custody: read('MARKETPLACE_CUSTODY'),
+        settlement: read('MARKETPLACE_SETTLEMENT'),
+        release: read('MARKETPLACE_RELEASE'),
+      } as never,
+    );
+  };
+  const all = async (
+    work: AgentWorkService,
+    request: Record<string, unknown> = {},
+  ) => {
+    const pages = [];
+    let cursor: string | null = null;
+    do {
+      const page = await work.page(serverId, {
+        ...request,
+        ...(cursor ? { cursor } : {}),
+      });
+      pages.push(page);
+      cursor = page.nextCursor;
+    } while (cursor);
+    return pages;
+  };
+  it('pages every kind in order with a keyset cursor, never skipping or repeating', async () => {
+    const tables = {
+      TRADE_SETTLEMENT: rows(3),
+      MARKETPLACE_CUSTODY: rows(4),
+      MARKETPLACE_RELEASE: rows(2),
+    };
+    const pages = await all(service(tables), { limit: 2 });
+    expect(pages.every((p) => p.items.length <= 2)).toBe(true);
+    expect(pages.flatMap((p) => p.items.map((i) => i.workId))).toEqual(
+      [
+        ...tables.TRADE_SETTLEMENT,
+        ...tables.MARKETPLACE_CUSTODY,
+        ...tables.MARKETPLACE_RELEASE,
+      ].map((r) => r.id),
+    );
+    const only = await all(service(tables), {
+      kind: 'MARKETPLACE_RELEASE',
+      limit: 1,
+    });
+    expect(only.flatMap((p) => p.items.map((i) => i.kind))).toEqual([
+      'MARKETPLACE_RELEASE',
+      'MARKETPLACE_RELEASE',
+    ]);
+    // A cursor of another kind than the filter is refused.
+    const first = await service(tables).page(serverId, { limit: 1 });
+    await expect(
+      service(tables).page(serverId, {
+        kind: 'MARKETPLACE_RELEASE',
+        cursor: first.nextCursor!,
+      }),
+    ).rejects.toBeInstanceOf(AgentProtocolError);
+    for (const cursor of [
+      'x',
+      Buffer.from('[0,"1"]').toString('base64url'),
+      Buffer.from('[7,null,null]').toString('base64url'),
+    ])
+      await expect(
+        service(tables).page(serverId, { cursor }),
+      ).rejects.toBeInstanceOf(AgentProtocolError);
+  });
+  it('bounds a page by bytes so WORK_ITEMS always fits the frame', async () => {
+    const tables = { TRADE_SETTLEMENT: rows(40, 6000) };
+    const pages = await all(service(tables));
+    expect(pages.length).toBeGreaterThan(1);
+    for (const page of pages)
+      expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThan(
+        MAX_WORK_PAGE_BYTES + 1024,
+      );
+    expect(pages.flatMap((p) => p.items).length).toBe(40);
+    expect(MAX_WORK_PAGE_BYTES + 4096).toBeLessThan(MAX_AGENT_FRAME_BYTES);
   });
 });

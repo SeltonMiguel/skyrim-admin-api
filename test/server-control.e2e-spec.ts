@@ -94,7 +94,7 @@ describeDatabase('Server Control with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(24);
+    expect(await database.runMigrations()).toHaveLength(25);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -161,7 +161,7 @@ describeDatabase('Server Control with real PostgreSQL', () => {
     expect(
       (await database.driver.createSchemaBuilder().log()).upQueries,
     ).toEqual([]);
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(24);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(25);
     expect(await database.query('SELECT * FROM permissions')).toHaveLength(37);
     expect(await database.query('SELECT * FROM role_permissions')).toHaveLength(
       95,
@@ -182,6 +182,7 @@ describeDatabase('Server Control with real PostgreSQL', () => {
       [schema],
     );
     expect(rows.map((r: { tablename: string }) => r.tablename)).toEqual([
+      'agent_domain_event_receipts',
       'audit_logs',
       'character_professions',
       'economy_accounts',
@@ -208,6 +209,7 @@ describeDatabase('Server Control with real PostgreSQL', () => {
       'player_identities',
       'player_marketplace_currency_escrows',
       'player_marketplace_custody_events',
+      'player_marketplace_item_releases',
       'player_marketplace_listings',
       'player_marketplace_purchases',
       'player_marketplace_requests',
@@ -230,6 +232,7 @@ describeDatabase('Server Control with real PostgreSQL', () => {
       'staff_users',
       'vip_entitlement_requests',
       'vip_offers',
+      'vip_reward_deliveries',
     ]);
   });
   it.each(Object.values(R))(
@@ -838,6 +841,7 @@ describeDatabase('Server Control with real PostgreSQL', () => {
     expect(await count()).toBe(0);
   });
   it('reconciles Etapa 09 work in the 11.3 migration, reverts to the old schema and reapplies', async () => {
+    await database.undoLastMigration(); // Etapa 11.4 Agent Domain Events
     await database.undoLastMigration(); // Etapa 11.3 Server Control Transport
     const staff = staffIds.get(R.DEV)!;
     const now = new Date();
@@ -876,7 +880,7 @@ describeDatabase('Server Control with real PostgreSQL', () => {
           [id],
         )
       )[0];
-    expect(await database.runMigrations()).toHaveLength(1);
+    expect(await database.runMigrations()).toHaveLength(2);
     // Possibly delivered before any result receiver existed: unknown.
     for (const id of [claimed, dispatched]) {
       expect(await state(id)).toEqual({
@@ -894,6 +898,7 @@ describeDatabase('Server Control with real PostgreSQL', () => {
         status: 'FAILED',
         error_code: 'DISPATCH_EXPIRED',
       });
+    await database.undoLastMigration(); // Etapa 11.4 Agent Domain Events
     await database.undoLastMigration();
     expect(await state(claimed)).toEqual({
       status: 'DISPATCHED',
@@ -909,13 +914,14 @@ describeDatabase('Server Control with real PostgreSQL', () => {
         [schema],
       ),
     ).toEqual([]);
-    expect(await database.runMigrations()).toHaveLength(1);
+    expect(await database.runMigrations()).toHaveLength(2);
     expect(await database.runMigrations()).toHaveLength(0);
     expect(
       (await database.driver.createSchemaBuilder().log()).upQueries,
     ).toEqual([]);
   });
   it('reverts only the operation table and reapplies cleanly', async () => {
+    await database.undoLastMigration(); // Etapa 11.4 Agent Domain Events
     await database.undoLastMigration(); // Etapa 11.3 Server Control Transport
     await database.undoLastMigration(); // Etapa 11.1 Game Agent Transport
     await database.undoLastMigration(); // Etapa 10.17 VIP Entitlements
@@ -942,7 +948,7 @@ describeDatabase('Server Control with real PostgreSQL', () => {
     expect(await database.query('SELECT * FROM role_permissions')).toHaveLength(
       93,
     );
-    expect(await database.runMigrations()).toHaveLength(16);
+    expect(await database.runMigrations()).toHaveLength(17);
     expect(await database.runMigrations()).toHaveLength(0);
     expect(
       (await database.driver.createSchemaBuilder().log()).upQueries,

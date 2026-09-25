@@ -15,7 +15,11 @@ import {
   offerPatch,
   VipEntitlementScope,
 } from '../vip-store/vip-offer.contracts.js';
-import { VipDeliveryService } from './vip-delivery.service.js';
+import {
+  deliveryIdempotencyKey,
+  rewardCommand,
+} from './vip-delivery.contracts.js';
+import { COMMAND_TYPES } from '../game-bridge/command-contract.js';
 import { VipEntitlementService } from './vip-entitlement.service.js';
 import {
   EntitlementOperation,
@@ -136,13 +140,36 @@ describe('VIP entitlement authority', () => {
       service.grant({ ...valid, ...(patch as object) } as never),
     ).resolves.toEqual({ outcome: 'REJECTED', reason: 'INVALID_INPUT' });
   });
-  it('keeps delivery an explicit Stage 11 boundary', async () => {
-    await expect(
-      new VipDeliveryService().requestDelivery(valid.offerId),
-    ).resolves.toEqual({
-      outcome: 'UNAVAILABLE',
-      reason: 'AGENT_NOT_INTEGRATED',
+  it('maps every reward type to one existing typed GameCommand, and nothing else', () => {
+    const c = 'char:1';
+    expect(
+      rewardCommand({ type: 'ITEM', itemId: 'i', quantity: 2 }, c),
+    ).toEqual({
+      type: 'CHARACTER_ITEM_GIVE',
+      payload: { characterId: c, itemId: 'i', quantity: 2 },
     });
+    expect(rewardCommand({ type: 'HORSE', horseId: 'h' }, c)).toEqual({
+      type: 'CHARACTER_HORSE_GIVE',
+      payload: { characterId: c, horseId: 'h' },
+    });
+    expect(rewardCommand({ type: 'TITLE', titleId: 't' }, c)).toEqual({
+      type: 'CHARACTER_TITLE_GIVE',
+      payload: { characterId: c, titleId: 't' },
+    });
+    expect(rewardCommand({ type: 'SPELL', spellId: 's' }, c)).toEqual({
+      type: 'CHARACTER_SPELL_GIVE',
+      payload: { characterId: c, spellId: 's' },
+    });
+    // No typed command, no delivery: never a raw/console fallback.
+    for (const unknown of [
+      { type: 'CONSOLE', command: 'player.additem f 1' },
+      { type: 'PAPYRUS', script: 'x' },
+      { type: 'GOLD', amount: 100 },
+    ])
+      expect(rewardCommand(unknown as never, c)).toBeNull();
+    expect(deliveryIdempotencyKey('d-1')).toBe('vip-delivery:d-1');
+    for (const type of COMMAND_TYPES)
+      expect(type).not.toMatch(/CONSOLE|PAPYRUS|SCRIPT|RAW|EXECUTE/);
   });
 });
 
@@ -159,15 +186,23 @@ describe('VIP entitlement boundaries', () => {
             .replace(/\/\/.*$/gm, ''),
         ] as const,
     );
-  it('executes nothing in the game and processes no payment', () => {
-    for (const [, source] of sources) {
-      for (const [, module] of source.matchAll(/from '([^']+)'/g))
-        expect(module).not.toMatch(
-          /game-command|character-management|player-character-operations|administrative-operations|economy|\/realtime\/|^ws$/,
+  it('reaches the game only through typed GameCommands of the delivery, and processes no payment', () => {
+    for (const [file, source] of sources) {
+      const delivery =
+        /vip-delivery\.|vip-reward-delivery\.entity|vip-entitlements\.module/.test(
+          file,
         );
-      expect(source).not.toMatch(
-        /GameCommand|CHARACTER_ITEM_GIVE|CHARACTER_HORSE_GIVE|CHARACTER_TITLE_GIVE|CHARACTER_SPELL_GIVE|checkout|payment/i,
-      );
+      for (const [, module] of source.matchAll(/from '([^']+)'/g)) {
+        expect(module).not.toMatch(
+          /character-management|player-character-operations|administrative-operations|economy|\/realtime\/|^ws$/,
+        );
+        if (!delivery) expect(module).not.toMatch(/game-command|game-agent/);
+      }
+      expect(source).not.toMatch(/checkout|payment|console|papyrus/i);
+      if (!delivery)
+        expect(source).not.toMatch(
+          /GameCommand|CHARACTER_ITEM_GIVE|CHARACTER_HORSE_GIVE|CHARACTER_TITLE_GIVE|CHARACTER_SPELL_GIVE/,
+        );
     }
   });
   it('exposes only reads to players', () => {

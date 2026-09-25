@@ -108,7 +108,7 @@ describeDatabase('World with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(24);
+    expect(await database.runMigrations()).toHaveLength(25);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -180,6 +180,7 @@ describeDatabase('World with real PostgreSQL', () => {
       [schema],
     );
     expect(rows.map((r: { tablename: string }) => r.tablename)).toEqual([
+      'agent_domain_event_receipts',
       'audit_logs',
       'character_professions',
       'economy_accounts',
@@ -206,6 +207,7 @@ describeDatabase('World with real PostgreSQL', () => {
       'player_identities',
       'player_marketplace_currency_escrows',
       'player_marketplace_custody_events',
+      'player_marketplace_item_releases',
       'player_marketplace_listings',
       'player_marketplace_purchases',
       'player_marketplace_requests',
@@ -228,6 +230,7 @@ describeDatabase('World with real PostgreSQL', () => {
       'staff_users',
       'vip_entitlement_requests',
       'vip_offers',
+      'vip_reward_deliveries',
     ]);
   });
   it.each(WORLD_COMMAND_TYPES)(
@@ -503,6 +506,7 @@ describeDatabase('World with real PostgreSQL', () => {
         .expect(404);
   });
   it('reverses only the four permissions and nine grants and reapplies cleanly', async () => {
+    await database.undoLastMigration(); // Etapa 11.4 Agent Domain Events
     await database.undoLastMigration(); // Etapa 11.3 Server Control Transport
     await database.undoLastMigration(); // Etapa 11.1 Game Agent Transport
     await database.undoLastMigration(); // Etapa 10.17 VIP Entitlements
@@ -530,7 +534,7 @@ describeDatabase('World with real PostgreSQL', () => {
         "SELECT * FROM permissions WHERE name LIKE 'WORLD_%'",
       ),
     ).toEqual([]);
-    expect(await database.runMigrations()).toHaveLength(18);
+    expect(await database.runMigrations()).toHaveLength(19);
     expect(await database.runMigrations()).toHaveLength(0);
     expect(
       await database.query(

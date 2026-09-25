@@ -108,7 +108,7 @@ describeDatabase('Moderation with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(24);
+    expect(await database.runMigrations()).toHaveLength(25);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -180,6 +180,7 @@ describeDatabase('Moderation with real PostgreSQL', () => {
       [schema],
     );
     expect(rows.map((r: { tablename: string }) => r.tablename)).toEqual([
+      'agent_domain_event_receipts',
       'audit_logs',
       'character_professions',
       'economy_accounts',
@@ -206,6 +207,7 @@ describeDatabase('Moderation with real PostgreSQL', () => {
       'player_identities',
       'player_marketplace_currency_escrows',
       'player_marketplace_custody_events',
+      'player_marketplace_item_releases',
       'player_marketplace_listings',
       'player_marketplace_purchases',
       'player_marketplace_requests',
@@ -228,6 +230,7 @@ describeDatabase('Moderation with real PostgreSQL', () => {
       'staff_users',
       'vip_entitlement_requests',
       'vip_offers',
+      'vip_reward_deliveries',
     ]);
   });
   it.each(MODERATION_COMMAND_TYPES)(

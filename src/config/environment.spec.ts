@@ -383,6 +383,10 @@ describe('Host Agent environment validation', () => {
       maxInFlightCommands: 32,
       messageRateLimitCount: 200,
       messageRateLimitWindowMs: 10000,
+      workPushIntervalMs: 2000,
+    });
+    expect(validateEnvironment(example).vipDelivery).toEqual({
+      workerIntervalMs: 2000,
     });
     expect(
       validateEnvironment({
@@ -403,6 +407,7 @@ describe('Host Agent environment validation', () => {
     { AGENT_MAX_IN_FLIGHT_COMMANDS: '0' },
     { AGENT_MESSAGE_RATE_LIMIT_COUNT: '9' },
     { AGENT_MESSAGE_RATE_LIMIT_WINDOW_MS: '99' },
+    { AGENT_WORK_PUSH_INTERVAL_MS: '99' },
   ])('rejects %o', (override) =>
     expect(() => validateEnvironment({ ...example, ...override })).toThrow(
       /AGENT_/,
