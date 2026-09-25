@@ -95,8 +95,9 @@ describeDatabase(
         extra: { ...options.extra, options: `-c search_path=${schema},public` },
       });
       await database.initialize();
-      expect(await database.runMigrations()).toHaveLength(20);
+      expect(await database.runMigrations()).toHaveLength(21);
       // Write pre-10.2 history, then re-apply the migrations over it.
+      await database.undoLastMigration(); // Etapa 10.16 Player Settings
       await database.undoLastMigration(); // Etapa 10.15 Player Chat
       await database.undoLastMigration(); // Etapa 10.14 Player Marketplace
       await database.undoLastMigration(); // Etapa 10.13 Player Trades
@@ -134,7 +135,7 @@ describeDatabase(
           randomUUID(),
         ],
       );
-      expect(await database.runMigrations()).toHaveLength(10);
+      expect(await database.runMigrations()).toHaveLength(11);
       expect(await database.runMigrations()).toHaveLength(0);
       const { AppModule } = await import('../src/app.module.js');
       const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -673,7 +674,8 @@ describeDatabase(
         { ...ping(), idempotencyKey: randomUUID() },
         systemActor(SystemSource.AGENT),
       );
-      // 10.15, 10.14, 10.13, 10.12, 10.9, 10.8, 10.7, 10.4 and 10.3 revert cleanly; 10.2 then refuses to drop PLAYER/SYSTEM data.
+      // 10.16, 10.15, 10.14, 10.13, 10.12, 10.9, 10.8, 10.7, 10.4 and 10.3 revert cleanly; 10.2 then refuses to drop PLAYER/SYSTEM data.
+      await database.undoLastMigration();
       await database.undoLastMigration();
       await database.undoLastMigration();
       await database.undoLastMigration();
@@ -684,7 +686,7 @@ describeDatabase(
       await database.undoLastMigration();
       await database.undoLastMigration();
       await expect(database.undoLastMigration()).rejects.toThrow();
-      expect(await database.runMigrations()).toHaveLength(9);
+      expect(await database.runMigrations()).toHaveLength(10);
       expect(await database.showMigrations()).toBe(false);
       expect(
         await commands().countBy({ actorType: ActorType.SYSTEM }),

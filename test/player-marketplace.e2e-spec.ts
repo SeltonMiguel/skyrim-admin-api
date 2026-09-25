@@ -302,7 +302,8 @@ describeDatabase('Player marketplace with real PostgreSQL', () => {
     });
     await database.initialize();
     // Apply, revert (empty marketplace) and reapply the 10.14 migration.
-    expect(await database.runMigrations()).toHaveLength(20);
+    expect(await database.runMigrations()).toHaveLength(21);
+    await database.undoLastMigration(); // Etapa 10.16 Player Settings
     await database.undoLastMigration(); // Etapa 10.15 Player Chat
     await database.undoLastMigration();
     expect(
@@ -311,7 +312,7 @@ describeDatabase('Player marketplace with real PostgreSQL', () => {
         [schema],
       ),
     ).toEqual([]);
-    expect(await database.runMigrations()).toHaveLength(2);
+    expect(await database.runMigrations()).toHaveLength(3);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -369,7 +370,7 @@ describeDatabase('Player marketplace with real PostgreSQL', () => {
   it('adds the marketplace tables and MARKET_ESCROW with a database-enforced lifecycle', async () => {
     expect(database.options.synchronize).toBe(false);
     expect(await database.showMigrations()).toBe(false);
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(20);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(21);
     const diff = await database.driver.createSchemaBuilder().log();
     expect([diff.upQueries, diff.downQueries]).toEqual([[], []]);
     const insert = (quantity: number, price: number) =>
@@ -1819,13 +1820,15 @@ describeDatabase('Player marketplace with real PostgreSQL', () => {
   });
   it('refuses to revert while marketplace listings exist', async () => {
     await reconciled();
-    // No messages here: 10.15 reverts, then 10.14 refuses and is kept.
+    // No settings or messages here: 10.16 and 10.15 revert, then 10.14
+    // refuses and is kept.
+    await database.undoLastMigration();
     await database.undoLastMigration();
     await expect(database.undoLastMigration()).rejects.toThrow(
       'marketplace listings exist',
     );
-    expect(await database.runMigrations()).toHaveLength(1);
+    expect(await database.runMigrations()).toHaveLength(2);
     expect(await database.showMigrations()).toBe(false);
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(20);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(21);
   });
 });

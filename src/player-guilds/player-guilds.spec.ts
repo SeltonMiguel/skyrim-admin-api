@@ -1,3 +1,4 @@
+import type { PlayerSettingsService } from '../player-settings/player-settings.service.js';
 import { globSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { jest } from '@jest/globals';
@@ -127,6 +128,7 @@ describe('Guild realtime publication', () => {
       { transaction } as unknown as DataSource,
       {} as AuditService,
       bus,
+      {} as PlayerSettingsService,
       {
         get: () => ({ playerGuilds: { inviteTtl: 60 } }),
       } as unknown as ConfigService<never, true>,
