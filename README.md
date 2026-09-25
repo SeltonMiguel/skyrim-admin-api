@@ -459,10 +459,11 @@ A Etapa 09 aceita solicitações `SERVER_START`, `SERVER_PAUSE` e `SERVER_RESTAR
 em `/api/v1/game-servers/:serverId/control/{start|pause|restart}`, somente para
 COORDINATOR e DEV (permissions existentes desde a Etapa 01). Não usa o
 GameCommandBus: as operações ficam em `server_control_operations` e seguem por um
-`ServerControlGateway` abstrato, destinado ao futuro Agent. Em produção o gateway é
-Disconnected, então a solicitação recebe 202 e termina `FAILED/AGENT_UNAVAILABLE`,
-sem sucesso simulado. Idempotency-Key obrigatório, Audit atômico e dispatch
-at-most-once após o commit; detalhe em `/api/v1/server-control-operations/:id`.
+`ServerControlGateway`. Desde a Subetapa 11.3 o gateway de produção é o Host Agent
+(ver abaixo); sem Agent elegível a operação fica PENDING e termina
+`FAILED/DISPATCH_EXPIRED`, sem sucesso simulado. Idempotency-Key obrigatório,
+Audit atômico e dispatch at-most-once após o commit; detalhe em
+`/api/v1/server-control-operations/:id`.
 
 Configuration de servidor não foi implementada: o modelo atual não tem campos
 administráveis além do registro (`code`, `name`, `enabled`). A migration
@@ -641,8 +642,17 @@ e capability do tipo, sem gastar tentativas enquanto o Agent não é elegível;
 mutations exigem a capability de journal `COMMAND_DEDUP_V1`. O Agent confirma a
 tentativa com `COMMAND_ACK` e devolve `COMMAND_RESULT`, aceito mesmo depois de
 reconexão; `UNCERTAIN` vira TIMEOUT/EXECUTION_UNCERTAIN. Server Control real e
-eventos de domínio ainda recebem `NOT_IMPLEMENTED` (11.3+). Nenhuma migration nova:
-continuam vinte e três.
+eventos de domínio ainda recebem `NOT_IMPLEMENTED` (11.4+). Nenhuma migration nova
+na 11.2.
+
+A Subetapa 11.3 liga o Server Control ao Host Agent com garantia **at-most-once**:
+a operação é enviada no máximo uma vez (`SERVER_CONTROL` com `notAfter`) para uma
+sessão com `SERVER_CONTROL_V1` e a capability da ação, mesmo com o Skyrim parado e
+sem SKSE; nunca há retry. O `SERVER_CONTROL_RESULT` é aceito também depois de
+reconexão. Sem resultado até o prazo a operação termina `UNCERTAIN` (terminal,
+"não sabemos"), distinta de `FAILED` ("sem efeito"). No máximo uma operação em voo
+por servidor (409). A migration `1790030000000-ServerControlTransport` eleva o total
+para vinte e quatro.
 
 | Variável | Padrão | Regra |
 | --- | --- | --- |
@@ -654,3 +664,7 @@ continuam vinte e três.
 | `AGENT_MESSAGE_RATE_LIMIT_WINDOW_MS` | 10000 | 100–3600000; excesso fecha com 4012 |
 | `GAME_COMMAND_WORKER_INTERVAL_MS` | 500 | 50–60000; cadência do worker |
 | `GAME_COMMAND_PENDING_TIMEOUT_MS` | 60000 | 1000–86400000; PENDING nunca reservado vira FAILED/DISPATCH_EXPIRED |
+| `SERVER_CONTROL_PENDING_TIMEOUT_MS` | 30000 | 500–3600000; operação nunca enviada vira FAILED/DISPATCH_EXPIRED |
+| `SERVER_CONTROL_DELIVERY_WINDOW_MS` | 10000 | 100–600000; `notAfter` = claim + janela |
+| `SERVER_CONTROL_RESULT_TIMEOUT_MS` | 300000 | 500–3600000, maior que a janela; sem resultado vira UNCERTAIN |
+| `SERVER_CONTROL_WORKER_INTERVAL_MS` | 1000 | 50–60000; cadência do worker de Server Control |

@@ -195,3 +195,14 @@ do Host Agent (`credential_id` FK, `capabilities` jsonb limitado a 64,
 `game_process_state`, `skse_ready`) com CHECKs de coerência e de
 `disconnect_reason`. `down` recusa reverter com credenciais existentes. Detalhes
 em `docs/integration-architecture.md`.
+
+A Subetapa 11.3 adiciona `1790030000000-ServerControlTransport` (24 migrations):
+status terminal `UNCERTAIN` em `server_control_operations`, colunas do claim
+(`dispatch_connection_id` FK para `game_connections`, `not_after`,
+`result_deadline_at`) com CHECKs de coerência (claim com os dois prazos, UNCERTAIN
+só após o claim, `error_code` em FAILED/UNCERTAIN), índice parcial único de uma
+operação `PENDING`/`DISPATCHED` por servidor e índice `(status,
+result_deadline_at)`. Operações da Etapa 09 ainda abertas são reconciliadas: com
+claim → `UNCERTAIN/RESULT_TIMEOUT`; sem claim → `FAILED/DISPATCH_EXPIRED`. `down`
+volta `UNCERTAIN` para `DISPATCHED` e os novos códigos para o catálogo antigo.
+Detalhes em `docs/integration-architecture.md` §9.1 e `docs/server-control.md`.
