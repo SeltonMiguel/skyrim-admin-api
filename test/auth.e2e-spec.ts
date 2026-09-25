@@ -358,6 +358,23 @@ describeDatabase('Auth + RBAC with real PostgreSQL', () => {
       responses.find((response) => response.status === 200)!.body.refreshToken,
     ).expect(200);
   });
+  it('ignores a spoofed X-Forwarded-For when no proxy is trusted (default TRUST_PROXY)', async () => {
+    const { body } = await http()
+      .post('/api/v1/auth/login')
+      .set('X-Forwarded-For', '6.6.6.6')
+      .send({ username: 'coordinator', password })
+      .expect(200);
+    const [session] = await database.query(
+      'SELECT ip_address FROM staff_sessions WHERE staff_user_id = $1 ORDER BY created_at DESC LIMIT 1',
+      [body.staff.id],
+    );
+    expect(session.ip_address).not.toBe('6.6.6.6');
+    expect(session.ip_address).toMatch(/127\.0\.0\.1$/);
+    const [audit] = await database.query(
+      "SELECT ip_address FROM audit_logs WHERE action = 'AUTH_LOGIN' ORDER BY created_at DESC LIMIT 1",
+    );
+    expect(audit.ip_address).toBe(session.ip_address);
+  });
   it('logout invalidates access and refresh for only the current session', async () => {
     const { body } = await login('coordinator').expect(200);
     await http()

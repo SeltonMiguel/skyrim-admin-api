@@ -440,3 +440,85 @@ describe('Server Control environment validation', () => {
     ),
   );
 });
+
+describe('Security environment (12.1)', () => {
+  it('ships conservative abuse-control defaults and production-safe toggles', () => {
+    const config = validateEnvironment(example);
+    expect(config.security).toEqual({
+      trustProxy: 'false',
+      corsOrigins: [],
+      realtimeOrigins: [],
+      swaggerEnabled: true,
+      hstsMaxAgeSeconds: 0,
+      refreshReuseGraceMs: 10000,
+      staffLogin: {
+        windowMs: 900000,
+        perIp: 30,
+        perUsername: 10,
+        maxConcurrent: 4,
+      },
+      staffRefresh: { windowMs: 60000, perIp: 60, perSession: 10 },
+      realtime: {
+        maxConnections: 10000,
+        maxPendingConnections: 500,
+        maxConnectionsPerIdentity: 5,
+        connectsPerIpPerMinute: 60,
+      },
+      agent: {
+        maxPendingConnections: 32,
+        maxConcurrentAuth: 8,
+        connectsPerIpPerMinute: 30,
+        authFailuresPerIpPerMinute: 10,
+      },
+      playerLimits: { characterQueries: 30, marketMutations: 30 },
+    });
+    expect(
+      validateEnvironment({ ...example, NODE_ENV: 'production' }).security
+        .swaggerEnabled,
+    ).toBe(false);
+    expect(
+      validateEnvironment({
+        ...example,
+        NODE_ENV: 'production',
+        SWAGGER_ENABLED: 'true',
+      }).security.swaggerEnabled,
+    ).toBe(true);
+  });
+  it('accepts explicit proxy trust and exact origins, and refuses unsafe values', () => {
+    for (const value of [
+      'false',
+      '1',
+      '2',
+      'loopback',
+      'loopback, 10.0.0.0/8, ::1',
+      '192.168.1.10',
+    ])
+      expect(() =>
+        validateEnvironment({ ...example, TRUST_PROXY: value }),
+      ).not.toThrow();
+    for (const value of ['true', '*', '10.0.0.0/33', 'proxy.local', '99'])
+      expect(() =>
+        validateEnvironment({ ...example, TRUST_PROXY: value }),
+      ).toThrow('TRUST_PROXY');
+    const config = validateEnvironment({
+      ...example,
+      CORS_ORIGINS: 'https://admin.example.com, http://localhost:5173',
+    });
+    expect(config.security.corsOrigins).toEqual([
+      'https://admin.example.com',
+      'http://localhost:5173',
+    ]);
+    expect(config.security.realtimeOrigins).toEqual(
+      config.security.corsOrigins,
+    );
+    for (const value of [
+      '*',
+      'https://admin.example.com/',
+      'admin.example.com',
+      'https://a.com/path',
+    ])
+      expect(() =>
+        validateEnvironment({ ...example, CORS_ORIGINS: value }),
+      ).toThrow('CORS_ORIGINS');
+  });
+});

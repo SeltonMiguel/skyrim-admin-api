@@ -71,7 +71,9 @@ describe('Foundation HTTP (e2e, substituted database boundary)', () => {
     app = module.createNestApplication(new AppExpressAdapter());
     app.useLogger(false);
     setupApp(app);
-    await app.init();
+    // Listening once: supertest otherwise opens and closes the server per
+    // request, and concurrent requests could hit a closing server.
+    await app.listen(0, '127.0.0.1');
   });
 
   beforeEach(() => query.mockReset().mockResolvedValue([{ '?column?': 1 }]));

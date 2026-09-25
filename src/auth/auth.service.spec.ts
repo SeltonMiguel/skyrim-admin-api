@@ -1,3 +1,5 @@
+import { StaffAuthThrottle } from './staff-auth-throttle.js';
+import { SecurityLog } from '../common/security/security-log.js';
 import { AuditService } from '../audit/audit.service.js';
 import { RequestContext } from '../common/request-context/request-context.service.js';
 import { jest } from '@jest/globals';
@@ -101,6 +103,14 @@ function fixture() {
     passwords as unknown as PasswordService,
     tokens as unknown as TokenService,
     new AuditService(database, new RequestContext()),
+    {
+      beginLogin: () => () => undefined,
+      loginSucceeded: () => undefined,
+      refreshAttempt: () => undefined,
+      refreshSession: () => undefined,
+    } as unknown as StaffAuthThrottle,
+    new SecurityLog(),
+    { get: () => ({ security: { refreshReuseGraceMs: 10000 } }) } as never,
   );
   return {
     auth,

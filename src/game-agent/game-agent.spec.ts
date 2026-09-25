@@ -1,4 +1,7 @@
 import { jest } from '@jest/globals';
+import { MemoryRateLimiter } from '../common/rate-limit/rate-limiter.js';
+import { ConcurrencyLimiter } from '../common/rate-limit/concurrency-limiter.js';
+import { SecurityLog } from '../common/security/security-log.js';
 import { randomUUID } from 'node:crypto';
 import { globSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -518,6 +521,14 @@ describe('Host Agent gateway: HELLO commit vs registry visibility', () => {
       clock,
       {
         get: () => ({
+          security: {
+            agent: {
+              maxPendingConnections: 32,
+              maxConcurrentAuth: 8,
+              connectsPerIpPerMinute: 30,
+              authFailuresPerIpPerMinute: 10,
+            },
+          },
           agent: {
             authTimeoutMs: 5000,
             heartbeatIntervalMs: 1000,
@@ -528,10 +539,16 @@ describe('Host Agent gateway: HELLO commit vs registry visibility', () => {
         }),
       } as never,
       { changed: jest.fn(async () => undefined) } as never,
+      { of: () => '127.0.0.1' } as never,
+      new MemoryRateLimiter(),
+      new ConcurrencyLimiter(),
+      new SecurityLog(),
     );
     const connect = () => {
       const ws = new FakeAgentSocket();
-      (gateway as unknown as { connect(ws: unknown): void }).connect(ws);
+      (
+        gateway as unknown as { connect(ws: unknown, ip: string): void }
+      ).connect(ws, '127.0.0.1');
       ws.frame(
         frame({
           type: 'HELLO',
@@ -561,6 +578,26 @@ describe('Host Agent gateway: HELLO commit vs registry visibility', () => {
   const authenticatedFrames = (ws: FakeAgentSocket) =>
     ws.sent.filter((m) => m.type === 'AUTHENTICATED');
 
+  it('refuses HELLO verification beyond the concurrent cap with AUTH_BUSY (12.1)', async () => {
+    const { auth, connect, row } = setup();
+    const running = Array.from({ length: 8 }, () => deferred<never>());
+    for (const verification of running)
+      auth.authenticate.mockReturnValueOnce(verification.promise);
+    for (let i = 0; i < running.length; i++) connect();
+    await flush();
+    const extra = connect();
+    await flush();
+    expect(extra.closes).toEqual([{ code: 4013, reason: 'AUTH_BUSY' }]);
+    expect(auth.authenticate).toHaveBeenCalledTimes(8);
+    // A slot frees as soon as a verification ends.
+    running[0].resolve(row() as never);
+    await flush();
+    auth.authenticate.mockResolvedValueOnce(row() as never);
+    const next = connect();
+    await flush();
+    expect(next.closes).toEqual([]);
+    expect(authenticatedFrames(next)).toHaveLength(1);
+  });
   it('publishes nothing while the HELLO transaction has not committed', async () => {
     const { registry, auth, connect, row } = setup();
     const commit = deferred<never>();

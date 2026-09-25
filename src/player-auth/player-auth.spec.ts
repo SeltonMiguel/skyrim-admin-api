@@ -14,6 +14,7 @@ import {
 import type { ProviderFetch } from './discord-identity.provider.js';
 import { PlayerIdentityProvider } from './identity-provider.js';
 import { PlayerAuthRateLimiter } from './player-auth-rate-limit.js';
+import { MemoryRateLimiter } from '../common/rate-limit/rate-limiter.js';
 
 const redirectUri = 'http://127.0.0.1:53682/callback';
 const discord = {
@@ -172,7 +173,10 @@ describe('Discord identity provider', () => {
 
 describe('Player auth rate limiter', () => {
   it('limits per key within a fixed window and resets afterwards', () => {
-    const limiter = new PlayerAuthRateLimiter(config({}));
+    const limiter = new PlayerAuthRateLimiter(
+      new MemoryRateLimiter(),
+      config({}),
+    );
     expect(limiter.limit).toBe(3);
     for (let i = 0; i < 3; i++) expect(limiter.consume('a', 1000)).toBeNull();
     expect(limiter.consume('a', 1000)).toBe(60);

@@ -117,6 +117,54 @@ describe('Realtime connection registry', () => {
     expect(registry.surface('STAFF')).toHaveLength(1);
     expect(registry.surface('PLAYER')).toHaveLength(0);
   });
+  it('closes exactly one Player session, idempotently and without later delivery', () => {
+    const registry = new RealtimeConnectionRegistry();
+    const socket = () => {
+      const ws = {
+        readyState: 1,
+        OPEN: 1,
+        send: jest.fn(),
+        terminate: jest.fn(),
+        close: jest.fn(() => {
+          ws.readyState = 2;
+        }),
+      };
+      return ws;
+    };
+    const key = connectionKey('PLAYER', 'p1');
+    const [a1, a2, b] = [socket(), socket(), socket()];
+    registry.add(key, a1 as never, 'session-a');
+    registry.add(key, a2 as never, 'session-a');
+    registry.add(key, b as never, 'session-b');
+    expect(
+      registry.closePlayerSession('session-a', 4001, 'SESSION_REVOKED'),
+    ).toBe(2);
+    expect(a1.close).toHaveBeenCalledWith(4001, 'SESSION_REVOKED');
+    expect(a2.close).toHaveBeenCalledWith(4001, 'SESSION_REVOKED');
+    expect(b.close).not.toHaveBeenCalled();
+    expect(registry.count(key)).toBe(1);
+    expect(registry.sessionCount('session-a')).toBe(0);
+    // Nothing published afterwards reaches the revoked sockets.
+    registry.send(key, 'later');
+    expect(a1.send).not.toHaveBeenCalled();
+    expect(b.send).toHaveBeenCalledWith('later');
+    // Idempotent, and the socket's own close event is a no-op.
+    expect(
+      registry.closePlayerSession('session-a', 4001, 'SESSION_REVOKED'),
+    ).toBe(0);
+    registry.remove(key, a1 as never);
+    expect(registry.count(key)).toBe(1);
+    // A socket already closing is unregistered without being closed again.
+    const closing = { ...socket(), readyState: 2 };
+    registry.add(key, closing as never, 'session-c');
+    expect(
+      registry.closePlayerSession('session-c', 4001, 'SESSION_REVOKED'),
+    ).toBe(1);
+    expect(closing.close).not.toHaveBeenCalled();
+    registry.remove(key, b as never);
+    expect(registry.count()).toBe(0);
+    expect(registry.sessionCount('session-b')).toBe(0);
+  });
   it('drops a slow consumer instead of buffering without bound', () => {
     const socket = (bufferedAmount: number, readyState: 1 | 3 = 1) => ({
       readyState,
