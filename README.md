@@ -593,4 +593,13 @@ privadas. Mensagens expiram após `PLAYER_CHAT_RETENTION` (padrão 7d) e os envi
 exigem `Idempotency-Key` e respeitam `PLAYER_CHAT_RATE_LIMIT_COUNT`/`_WINDOW`
 (padrão 5 por 10s, em memória, instância única). A migration
 `1789990000000-PlayerChat` completa vinte migrations.
+
+A Subetapa 10.16 adiciona Player Settings account-scoped em
+`GET/PATCH /api/v1/player/settings`: `locale` (BCP 47 canônico), `timeZone`
+(IANA) e os flags `allowDirectMessages`, `allowTradeRequests`,
+`allowGroupInvites` e `allowGuildInvites` (defaults sem row: `pt-BR`, `UTC` e
+`true`). Os flags barram só novas interações de outros players (DIRECT, Trade,
+Group e Guild invites) com o mesmo 404 genérico de target indisponível; nada
+existente é cancelado. A migration `1790000000000-PlayerSettings` completa vinte
+e uma migrations.
 Consulte [arquitetura, decisões e roadmap da Etapa 10](docs/player-services.md).

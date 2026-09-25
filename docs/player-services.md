@@ -81,7 +81,7 @@ domínio. A Player API nunca chama controllers administrativos. O prefixo
 | 10.13 Player Trade | **Implementada.** Trade entre character identities com ofertas versionadas, escrow de GOLD em TRADE_ESCROW, settlement só de GOLD imediato e GAME_ITEM aguardando o Agent (contrato interno); migration `1789970000000-PlayerTrades` |
 | 10.14 Marketplace | **Implementada.** Listing de um GAME_ITEM por GOLD que só fica ACTIVE com custódia confirmada pelo Agent, compra com GOLD reservado em MARKET_ESCROW, settlement/falha pelo Agent (contratos internos); migration `1789980000000-PlayerMarketplace` |
 | 10.15 Chat | **Implementada.** Chat persistente de texto plano GLOBAL/GROUP/GUILD/DIRECT com retenção (7d), histórico HTTP, entrega por `CHAT_MESSAGE_CREATED` no realtime da 10.8, DIRECT privado por ownership link; migration `1789990000000-PlayerChat` |
-| 10.16 Player Settings | Preferências de conta com allowlist explícita |
+| 10.16 Player Settings | **Implementada.** Preferências account-scoped (`locale`, `timeZone` e quatro flags de privacidade de interação), defaults sem row, Audit e realtime próprios; flags aplicados a DIRECT, Trade, Group e Guild; migration `1790000000000-PlayerSettings` |
 | 10.17 VIP Player Integration | Integração do catálogo existente na superfície do player |
 
 Dependências de fundação: 10.1 → 10.2 → 10.3 → 10.4. Domínios que atuam sobre
@@ -1485,6 +1485,87 @@ read-model.
 - A decisão da 10.10 vale aqui: uma horses query criada por Player não aparece no
   detalhe administrativo de Character Management, só na view genérica redigida.
 
+### Player Settings
+
+#### Implementação (10.16)
+
+Módulo `src/player-settings/`. Preferências **account-scoped**: pertencem a
+`players.id`, não a um character identity, ownership link ou GameServer; todos os
+characters do player compartilham as mesmas. Configurações locais do
+Electron/Launcher (tema, janela, paths, gráficos, keybinds, mods, character ou
+servidor selecionado) ficam fora do backend.
+
+| Tabela | Colunas e garantias |
+| --- | --- |
+| `player_settings` | `player_id` (PK e FK para `players`, sem cascade), `locale` varchar(35), `time_zone` varchar(64), `allow_direct_messages`, `allow_trade_requests`, `allow_group_invites`, `allow_guild_invites` (boolean, default true), `created_at`, `updated_at`; CHECKs de comprimento e forma de `locale`/`time_zone` |
+
+**Defaults sem row:** `locale = pt-BR`, `timeZone = UTC` e os quatro flags `true`.
+Um player sem row usa os defaults (GET devolve `updatedAt = null`); ler nunca cria
+row. A row nasce só na primeira mudança efetiva, então os defaults não são
+materializados para todos os players.
+
+**locale / timeZone:** `locale` é uma tag BCP 47 validada por
+`Intl.getCanonicalLocales` e suportada pelo runtime
+(`Intl.DateTimeFormat.supportedLocalesOf`), guardada canônica (`en-us` → `en-US`);
+vazio, inválido, não suportado (`zz`), com controles ou com mais de 35 caracteres
+→ 400. Não há allowlist fechada. `timeZone` é uma zona IANA aceita por
+`Intl.DateTimeFormat`, guardada como o runtime a resolve (`america/sao_paulo` →
+`America/Sao_Paulo`, `Etc/UTC` → `UTC`); zonas desconhecidas e offsets como
+`+03:00` → 400.
+
+**Player API** (`PlayerAuthGuard`: SUSPENDED/BANNED → 403, token de Staff → 401):
+
+| Rota | Regra |
+| --- | --- |
+| `GET /api/v1/player/settings` | `{ locale, timeZone, allowDirectMessages, allowTradeRequests, allowGroupInvites, allowGuildInvites, updatedAt }` |
+| `PATCH /api/v1/player/settings` | corpo parcial só com esses campos (pelo menos um; `playerId`, `characterLinkId` ou qualquer extra → 400); o player vem do token |
+
+O PATCH aplica só os campos enviados e preserva os demais. Sem `Idempotency-Key`:
+é idempotente por valor. Enviar os valores atuais → 200 sem escrita, Audit,
+realtime ou mudança de `updatedAt` (também sem criar row quando os valores são os
+defaults). GameServer nunca é consultado: um servidor desabilitado não afeta
+settings.
+
+**Concorrência:** numa transação, a row é travada `FOR UPDATE` quando existe; a
+primeira mudança efetiva a cria com `INSERT … ON CONFLICT (player_id) DO
+NOTHING`: se dois primeiros PATCHes concorrem, um insere e o outro, depois do
+commit dele, trava a row e aplica os próprios campos por cima. Só os campos
+alterados são escritos, então PATCHes parciais concorrentes (ex.: `locale` e
+`allowTradeRequests`) preservam ambos, sem lost update e sem mutex em memória.
+
+**Flags de privacidade (novas interações recebidas):** controlam só o que
+**outros players** começam com os characters deste player; nada que já existe é
+cancelado ou escondido.
+
+| Flag | `false` impede | Continua valendo |
+| --- | --- | --- |
+| `allowDirectMessages` | nova mensagem DIRECT de outro player, inclusive numa thread existente | histórico legível pelos participantes; o próprio player segue enviando conforme o setting do destinatário |
+| `allowTradeRequests` | outro player criar um Trade com um character deste player como target | trades existentes seguem visíveis, negociáveis, aceitáveis, canceláveis e liquidáveis |
+| `allowGroupInvites` | novo Group invite para um character deste player | invites pendentes continuam aceitáveis; memberships não mudam |
+| `allowGuildInvites` | novo Guild invite para um character deste player | invites pendentes continuam aceitáveis; memberships não mudam |
+
+**Resolução do target** nos quatro domínios: ownership VERIFIED atual → player
+ACTIVE (regra já existente de cada domínio) → settings do dono (sem row = defaults)
+→ flag. Um target barrado pelo flag recebe **exatamente** o 404 `Character not
+available` que o domínio já devolve para um target desconhecido/indisponível,
+checado no mesmo ponto (antes de qualquer 409 de membership): nunca revela o
+setting, o motivo nem o player do target. Interações entre characters do **mesmo**
+player não são barradas (o flag é sobre outros players). Como o setting é do
+player, trocar a ownership de um character faz valer os settings do novo dono.
+A lógica fica num único `PlayerSettingsService.allows(manager, playerId,
+interaction)`, lido na transação do domínio; `PlayerSettingsModule` não depende
+de Chat, Trade, Groups ou Guilds (teste de fronteira).
+
+**Audit:** `PLAYER_SETTINGS_UPDATED` (ator PLAYER, `resourceType =
+PLAYER_SETTINGS`, `resourceId` = o próprio player) na mesma transação, com
+metadata apenas `changedFields` (sem valores, player id ou tokens). No-op não
+audita; se o Audit falhar (503), nada muda.
+
+**Realtime:** `PLAYER_SETTINGS_UPDATED` com o DTO de settings, depois do commit,
+só para o próprio player (todas as conexões dele: sincroniza várias instâncias
+do Electron/dispositivos), pelo gateway existente. Nenhum outro player recebe;
+no-op e rollback não publicam.
+
 ### VIP
 
 - **Reutilizar `vip_offers`**; o Electron consome
@@ -1643,5 +1724,5 @@ as decisões acima:
 | Revogação administrativa de vínculos; expiração de trades e de listings; limite de listings por character | futura |
 | Transporte autenticado do Agent chamando `confirmFromAgent` e digitação do challenge no jogo | 11 |
 | Implementação real de perfil e skills pelo Agent, conforme os contratos da 10.5 | 11 |
-| Chaves de Player Settings | 10.16 |
+| Settings por character e novas chaves de preferência (ex.: notificações) | futura |
 | Rate limiting distribuído, confiança em proxy e cotas por conta | Etapa 12 |

@@ -170,3 +170,10 @@ player, FK deferred com `ON DELETE CASCADE`). Triggers bloqueiam UPDATE e TRUNCA
 e só permitem DELETE de linhas expiradas, deixando a purga de retenção futura
 possível. `down` recusa reverter com mensagens ou threads existentes. Detalhes em
 `docs/player-services.md`.
+
+A Subetapa 10.16 adiciona `1790000000000-PlayerSettings`: `player_settings` com
+`player_id` como PK e FK para `players` (uma row por player, sem cascade),
+`locale`/`time_zone` com CHECKs de comprimento e forma e os quatro flags de
+privacidade (default true). Players sem row usam os defaults. `down` recusa
+reverter se existir alguma preferência salva. Detalhes em
+`docs/player-services.md`.
