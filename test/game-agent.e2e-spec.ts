@@ -665,14 +665,14 @@ describeDatabase('Host Agent transport with real PostgreSQL', () => {
       early.send(big);
       expect((await early.closedWith()).code).toBe(1009);
       const { socket, connectionId } = await authenticated(key);
-      socket.send(envelope('COMMAND_RESULT', { blob: 'y'.repeat(128 * 1024) }));
+      socket.send(envelope('DOMAIN_EVENT', { blob: 'y'.repeat(128 * 1024) }));
       expect((await socket.closedWith()).code).toBe(1009);
       await eventually(
         async () => (await row(connectionId)).status === 'DISCONNECTED',
       );
       // A maximal command result (64 KiB) plus envelope still fits.
       const second = await authenticated(key);
-      const message = envelope('COMMAND_RESULT', { blob: 'z'.repeat(65536) });
+      const message = envelope('DOMAIN_EVENT', { blob: 'z'.repeat(65536) });
       second.socket.send(message);
       expect(
         (await reply(second.socket, message.messageId as string)).payload,
@@ -930,11 +930,17 @@ describeDatabase('Host Agent transport with real PostgreSQL', () => {
       const before = await database.query(
         'SELECT (SELECT count(*) FROM game_commands) AS commands, (SELECT count(*) FROM game_command_results) AS results, (SELECT count(*) FROM server_control_operations) AS operations',
       );
-      for (const type of [
-        'COMMAND_RESULT',
-        'DOMAIN_EVENT',
-        'SERVER_CONTROL_RESULT',
-      ]) {
+      // A malformed COMMAND_RESULT (11.2) is refused and persists nothing.
+      const result = envelope('COMMAND_RESULT', {
+        commandId: randomUUID(),
+        outcome: 'SUCCEEDED',
+      });
+      socket.send(result);
+      expect(await reply(socket, result.messageId as string)).toMatchObject({
+        type: 'ERROR',
+        payload: { code: 'INVALID_MESSAGE', retryable: false },
+      });
+      for (const type of ['DOMAIN_EVENT', 'SERVER_CONTROL_RESULT']) {
         const message = envelope(type, {
           commandId: randomUUID(),
           outcome: 'SUCCEEDED',

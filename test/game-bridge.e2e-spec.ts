@@ -493,12 +493,42 @@ describeDatabase('Game Bridge with real PostgreSQL', () => {
       await expect(
         receiver.acknowledge({ ...ack(command), [field]: randomUUID() }),
       ).rejects.toThrow('does not match');
+      // RESULT is bound to the command: an unknown connection is refused
+      // because it is not the server's current session.
       await expect(
         receiver.result({ ...success(command), [field]: randomUUID() }),
-      ).rejects.toThrow('does not match');
+      ).rejects.toThrow(
+        field === 'connectionId' ? 'no longer active' : 'does not match',
+      );
       expect((await read(command.id)).status).toBe(S.DISPATCHED);
     },
   );
+  it('accepts the RESULT of a command from the new session after a reconnect, never its ACK', async () => {
+    const command = await dispatched();
+    await receiver.acknowledge(ack(command));
+    const next = await connections.connect({
+      gameServerId: serverId,
+      externalConnectionId: randomUUID(),
+    });
+    // ACK belongs to the attempt reserved for the old session.
+    await expect(
+      receiver.acknowledge({ ...ack(command), connectionId: next.id }),
+    ).rejects.toThrow('does not match');
+    // RESULT belongs to the command: the new session may report it, without
+    // any retry (ACKNOWLEDGED is never resent).
+    const done = await receiver.result({
+      ...success(command),
+      connectionId: next.id,
+    });
+    expect(done.status).toBe(S.SUCCEEDED);
+    expect(done.dispatchedConnectionId).toBe(command.dispatchedConnectionId);
+    expect(gateway.sends).toHaveLength(1);
+    // The identical result through the same session is an idempotent replay.
+    expect(
+      (await receiver.receive({ ...success(command), connectionId: next.id }))
+        .duplicate,
+    ).toBe(true);
+  });
   it('rejects wrong protocol, nonce, malformed/large payloads and unsupported types', async () => {
     const command = await dispatched();
     await expect(

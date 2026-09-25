@@ -8,6 +8,7 @@ import type { App } from 'supertest/types.js';
 import { loadEnvironment } from '../src/config/environment.js';
 import type { ApplicationConfig } from '../src/config/environment.js';
 import { createDatabaseOptions } from '../src/database/database.options.js';
+import { GameCommandWorker } from '../src/game-agent/game-command.worker.js';
 import { compiledDatabaseArtifacts } from './compiled-database.js';
 import { setupApp } from '../src/setup-app.js';
 import { AppExpressAdapter } from '../src/common/http/app-express.adapter.js';
@@ -143,6 +144,9 @@ describeDatabase('Admin read APIs with real PostgreSQL', () => {
     const module = await Test.createTestingModule({ imports: [AppModule] })
       .overrideProvider(DataSource)
       .useValue(database)
+      // This suite drives the command lifecycle by hand.
+      .overrideProvider(GameCommandWorker)
+      .useValue({})
       .overrideProvider(BridgeClock)
       .useValue({ now: () => now })
       .overrideProvider(ConfigService)

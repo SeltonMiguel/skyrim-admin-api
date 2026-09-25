@@ -120,9 +120,14 @@ describe('Game Bridge services', () => {
       await expect(
         f.receiver.acknowledge({ ...f.ack(), [field]: randomUUID() }),
       ).rejects.toThrow('does not match');
+      // RESULT is bound to the command, not to the attempt's connection: an
+      // unknown connection is refused because it is not the server's
+      // current session.
       await expect(
         f.receiver.result({ ...f.success(), [field]: randomUUID() }),
-      ).rejects.toThrow('does not match');
+      ).rejects.toThrow(
+        field === 'connectionId' ? 'no longer active' : 'does not match',
+      );
     },
   );
   it('retries ACK timeout without reverting status or extending execution', async () => {

@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { DataSource } from 'typeorm';
 import request from 'supertest';
 import type { App } from 'supertest/types.js';
+import { GameCommandWorker } from '../src/game-agent/game-command.worker.js';
 import { compiledDatabaseArtifacts } from './compiled-database.js';
 import { loadEnvironment } from '../src/config/environment.js';
 import { createDatabaseOptions } from '../src/database/database.options.js';
@@ -204,6 +205,9 @@ describeDatabase(
       const module = await Test.createTestingModule({ imports: [AppModule] })
         .overrideProvider(DataSource)
         .useValue(database)
+        // This suite drives the command lifecycle by hand.
+        .overrideProvider(GameCommandWorker)
+        .useValue({})
         .overrideProvider(DiscordIdentityProvider)
         .useValue(discord)
         .overrideProvider(GameGateway)

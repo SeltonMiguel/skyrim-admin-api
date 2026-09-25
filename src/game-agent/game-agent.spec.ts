@@ -40,6 +40,16 @@ import type {
 } from './agent-session.registry.js';
 import { AgentMessageRouter } from './agent-message.router.js';
 import { AgentGateway } from './agent.gateway.js';
+import { AgentGameGateway } from './agent-game.gateway.js';
+import {
+  COMMAND_DEDUP_CAPABILITY,
+  GAME_COMMAND_CAPABILITY,
+  supportedCommandTypes,
+  supportsCommand,
+} from './agent-capabilities.js';
+import { COMMAND_KINDS } from '../game-bridge/command-kinds.js';
+import { COMMAND_TYPES } from '../game-bridge/command-contract.js';
+import type { CommandEnvelope } from '../game-bridge/command-contract.js';
 import type { AgentAuthService } from './agent-auth.service.js';
 import { EventEmitter } from 'node:events';
 
@@ -482,7 +492,12 @@ describe('Host Agent gateway: HELLO commit vs registry visibility', () => {
     const gateway = new AgentGateway(
       { register: jest.fn() } as never,
       auth as unknown as AgentAuthService,
-      new AgentMessageRouter(connections as never, registry, clock),
+      new AgentMessageRouter(
+        connections as never,
+        registry,
+        { acknowledge: jest.fn(), result: jest.fn() } as never,
+        clock,
+      ),
       registry,
       connections as never,
       clock,
@@ -492,6 +507,8 @@ describe('Host Agent gateway: HELLO commit vs registry visibility', () => {
             authTimeoutMs: 5000,
             heartbeatIntervalMs: 1000,
             heartbeatTimeoutMs: 3000,
+            messageRateLimitCount: 200,
+            messageRateLimitWindowMs: 10000,
           },
         }),
       } as never,
@@ -710,14 +727,19 @@ describe('Host Agent message router', () => {
     const connections = { heartbeat } as unknown as GameConnectionService;
     const registry = new AgentSessionRegistry();
     const clock = { now: () => new Date('2026-10-01T12:00:05.000Z') };
+    const commands = {
+      acknowledge: jest.fn(async () => ({})),
+      result: jest.fn(async () => ({ close: 'SESSION_CLOSED' as const })),
+    };
     const router = new AgentMessageRouter(
       connections,
       registry,
+      commands as never,
       clock as BridgeClock,
     );
     const session = snapshot();
     activate(registry, session, socket());
-    return { router, session, heartbeat, registry };
+    return { router, session, heartbeat, registry, commands };
   };
   const envelope = (overrides: Record<string, unknown> = {}) =>
     parseEnvelope(JSON.stringify(frame(overrides)));
@@ -774,13 +796,27 @@ describe('Host Agent message router', () => {
     ).toEqual({ close: 'PROTOCOL_ERROR' });
     expect(heartbeat).not.toHaveBeenCalled();
   });
+  it('hands COMMAND_ACK and COMMAND_RESULT to the GameCommand adapter with the session', async () => {
+    const { router, session, commands, heartbeat } = setup();
+    const ack = envelope({ type: 'COMMAND_ACK', payload: { any: 1 } });
+    expect(await router.route(session, ack)).toEqual({});
+    expect(commands.acknowledge).toHaveBeenCalledWith(session, ack);
+    const result = envelope({ type: 'COMMAND_RESULT', payload: { any: 1 } });
+    expect(await router.route(session, result)).toEqual({
+      close: 'SESSION_CLOSED',
+    });
+    expect(commands.result).toHaveBeenCalledWith(session, result);
+    // The server check still comes first.
+    await router.route(
+      session,
+      envelope({ type: 'COMMAND_RESULT', gameServerId: randomUUID() }),
+    );
+    expect(commands.result).toHaveBeenCalledTimes(1);
+    expect(heartbeat).not.toHaveBeenCalled();
+  });
   it('answers later-substep flows with NOT_IMPLEMENTED and accepts Agent ERROR frames', async () => {
     const { router, session, heartbeat } = setup();
-    for (const type of [
-      'COMMAND_RESULT',
-      'DOMAIN_EVENT',
-      'SERVER_CONTROL_RESULT',
-    ]) {
+    for (const type of ['DOMAIN_EVENT', 'SERVER_CONTROL_RESULT']) {
       const message = envelope({ type, payload: { anything: 1 } });
       expect(await router.route(session, message)).toEqual({
         reply: expect.objectContaining({
@@ -865,12 +901,27 @@ describe('Host Agent boundaries', () => {
       .map((file) => ({ file, source: readFileSync(file, 'utf8') }));
   const imports = (source: string) =>
     [...source.matchAll(/from '([^']+)'/g)].map((m) => m[1]);
-  it('never reaches domain modules, Player/Staff realtime or the command pipeline', () => {
+  it('never reaches domain modules, Player/Staff realtime or Server Control', () => {
     for (const { source } of sources('game-agent'))
       for (const module of imports(source))
         expect(module).not.toMatch(
-          /player-|professions|vip-|economy|server-control|character-management|moderation|world-management|realtime|game-command|socket\.io|electron|child_process/,
+          /player-|professions|vip-|economy|server-control|character-management|moderation|world-management|realtime|socket\.io|electron|child_process/,
         );
+  });
+  it('lets only the adapter and the worker use the command lifecycle, and nothing create commands', () => {
+    for (const { file, source } of sources('game-agent')) {
+      const pipeline = imports(source).filter((m) => /game-command-/.test(m));
+      if (
+        !file.endsWith('agent-command.adapter.ts') &&
+        !file.endsWith('game-command.worker.ts')
+      )
+        expect(pipeline).toEqual([]);
+      // The Agent can never submit (or choose the actor of) a GameCommand.
+      expect(pipeline.filter((m) => /game-command-bus|actor/.test(m))).toEqual(
+        [],
+      );
+      expect(source).not.toMatch(/GameCommandBus|ActorCommandService/);
+    }
   });
   it('keeps the message router free of repositories and the database', () => {
     const [router] = sources('game-agent').filter(({ file }) =>
@@ -883,5 +934,176 @@ describe('Host Agent boundaries', () => {
     for (const { source } of sources('realtime'))
       for (const module of imports(source))
         expect(module).not.toMatch(/game-agent/);
+  });
+});
+
+describe('GameCommand capabilities and the real Agent gateway', () => {
+  const base = [
+    'GAME_COMMAND_V1',
+    'CHARACTER_INVENTORY_QUERY',
+    'CHARACTER_ITEM_GIVE',
+  ];
+  it('classifies every command type once and gates mutations on the dedup journal', () => {
+    expect(Object.keys(COMMAND_KINDS).sort()).toEqual(
+      [...COMMAND_TYPES].sort(),
+    );
+    expect(
+      COMMAND_TYPES.filter((type) => COMMAND_KINDS[type] === 'QUERY').sort(),
+    ).toEqual(
+      [
+        'BRIDGE_PING',
+        'CHARACTER_FACTIONS_QUERY',
+        'CHARACTER_HOLDS_QUERY',
+        'CHARACTER_HORSES_QUERY',
+        'CHARACTER_INVENTORY_QUERY',
+        'CHARACTER_PROFILE_QUERY',
+        'CHARACTER_PROPERTIES_QUERY',
+        'CHARACTER_SKILLS_QUERY',
+        'WORLD_STATE_QUERY',
+      ].sort(),
+    );
+    expect(supportsCommand(base, 'CHARACTER_INVENTORY_QUERY')).toBe(true);
+    expect(supportsCommand(base, 'CHARACTER_ITEM_GIVE')).toBe(false);
+    expect(
+      supportsCommand(
+        [...base, COMMAND_DEDUP_CAPABILITY],
+        'CHARACTER_ITEM_GIVE',
+      ),
+    ).toBe(true);
+    // No protocol capability, or no type capability: nothing.
+    expect(supportsCommand(base.slice(1), 'CHARACTER_INVENTORY_QUERY')).toBe(
+      false,
+    );
+    expect(supportsCommand([GAME_COMMAND_CAPABILITY], 'BRIDGE_PING')).toBe(
+      false,
+    );
+    expect(
+      supportedCommandTypes([
+        ...base,
+        COMMAND_DEDUP_CAPABILITY,
+        'UNKNOWN_THING',
+      ]),
+    ).toEqual(['CHARACTER_INVENTORY_QUERY', 'CHARACTER_ITEM_GIVE']);
+    // Every capability fits the HELLO limits.
+    expect(COMMAND_TYPES.length + 2).toBeLessThanOrEqual(
+      MAX_AGENT_CAPABILITIES,
+    );
+  });
+  const setup = (
+    runtime = { gameProcessState: G.RUNNING, skseReady: true },
+  ) => {
+    const registry = new AgentSessionRegistry();
+    const ws = socket();
+    const session = snapshot({
+      capabilities: [...base, COMMAND_DEDUP_CAPABILITY],
+      runtime,
+    });
+    activate(registry, session, ws);
+    const gateway = new AgentGameGateway(registry, {
+      now: () => new Date('2026-10-01T12:00:00.000Z'),
+    } as BridgeClock);
+    const connection = {
+      id: session.connectionId,
+      gameServerId: serverId,
+      externalConnectionId: 'x',
+    };
+    const envelope = {
+      protocolVersion: '1',
+      commandId: randomUUID(),
+      correlationId: randomUUID(),
+      serverId,
+      connectionId: session.connectionId,
+      attempt: 2,
+      idempotencyKey: 'caller-key',
+      type: 'CHARACTER_ITEM_GIVE',
+      payload: { characterId: 'c', itemId: 'i', quantity: 1 },
+      issuedAt: '2026-10-01T11:59:00.000Z',
+      ackDeadlineAt: '2026-10-01T12:00:05.000Z',
+      executionDeadlineAt: '2026-10-01T12:00:30.000Z',
+    } as CommandEnvelope;
+    const signal = new AbortController().signal;
+    return { registry, ws, session, gateway, connection, envelope, signal };
+  };
+  it('sends a typed COMMAND to exactly the reserved session, without backend internals', async () => {
+    const { ws, gateway, connection, envelope, signal } = setup();
+    expect(await gateway.send(connection, envelope, signal)).toEqual({
+      accepted: true,
+    });
+    const frame = JSON.parse(ws.send.mock.calls[0][0] as string);
+    expect(frame).toMatchObject({
+      protocolVersion: '1',
+      type: 'COMMAND',
+      gameServerId: serverId,
+      payload: {
+        commandId: envelope.commandId,
+        correlationId: envelope.correlationId,
+        attempt: 2,
+        type: 'CHARACTER_ITEM_GIVE',
+        payload: envelope.payload,
+        issuedAt: envelope.issuedAt,
+        ackDeadlineAt: envelope.ackDeadlineAt,
+        executionDeadlineAt: envelope.executionDeadlineAt,
+      },
+    });
+    expect(Object.keys(frame.payload)).not.toContain('idempotencyKey');
+  });
+  it('reports proven non-delivery when the session, runtime or capability changed after the reservation', async () => {
+    const { registry, ws, session, gateway, connection, envelope, signal } =
+      setup();
+    // Another session now owns the server: never redirected there.
+    const other = snapshot({
+      capabilities: [...base, COMMAND_DEDUP_CAPABILITY],
+      runtime: session.runtime,
+    });
+    const otherSocket = socket();
+    activate(registry, other, otherSocket);
+    expect(await gateway.send(connection, envelope, signal)).toEqual({
+      accepted: false,
+      reason: 'UNAVAILABLE',
+    });
+    expect(otherSocket.send).not.toHaveBeenCalled();
+    // Runtime dropped between reserve and send.
+    const dropped = setup();
+    dropped.registry.heartbeat(
+      serverId,
+      dropped.session.connectionId,
+      { gameProcessState: G.RUNNING, skseReady: false },
+      new Date(),
+    );
+    expect(
+      await dropped.gateway.send(dropped.connection, dropped.envelope, signal),
+    ).toMatchObject({ accepted: false, reason: 'UNAVAILABLE' });
+    // Capability withdrawn (no journal any more) for a mutation.
+    const withdrawn = setup();
+    withdrawn.registry.heartbeat(
+      serverId,
+      withdrawn.session.connectionId,
+      { gameProcessState: G.RUNNING, skseReady: true, capabilities: base },
+      new Date(),
+    );
+    expect(
+      await withdrawn.gateway.send(
+        withdrawn.connection,
+        withdrawn.envelope,
+        signal,
+      ),
+    ).toMatchObject({ accepted: false, reason: 'UNAVAILABLE' });
+    // Aborted before sending, or the session is gone altogether.
+    const controller = new AbortController();
+    controller.abort();
+    const aborted = setup();
+    expect(
+      await aborted.gateway.send(
+        aborted.connection,
+        aborted.envelope,
+        controller.signal,
+      ),
+    ).toMatchObject({ accepted: false });
+    aborted.registry.remove(serverId, aborted.session.connectionId);
+    expect(
+      await aborted.gateway.send(aborted.connection, aborted.envelope, signal),
+    ).toMatchObject({ accepted: false, reason: 'UNAVAILABLE' });
+    for (const target of [ws, dropped.ws, withdrawn.ws, aborted.ws])
+      expect(target.send).not.toHaveBeenCalled();
   });
 });

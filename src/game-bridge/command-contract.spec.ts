@@ -123,6 +123,7 @@ describe('Game command contracts and state machine', () => {
       serverId: command.gameServerId,
       correlationId: command.correlationId,
       connectionId: command.dispatchedConnectionId,
+      attempt: command.dispatchAttempts,
       idempotencyKey: 'key',
       type: 'BRIDGE_PING',
       payload: { nonce: 'ping' },

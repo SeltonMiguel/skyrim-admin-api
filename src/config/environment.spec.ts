@@ -171,6 +171,8 @@ describe('Game Bridge environment validation', () => {
       ackTimeoutMs: 5000,
       executionTimeoutMs: 30000,
       maxDispatchAttempts: 3,
+      pendingTimeoutMs: 60000,
+      workerIntervalMs: 500,
     });
   });
   it.each([
@@ -178,6 +180,8 @@ describe('Game Bridge environment validation', () => {
     'GAME_COMMAND_ACK_TIMEOUT_MS',
     'GAME_COMMAND_EXECUTION_TIMEOUT_MS',
     'GAME_COMMAND_MAX_DISPATCH_ATTEMPTS',
+    'GAME_COMMAND_PENDING_TIMEOUT_MS',
+    'GAME_COMMAND_WORKER_INTERVAL_MS',
   ])('rejects invalid %s', (field) => {
     for (const value of ['0', '-1', '1.5', 'abc', 'Infinity', '999999999999'])
       expect(() => validateEnvironment({ ...example, [field]: value })).toThrow(
@@ -376,6 +380,9 @@ describe('Host Agent environment validation', () => {
       authTimeoutMs: 5000,
       heartbeatIntervalMs: 10000,
       heartbeatTimeoutMs: 30000,
+      maxInFlightCommands: 32,
+      messageRateLimitCount: 200,
+      messageRateLimitWindowMs: 10000,
     });
     expect(
       validateEnvironment({
@@ -393,6 +400,9 @@ describe('Host Agent environment validation', () => {
     { AGENT_HEARTBEAT_INTERVAL: '10' },
     { AGENT_AUTH_TIMEOUT_MS: '50' },
     { AGENT_AUTH_TIMEOUT_MS: '60001' },
+    { AGENT_MAX_IN_FLIGHT_COMMANDS: '0' },
+    { AGENT_MESSAGE_RATE_LIMIT_COUNT: '9' },
+    { AGENT_MESSAGE_RATE_LIMIT_WINDOW_MS: '99' },
   ])('rejects %o', (override) =>
     expect(() => validateEnvironment({ ...example, ...override })).toThrow(
       /AGENT_/,
