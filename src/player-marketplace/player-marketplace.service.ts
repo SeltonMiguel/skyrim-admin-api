@@ -31,11 +31,14 @@ import type {
 import { PlayerMarketplaceListing } from './entities/player-marketplace-listing.entity.js';
 import { PlayerMarketplacePurchase } from './entities/player-marketplace-purchase.entity.js';
 import type { PlayerMarketplaceRequest } from './entities/player-marketplace-request.entity.js';
+import type { PlayerMarketplaceItemRelease } from './entities/player-marketplace-item-release.entity.js';
 import { MarketEscrowService } from './market-escrow.service.js';
 import {
   ListingStatus,
   MarketRequestOperation as Op,
   PurchaseStatus,
+  ReleaseReason,
+  ReleaseStatus,
 } from './player-marketplace.contracts.js';
 import type {
   ListingBrowseQueryDto,
@@ -110,6 +113,23 @@ export class PlayerMarketplaceService {
         playerIds: event.playerIds,
       });
     return result;
+  }
+  async createRelease(
+    manager: EntityManager,
+    listing: PlayerMarketplaceListing,
+    reason: ReleaseReason,
+  ): Promise<void> {
+    await manager
+      .getRepository<PlayerMarketplaceItemRelease>(
+        'PlayerMarketplaceItemRelease',
+      )
+      .insert({
+        listingId: listing.id,
+        gameServerId: listing.gameServerId,
+        sellerCharacterId: listing.sellerCharacterId,
+        reason,
+        status: ReleaseStatus.PENDING,
+      });
   }
   listings(manager: EntityManager) {
     return manager.getRepository<PlayerMarketplaceListing>(
@@ -449,6 +469,12 @@ export class PlayerMarketplaceService {
         status: ListingStatus.CANCELLED,
         cancelledAt: new Date(),
       });
+      // An ACTIVE listing's item is in the Agent's custody: its return to
+      // the seller is tracked until the Agent reports it (Etapa 11.4). A
+      // PENDING_CUSTODY listing has no confirmed custody yet: a late
+      // CUSTODIED event creates the persistent release in its transaction.
+      if (listing.status === ListingStatus.ACTIVE)
+        await this.createRelease(manager, listing, ReleaseReason.CANCELLED);
       const saved = await this.listings(manager).findOneByOrFail({
         id: listing.id,
       });

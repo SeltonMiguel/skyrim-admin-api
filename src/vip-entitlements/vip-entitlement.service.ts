@@ -21,6 +21,8 @@ import type { GameServer } from '../game-bridge/entities/game-server.entity.js';
 import type { Player } from '../player-accounts/entities/player.entity.js';
 import type { PlayerCharacter } from '../player-characters/entities/player-character.entity.js';
 import { CharacterLinkStatus } from '../player-characters/player-character.contracts.js';
+import type { VipRewardDelivery } from './entities/vip-reward-delivery.entity.js';
+import { DeliveryStatus } from './vip-delivery.contracts.js';
 import { RealtimeEventBus } from '../realtime-events/realtime-event-bus.js';
 import type {
   RealtimeData,
@@ -350,6 +352,22 @@ export class VipEntitlementService {
           AuditAction.VIP_ENTITLEMENT_GRANTED,
           saved,
         );
+        // CHARACTER rights have a gameplay target: one delivery per typed
+        // reward, snapshotted now (Etapa 11.4). PLAYER rights stay account
+        // rights: no character is ever chosen for them.
+        if (target.scope === VipEntitlementScope.CHARACTER)
+          await manager
+            .getRepository<VipRewardDelivery>('VipRewardDelivery')
+            .insert(
+              offer.rewards.map((reward, rewardIndex) => ({
+                entitlementId: id,
+                rewardIndex,
+                reward,
+                gameServerId: target.gameServerId,
+                characterExternalId: target.characterExternalId,
+                status: DeliveryStatus.PENDING,
+              })),
+            );
         events.push({
           type: 'VIP_ENTITLEMENT_GRANTED',
           data: this.data(saved),

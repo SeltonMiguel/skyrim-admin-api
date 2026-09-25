@@ -68,7 +68,11 @@ export interface ApplicationConfig {
     // Authenticated frames per session per window (in memory, 11.2).
     messageRateLimitCount: number;
     messageRateLimitWindowMs: number;
+    // Best-effort push of new work to connected Agents (11.4).
+    workPushIntervalMs: number;
   };
+  // VIP CHARACTER reward delivery worker (11.4).
+  vipDelivery: { workerIntervalMs: number };
   bootstrap: { username?: string; displayName?: string; password?: string };
   database: {
     host: string;
@@ -112,6 +116,8 @@ interface Environment {
   PLAYER_CHAT_RATE_LIMIT_WINDOW: string;
   REALTIME_AUTH_TIMEOUT_MS: number;
   SERVER_CONTROL_PENDING_TIMEOUT_MS: number;
+  AGENT_WORK_PUSH_INTERVAL_MS: number;
+  VIP_DELIVERY_WORKER_INTERVAL_MS: number;
   SERVER_CONTROL_DELIVERY_WINDOW_MS: number;
   SERVER_CONTROL_RESULT_TIMEOUT_MS: number;
   SERVER_CONTROL_WORKER_INTERVAL_MS: number;
@@ -253,6 +259,16 @@ const schema = Joi.object<Environment>({
     .min(100)
     .max(60000)
     .default(5000),
+  AGENT_WORK_PUSH_INTERVAL_MS: Joi.number()
+    .integer()
+    .min(100)
+    .max(60000)
+    .default(2000),
+  VIP_DELIVERY_WORKER_INTERVAL_MS: Joi.number()
+    .integer()
+    .min(50)
+    .max(60000)
+    .default(2000),
   SERVER_CONTROL_PENDING_TIMEOUT_MS: Joi.number()
     .integer()
     .min(500)
@@ -376,7 +392,9 @@ export function validateEnvironment(
       maxInFlightCommands: value.AGENT_MAX_IN_FLIGHT_COMMANDS,
       messageRateLimitCount: value.AGENT_MESSAGE_RATE_LIMIT_COUNT,
       messageRateLimitWindowMs: value.AGENT_MESSAGE_RATE_LIMIT_WINDOW_MS,
+      workPushIntervalMs: value.AGENT_WORK_PUSH_INTERVAL_MS,
     },
+    vipDelivery: { workerIntervalMs: value.VIP_DELIVERY_WORKER_INTERVAL_MS },
     playerCharacters: { challengeTtl },
     playerGroups: { inviteTtl },
     playerGuilds: { inviteTtl: guildInviteTtl },

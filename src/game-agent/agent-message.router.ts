@@ -2,7 +2,6 @@ import { Injectable, Logger } from '@nestjs/common';
 import { BridgeClock } from '../game-bridge/bridge-clock.js';
 import { GameConnectionService } from '../game-bridge/game-connection.service.js';
 import {
-  AGENT_FUTURE_INBOUND_TYPES,
   AgentProtocolError,
   heartbeatPayload,
   isInboundType,
@@ -15,15 +14,12 @@ import type {
 } from './agent-protocol.contracts.js';
 import { AgentCommandAdapter } from './agent-command.adapter.js';
 import { AgentServerControlAdapter } from './agent-server-control.adapter.js';
+import { AgentDomainEventAdapter } from './agent-domain.adapter.js';
 import type { RouteOutcome } from './agent-command.adapter.js';
 import { AgentSessionRegistry } from './agent-session.registry.js';
 import type { AgentSessionSnapshot } from './agent-session.registry.js';
 
 export type { RouteOutcome } from './agent-command.adapter.js';
-// Flows owned by later substeps: typed, answered, never executed here.
-const NOT_IMPLEMENTED = new Set([
-  'DOMAIN_EVENT', // 11.4
-]);
 
 // Authenticated frames only. Validates the envelope against the session and
 // dispatches by type to typed handlers. No business rules and no domain
@@ -37,6 +33,7 @@ export class AgentMessageRouter {
     private readonly sessions: AgentSessionRegistry,
     private readonly commands: AgentCommandAdapter,
     private readonly serverControl: AgentServerControlAdapter,
+    private readonly domain: AgentDomainEventAdapter,
     private readonly clock: BridgeClock,
   ) {}
   async route(
@@ -52,11 +49,7 @@ export class AgentMessageRouter {
       return { close: 'SERVER_MISMATCH' };
     }
     const type = envelope.type;
-    if (
-      !isInboundType(type) ||
-      type === 'HELLO' ||
-      (AGENT_FUTURE_INBOUND_TYPES as readonly string[]).includes(type)
-    ) {
+    if (!isInboundType(type) || type === 'HELLO') {
       this.logger.warn(`Agent protocol violation [${ids} reason=TYPE]`);
       return { close: 'PROTOCOL_ERROR' };
     }
@@ -67,14 +60,12 @@ export class AgentMessageRouter {
       return this.commands.result(session, envelope);
     if (type === 'SERVER_CONTROL_RESULT')
       return this.serverControl.result(session, envelope);
+    if (type === 'DOMAIN_EVENT') return this.domain.event(session, envelope);
+    if (type === 'WORK_SYNC') return this.domain.sync(session, envelope);
     if (type === 'ERROR') {
       this.logger.warn(`Agent reported an error [${ids}]`);
       return {};
     }
-    if (NOT_IMPLEMENTED.has(type))
-      return {
-        reply: this.error(session, envelope, 'NOT_IMPLEMENTED'),
-      };
     return { close: 'PROTOCOL_ERROR' };
   }
   private async heartbeat(

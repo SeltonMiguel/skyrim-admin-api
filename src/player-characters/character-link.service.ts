@@ -1,3 +1,4 @@
+import type { AgentEventHook } from '../actors/agent-event.contracts.js';
 import {
   ConflictException,
   Injectable,
@@ -185,11 +186,18 @@ export class CharacterLinkService {
   // Trusted internal entry point for the authenticated Agent transport
   // (Etapa 11). Never exposed over HTTP. A replay of a consumed challenge for
   // the same, still VERIFIED link returns ALREADY_VERIFIED without effects.
-  async confirmFromAgent(input: {
-    challenge: string;
-    gameServerId: string;
-    characterExternalId: string;
-  }): Promise<OwnershipConfirmation> {
+  // gameServerId must be the authenticated Agent session's (Etapa 11.4). A
+  // challenge of another server is a CHALLENGE_MISMATCH (the player typed a
+  // code of another server): refused without change. onAccepted runs in this
+  // transaction before VERIFIED/ALREADY_VERIFIED commits.
+  async confirmFromAgent(
+    input: {
+      challenge: string;
+      gameServerId: string;
+      characterExternalId: string;
+    },
+    onAccepted?: AgentEventHook,
+  ): Promise<OwnershipConfirmation> {
     const canonical = normalizeChallenge(input.challenge);
     if (!canonical) return reject('INVALID_CHALLENGE');
     let characterExternalId: string;
@@ -219,14 +227,16 @@ export class CharacterLinkService {
         const matches =
           link.gameServerId === input.gameServerId &&
           link.characterExternalId === characterExternalId;
-        if (challenge.consumedAt)
-          return matches && link.status === S.VERIFIED
-            ? {
-                outcome: 'ALREADY_VERIFIED',
-                linkId: link.id,
-                playerId: link.playerId,
-              }
-            : reject('INVALID_CHALLENGE');
+        if (challenge.consumedAt) {
+          if (!matches || link.status !== S.VERIFIED)
+            return reject('INVALID_CHALLENGE');
+          await onAccepted?.(manager);
+          return {
+            outcome: 'ALREADY_VERIFIED',
+            linkId: link.id,
+            playerId: link.playerId,
+          };
+        }
         if (challenge.revokedAt || link.status !== S.PENDING)
           return reject('INVALID_CHALLENGE');
         if (challenge.expiresAt.getTime() <= Date.now())
@@ -266,6 +276,7 @@ export class CharacterLinkService {
           link,
           { playerId: link.playerId },
         );
+        await onAccepted?.(manager);
         return {
           outcome: 'VERIFIED',
           linkId: link.id,

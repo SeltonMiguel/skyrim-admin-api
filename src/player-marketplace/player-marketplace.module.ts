@@ -4,6 +4,8 @@ import { EconomyModule } from '../economy/economy.module.js';
 import { PlayerAuthModule } from '../player-auth/player-auth.module.js';
 import { MarketEscrowService } from './market-escrow.service.js';
 import { MarketplaceCustodyService } from './marketplace-custody.service.js';
+import { MarketplaceReleaseService } from './marketplace-release.service.js';
+import { MarketplaceWorkSource } from './marketplace-work.source.js';
 import { MarketplaceSettlementService } from './marketplace-settlement.service.js';
 import {
   CharacterMarketplaceController,
@@ -22,12 +24,16 @@ import { PlayerMarketplaceService } from './player-marketplace.service.js';
     MarketEscrowService,
     MarketplaceCustodyService,
     MarketplaceSettlementService,
+    MarketplaceReleaseService,
+    MarketplaceWorkSource,
   ],
   controllers: [PlayerMarketplaceController, CharacterMarketplaceController],
   exports: [
     MarketplaceCustodyService,
     MarketplaceSettlementService,
     MarketEscrowService,
+    MarketplaceReleaseService,
+    MarketplaceWorkSource,
   ],
 })
 export class PlayerMarketplaceModule {}

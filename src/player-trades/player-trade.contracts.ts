@@ -64,6 +64,8 @@ export type SettlementResult =
         | 'TRADE_NOT_FOUND'
         | 'TRADE_NOT_AWAITING'
         | 'EVENT_CONFLICT'
+        // The trade belongs to another GameServer than the Agent session.
+        | 'SERVER_MISMATCH'
         | 'LEDGER_REJECTED';
       // Internal detail for LEDGER_REJECTED (e.g. BALANCE_LIMIT).
       ledgerReason?: LedgerRejection;

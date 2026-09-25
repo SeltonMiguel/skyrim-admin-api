@@ -9,6 +9,7 @@ import {
 } from './player-trade.controller.js';
 import { PlayerTradeService } from './player-trade.service.js';
 import { TradeEscrowService } from './trade-escrow.service.js';
+import { TradeWorkSource } from './trade-work.source.js';
 import { TradeSettlementService } from './trade-settlement.service.js';
 
 // Settles GOLD on the backend ledger. GAME_ITEM lines wait for the trusted
@@ -16,8 +17,13 @@ import { TradeSettlementService } from './trade-settlement.service.js';
 // game command is used. Realtime goes through the global event bus.
 @Module({
   imports: [AuditModule, EconomyModule, PlayerAuthModule, PlayerSettingsModule],
-  providers: [PlayerTradeService, TradeEscrowService, TradeSettlementService],
+  providers: [
+    PlayerTradeService,
+    TradeEscrowService,
+    TradeSettlementService,
+    TradeWorkSource,
+  ],
   controllers: [PlayerTradeController, CharacterTradeController],
-  exports: [TradeSettlementService, TradeEscrowService],
+  exports: [TradeSettlementService, TradeEscrowService, TradeWorkSource],
 })
 export class PlayerTradesModule {}

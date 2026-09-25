@@ -8,6 +8,7 @@ import {
   AuditOutcome,
   AuditResource,
 } from '../audit/audit.types.js';
+import type { AgentEventHook } from '../actors/agent-event.contracts.js';
 import { systemActor, SystemSource } from '../actors/actor.contracts.js';
 import { externalId } from '../game-bridge/command-validation.js';
 import { PlayerStatus } from '../player-accounts/player-account.contracts.js';
@@ -38,12 +39,19 @@ export class ProfessionExperienceService {
     private readonly database: DataSource,
     private readonly audit: AuditService,
   ) {}
-  async grantFromAgent(input: {
-    gameServerId: string;
-    characterExternalId: string;
-    eventId: string;
-    amount: number;
-  }): Promise<ExperienceGrant> {
+  // gameServerId is the authenticated Agent session's (Etapa 11.4): the
+  // profession identity is (session server, character), so another server's
+  // character cannot be reached. onAccepted runs in this transaction before
+  // GRANTED/ALREADY_APPLIED commits.
+  async grantFromAgent(
+    input: {
+      gameServerId: string;
+      characterExternalId: string;
+      eventId: string;
+      amount: number;
+    },
+    onAccepted?: AgentEventHook,
+  ): Promise<ExperienceGrant> {
     let characterExternalId: string, eventId: string;
     try {
       characterExternalId = externalId(input.characterExternalId);
@@ -108,13 +116,16 @@ export class ProfessionExperienceService {
           gameServerId,
           externalEventId: eventId,
         });
-        return existing.characterProfessionId === profession.id &&
-          existing.amount === amount
-          ? {
-              outcome: 'ALREADY_APPLIED',
-              progress: professionProgress(profession),
-            }
-          : reject('EVENT_CONFLICT');
+        if (
+          existing.characterProfessionId !== profession.id ||
+          existing.amount !== amount
+        )
+          return reject('EVENT_CONFLICT');
+        await onAccepted?.(manager);
+        return {
+          outcome: 'ALREADY_APPLIED',
+          progress: professionProgress(profession),
+        };
       }
       const previousLevel = profession.level;
       profession.experience = Policy.add(profession.experience, amount);
@@ -142,6 +153,7 @@ export class ProfessionExperienceService {
         },
         manager,
       );
+      await onAccepted?.(manager);
       return { outcome: 'GRANTED', progress: professionProgress(profession) };
     });
   }

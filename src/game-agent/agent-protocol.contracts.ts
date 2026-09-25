@@ -8,6 +8,11 @@ import {
 } from '../game-bridge/command-contract.js';
 import type { RemoteFailureCode } from '../game-bridge/command-contract.js';
 import {
+  isAgentWorkKind,
+  MAX_WORK_PAGE_ITEMS,
+} from './agent-domain-event.contracts.js';
+import type { AgentWorkKind } from './agent-domain-event.contracts.js';
+import {
   isServerControlType,
   SERVER_CONTROL_REMOTE_FAILURES,
 } from '../server-control/server-control.contracts.js';
@@ -29,8 +34,7 @@ export const MAX_AGENT_CAPABILITIES = 64;
 if (MAX_AGENT_FRAME_BYTES < 2 * MAX_COMMAND_RESULT_BYTES)
   throw new Error('Agent frame limit must hold a maximal command result');
 
-// Frames the Agent may send. HELLO only as the first frame; DOMAIN_EVENT
-// is typed but answered with NOT_IMPLEMENTED until 11.4.
+// Frames the Agent may send. HELLO only as the first frame.
 export const AGENT_INBOUND_TYPES = [
   'HELLO',
   'HEARTBEAT',
@@ -38,11 +42,12 @@ export const AGENT_INBOUND_TYPES = [
   'COMMAND_RESULT',
   'DOMAIN_EVENT',
   'SERVER_CONTROL_RESULT',
+  'WORK_SYNC',
   'ERROR',
 ] as const;
-// Frames the backend sends. WORK_ITEMS is declared for 11.4 and never sent
-// yet. There is no SERVER_CONTROL_ACK in either direction: an operation is
-// sent once whatever happens, so an ACK would change nothing (11.3).
+// Frames the backend sends. There is no SERVER_CONTROL_ACK in either
+// direction: an operation is sent once whatever happens, so an ACK would
+// change nothing (11.3).
 export const AGENT_OUTBOUND_TYPES = [
   'AUTHENTICATED',
   'HEARTBEAT_ACK',
@@ -51,10 +56,9 @@ export const AGENT_OUTBOUND_TYPES = [
   'COMMAND_RESULT_ACK',
   'SERVER_CONTROL',
   'SERVER_CONTROL_RESULT_ACK',
+  'DOMAIN_EVENT_ACK',
   'WORK_ITEMS',
 ] as const;
-// Declared for 11.4; an Agent sending it now breaks the protocol.
-export const AGENT_FUTURE_INBOUND_TYPES = ['WORK_SYNC'] as const;
 export type AgentInboundType = (typeof AGENT_INBOUND_TYPES)[number];
 export type AgentOutboundType = (typeof AGENT_OUTBOUND_TYPES)[number];
 
@@ -103,6 +107,10 @@ export type AgentErrorCode =
   | 'RESULT_CONFLICT'
   | 'UNKNOWN_OPERATION'
   | 'OPERATION_MISMATCH'
+  // DOMAIN_EVENT (11.4): same eventId, other content or kind.
+  | 'EVENT_CONFLICT'
+  // DOMAIN_EVENT refused by the domain; `reason` from its closed catalog.
+  | 'DOMAIN_REJECTED'
   | 'TEMPORARILY_UNAVAILABLE';
 
 export interface AgentEnvelope<T extends string = string> {
@@ -378,6 +386,166 @@ export function serverControlResultPayload(
     default:
       return invalid();
   }
+}
+
+// DOMAIN_EVENT (11.4): { eventId, kind, data } with a closed kind and an
+// exact data schema per kind. The Agent reports facts or the completion of
+// backend-defined work; it never names a player, a server, an amount of
+// GOLD, a price, an item term or a final level.
+export type DomainEventPayload =
+  | {
+      eventId: string;
+      kind: 'CHARACTER_OWNERSHIP_PROOF';
+      data: { challenge: string; characterExternalId: string };
+    }
+  | {
+      eventId: string;
+      kind: 'PROFESSION_EXPERIENCE';
+      data: { characterExternalId: string; amount: number };
+    }
+  | {
+      eventId: string;
+      kind: 'TRADE_SETTLEMENT' | 'MARKETPLACE_SETTLEMENT';
+      data: { workId: string; outcome: 'SETTLED' | 'FAILED' };
+    }
+  | {
+      eventId: string;
+      kind: 'MARKETPLACE_CUSTODY';
+      data: { workId: string; outcome: 'CUSTODIED' | 'FAILED' };
+    }
+  | {
+      eventId: string;
+      kind: 'MARKETPLACE_RELEASE';
+      data: { workId: string; outcome: 'RELEASED' | 'FAILED' };
+    };
+const OPAQUE = /^[A-Za-z0-9._:-]{1,128}$/;
+const opaque = (value: unknown): string =>
+  typeof value === 'string' && OPAQUE.test(value) ? value : invalid();
+const oneOf = <T extends string>(value: unknown, allowed: readonly T[]): T =>
+  allowed.includes(value as T) ? (value as T) : invalid();
+export function domainEventPayload(
+  payload: Record<string, unknown>,
+): DomainEventPayload {
+  exactKeys(payload, ['eventId', 'kind', 'data']);
+  const eventId = uuid(payload.eventId);
+  const data = plain(payload.data);
+  const work = (outcomes: readonly string[]) => {
+    exactKeys(data, ['workId', 'outcome']);
+    return {
+      workId: uuid(data.workId),
+      outcome: oneOf(data.outcome, outcomes),
+    };
+  };
+  switch (payload.kind) {
+    case 'CHARACTER_OWNERSHIP_PROOF':
+      exactKeys(data, ['challenge', 'characterExternalId']);
+      if (typeof data.challenge !== 'string' || data.challenge.length > 64)
+        invalid();
+      return {
+        eventId,
+        kind: payload.kind,
+        data: {
+          challenge: data.challenge as string,
+          characterExternalId: opaque(data.characterExternalId),
+        },
+      };
+    case 'PROFESSION_EXPERIENCE':
+      exactKeys(data, ['characterExternalId', 'amount']);
+      if (
+        typeof data.amount !== 'number' ||
+        !Number.isSafeInteger(data.amount) ||
+        data.amount < 1
+      )
+        invalid();
+      return {
+        eventId,
+        kind: payload.kind,
+        data: {
+          characterExternalId: opaque(data.characterExternalId),
+          amount: data.amount as number,
+        },
+      };
+    case 'TRADE_SETTLEMENT': {
+      const result = work(['SUCCEEDED', 'SETTLED', 'FAILED']);
+      return {
+        eventId,
+        kind: payload.kind,
+        data: {
+          workId: result.workId,
+          outcome: result.outcome === 'FAILED' ? 'FAILED' : 'SETTLED',
+        },
+      };
+    }
+    case 'MARKETPLACE_SETTLEMENT':
+      return {
+        eventId,
+        kind: payload.kind,
+        data: work(['SETTLED', 'FAILED']) as {
+          workId: string;
+          outcome: 'SETTLED' | 'FAILED';
+        },
+      };
+    case 'MARKETPLACE_CUSTODY':
+      return {
+        eventId,
+        kind: payload.kind,
+        data: (() => {
+          const result = work(['SUCCEEDED', 'CUSTODIED', 'FAILED']);
+          return {
+            workId: result.workId,
+            outcome:
+              result.outcome === 'FAILED'
+                ? ('FAILED' as const)
+                : ('CUSTODIED' as const),
+          };
+        })(),
+      };
+    case 'MARKETPLACE_RELEASE':
+      return {
+        eventId,
+        kind: payload.kind,
+        data: work(['RELEASED', 'FAILED']) as {
+          workId: string;
+          outcome: 'RELEASED' | 'FAILED';
+        },
+      };
+    default:
+      return invalid();
+  }
+}
+// WORK_SYNC (11.4): the Agent asks for pending work of its own server
+// (never named in the payload). Optional kind filter, opaque cursor and a
+// page limit (1–50).
+export interface WorkSyncPayload {
+  kind?: AgentWorkKind;
+  cursor?: string;
+  limit?: number;
+}
+const CURSOR = /^[A-Za-z0-9_-]{1,512}$/;
+export function workSyncPayload(
+  payload: Record<string, unknown>,
+): WorkSyncPayload {
+  exactKeys(payload, [], ['kind', 'cursor', 'limit']);
+  if (
+    (payload.kind !== undefined && !isAgentWorkKind(payload.kind)) ||
+    (payload.cursor !== undefined &&
+      (typeof payload.cursor !== 'string' || !CURSOR.test(payload.cursor))) ||
+    (payload.limit !== undefined &&
+      (typeof payload.limit !== 'number' ||
+        !Number.isSafeInteger(payload.limit) ||
+        payload.limit < 1 ||
+        payload.limit > MAX_WORK_PAGE_ITEMS))
+  )
+    invalid();
+  return {
+    ...(payload.kind === undefined
+      ? {}
+      : { kind: payload.kind as AgentWorkKind }),
+    ...(payload.cursor === undefined
+      ? {}
+      : { cursor: payload.cursor as string }),
+    ...(payload.limit === undefined ? {} : { limit: payload.limit as number }),
+  };
 }
 
 export function outbound(

@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { isUUID } from 'class-validator';
 import { QueryFailedError } from 'typeorm';
 import { AuditAction } from '../audit/audit.types.js';
+import type { AgentEventHook } from '../actors/agent-event.contracts.js';
 import { systemActor, SystemSource } from '../actors/actor.contracts.js';
 import { externalId } from '../game-bridge/command-validation.js';
 import { LedgerRejectionError } from '../economy/economy-ledger.service.js';
@@ -26,13 +27,10 @@ const finalStatus = (outcome: SettlementOutcome) =>
 // Trusted internal contract for the Agent transport (Etapa 11); there is no
 // HTTP route. Idempotent per settlementEventId.
 //
-// SETTLED does NOT mean the items were irreversibly delivered. The Agent may
-// send it only after validating the GAME_ITEM lines and holding them in
-// durable, reversible custody from which it can retry delivery or release
-// them. This commit is the authority that finalizes the trade: on success
-// GOLD is settled and the trade COMPLETED (the Agent then delivers); if the
-// ledger refuses (e.g. BALANCE_LIMIT) the trade stays AWAITING and the Agent
-// must keep custody, retry later or report FAILED. FAILED releases GOLD.
+// SETTLED means every physical transfer to its recipient is complete and
+// journaled by workId. Only then may the Agent report success. This transaction
+// settles GOLD and marks COMPLETED; no physical delivery remains after it.
+// If the ledger refuses, retry the same success without repeating transfers.
 @Injectable()
 export class TradeSettlementService {
   private readonly logger = new Logger(TradeSettlementService.name);
@@ -40,12 +38,19 @@ export class TradeSettlementService {
     private readonly trades: PlayerTradeService,
     private readonly escrow: TradeEscrowService,
   ) {}
+  // gameServerId is the authenticated Agent session's server (Etapa 11.4):
+  // a trade of another server is SERVER_MISMATCH and nothing changes. The
+  // Agent only names the trade and the outcome; parties, items and GOLD are
+  // read from the trade. onAccepted runs in this transaction before an
+  // accepted outcome commits.
   async confirmFromAgent(
     input: {
+      gameServerId: string;
       tradeId: string;
       settlementEventId: string;
       outcome: SettlementOutcome;
     },
+    onAccepted?: AgentEventHook,
     retried = false,
   ): Promise<SettlementResult> {
     let eventId: string;
@@ -55,6 +60,7 @@ export class TradeSettlementService {
       return reject('INVALID_INPUT');
     }
     if (
+      !isUUID(input.gameServerId) ||
       !isUUID(input.tradeId) ||
       !Object.values(SettlementOutcome).includes(input.outcome)
     )
@@ -68,6 +74,8 @@ export class TradeSettlementService {
           lock: { mode: 'pessimistic_write' },
         });
         if (!trade) return reject('TRADE_NOT_FOUND');
+        if (trade.gameServerId !== input.gameServerId)
+          return reject('SERVER_MISMATCH');
         const settlements = manager.getRepository<PlayerTradeSettlementEvent>(
           'PlayerTradeSettlementEvent',
         );
@@ -75,14 +83,18 @@ export class TradeSettlementService {
           gameServerId: trade.gameServerId,
           settlementEventId: eventId,
         });
-        if (existing)
-          return existing.tradeId === trade.id &&
-            existing.outcome === input.outcome
-            ? {
-                outcome: 'ALREADY_APPLIED',
-                status: finalStatus(input.outcome),
-              }
-            : reject('EVENT_CONFLICT');
+        if (existing) {
+          if (
+            existing.tradeId !== trade.id ||
+            existing.outcome !== input.outcome
+          )
+            return reject('EVENT_CONFLICT');
+          await onAccepted?.(manager);
+          return {
+            outcome: 'ALREADY_APPLIED',
+            status: finalStatus(input.outcome),
+          };
+        }
         if (trade.status !== TradeStatus.AWAITING_GAME_CONFIRMATION)
           return reject('TRADE_NOT_AWAITING');
         const now = new Date();
@@ -132,13 +144,14 @@ export class TradeSettlementService {
           data: this.trades.data(saved),
           playerIds: await this.trades.recipients(manager, saved),
         });
+        await onAccepted?.(manager);
         return { outcome: 'APPLIED', status };
       }, false);
     } catch (error) {
       // The whole transaction rolled back: the trade stays
       // AWAITING_GAME_CONFIRMATION, escrows stay RESERVED, the event is not
       // recorded (so it can be retried) and nothing is audited or published.
-      // The Agent keeps the items in custody and may retry or release them.
+      // Physical fulfillment stays journaled; retry success without re-executing it.
       if (error instanceof LedgerRejectionError) {
         this.logger.warn(
           `Trade settlement rejected by the ledger [tradeId=${input.tradeId} reason=${error.reason}]`,
@@ -155,7 +168,7 @@ export class TradeSettlementService {
         error instanceof QueryFailedError &&
         (error.driverError as { code?: string }).code === '23505'
       )
-        return this.confirmFromAgent(input, true);
+        return this.confirmFromAgent(input, onAccepted, true);
       throw error;
     }
   }

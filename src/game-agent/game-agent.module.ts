@@ -13,12 +13,21 @@ import { AgentCommandAdapter } from './agent-command.adapter.js';
 import { GameCommandWorker } from './game-command.worker.js';
 import { AgentServerControlAdapter } from './agent-server-control.adapter.js';
 import { ServerControlModule } from '../server-control/server-control.module.js';
+import { PlayerCharactersModule } from '../player-characters/player-characters.module.js';
+import { PlayerMarketplaceModule } from '../player-marketplace/player-marketplace.module.js';
+import { PlayerTradesModule } from '../player-trades/player-trades.module.js';
+import { ProfessionsModule } from '../professions/professions.module.js';
+import { AgentDomainEventAdapter } from './agent-domain.adapter.js';
+import { AgentDomainEventService } from './agent-domain-events.service.js';
+import { AgentWorkNotifier } from './agent-work.notifier.js';
+import { AgentWorkService } from './agent-work.service.js';
 
 // Host Agent transport + authentication (11.1), GameCommand execution
-// (11.2) and Server Control results (11.3): credentials managed by Staff,
-// the /api/v1/agent WebSocket, the session registry, the message router
-// with the GameCommand and Server Control adapters and the GameCommand
-// worker. Domain events are not routed yet (11.4).
+// (11.2), Server Control results (11.3) and domain events + gameplay work
+// (11.4): credentials managed by Staff, the /api/v1/agent WebSocket, the
+// session registry, the message router with its typed adapters, the
+// GameCommand worker and the work notifier. Domain modules are reached
+// only through their exported Agent entry points and work projections.
 @Module({
   imports: [
     AuthModule,
@@ -26,6 +35,10 @@ import { ServerControlModule } from '../server-control/server-control.module.js'
     GameBridgeModule,
     AgentSessionModule,
     ServerControlModule,
+    PlayerCharactersModule,
+    ProfessionsModule,
+    PlayerTradesModule,
+    PlayerMarketplaceModule,
     WebSocketModule,
   ],
   providers: [
@@ -34,6 +47,10 @@ import { ServerControlModule } from '../server-control/server-control.module.js'
     AgentMessageRouter,
     AgentCommandAdapter,
     AgentServerControlAdapter,
+    AgentDomainEventService,
+    AgentDomainEventAdapter,
+    AgentWorkService,
+    AgentWorkNotifier,
     AgentGateway,
     GameCommandWorker,
   ],
