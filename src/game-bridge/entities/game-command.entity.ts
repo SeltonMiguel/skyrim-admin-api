@@ -13,6 +13,8 @@ import type { Relation } from 'typeorm';
 import { GameServer } from './game-server.entity.js';
 import { GameConnection } from './game-connection.entity.js';
 import { StaffUser } from '../../staff/entities/staff-user.entity.js';
+import { Player } from '../../player-accounts/entities/player.entity.js';
+import type { ActorType, SystemSource } from '../../actors/actor.contracts.js';
 import { CommandStatus } from '../command-state.js';
 import type { CommandType } from '../command-contract.js';
 
@@ -21,7 +23,18 @@ import type { CommandType } from '../command-contract.js';
   'game_commands_dispatch_lease_check',
   '(dispatch_lease_id IS NULL) = (dispatch_lease_expires_at IS NULL)',
 )
-@Unique('game_commands_idempotency_key', ['gameServerId', 'idempotencyKey'])
+// Idempotency is namespaced by actor scope: STAFF (shared by all staff and
+// unattributed internal submits), PLAYER:<playerId> or SYSTEM:<source>.
+@Unique('game_commands_idempotency_key', [
+  'gameServerId',
+  'idempotencyScope',
+  'idempotencyKey',
+])
+@Index('game_commands_player_idx', ['requestedByPlayerId'])
+@Check(
+  'game_commands_actor_check',
+  `(actor_type = 'STAFF' AND requested_by_player_id IS NULL AND requested_by_system_source IS NULL AND idempotency_scope = 'STAFF') OR (actor_type = 'PLAYER' AND requested_by_player_id IS NOT NULL AND requested_by_staff_id IS NULL AND requested_by_system_source IS NULL AND idempotency_scope = ('PLAYER:' || requested_by_player_id::text)) OR (actor_type = 'SYSTEM' AND requested_by_system_source IS NOT NULL AND requested_by_system_source IN ('AGENT', 'PROFESSION', 'VIP_DELIVERY') AND requested_by_staff_id IS NULL AND requested_by_player_id IS NULL AND idempotency_scope = ('SYSTEM:' || requested_by_system_source))`,
+)
 @Unique('game_commands_correlation_key', ['correlationId'])
 @Index('game_commands_dispatch_idx', ['status', 'ackDeadlineAt', 'createdAt'])
 @Index('game_commands_execution_idx', ['status', 'executionDeadlineAt'])
@@ -60,6 +73,16 @@ export class GameCommand {
   payload: object;
   @Column({ name: 'idempotency_key', type: 'varchar', length: 128 })
   idempotencyKey: string;
+  // Internal only; never exposed by any presenter.
+  @Column({
+    name: 'idempotency_scope',
+    type: 'varchar',
+    length: 64,
+    default: 'STAFF',
+  })
+  idempotencyScope: string;
+  @Column({ name: 'actor_type', type: 'varchar', length: 16, default: 'STAFF' })
+  actorType: ActorType;
   @Column({ name: 'correlation_id', type: 'uuid' })
   correlationId: string;
   @Column({ name: 'request_id', type: 'varchar', nullable: true, length: 128 })
@@ -72,6 +95,21 @@ export class GameCommand {
     foreignKeyConstraintName: 'game_commands_staff_fkey',
   })
   requestedByStaff: Relation<StaffUser>;
+  @Column({ name: 'requested_by_player_id', type: 'uuid', nullable: true })
+  requestedByPlayerId: string | null;
+  @ManyToOne(() => Player)
+  @JoinColumn({
+    name: 'requested_by_player_id',
+    foreignKeyConstraintName: 'game_commands_player_fkey',
+  })
+  requestedByPlayer: Relation<Player>;
+  @Column({
+    name: 'requested_by_system_source',
+    type: 'varchar',
+    length: 32,
+    nullable: true,
+  })
+  requestedBySystemSource: SystemSource | null;
   @Column({ name: 'dispatched_connection_id', type: 'uuid', nullable: true })
   dispatchedConnectionId: string | null;
   @ManyToOne(() => GameConnection)

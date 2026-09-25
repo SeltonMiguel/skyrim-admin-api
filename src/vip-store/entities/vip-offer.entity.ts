@@ -8,7 +8,11 @@ import {
   Unique,
   UpdateDateColumn,
 } from 'typeorm';
-import type { VipCurrency, VipReward } from '../vip-offer.contracts.js';
+import type {
+  VipCurrency,
+  VipEntitlementScope,
+  VipReward,
+} from '../vip-offer.contracts.js';
 @Entity('vip_offers')
 @Unique('vip_offers_code_key', ['code'])
 @Index('vip_offers_catalog_idx', ['active', 'sortOrder', 'code'])
@@ -20,6 +24,10 @@ import type { VipCurrency, VipReward } from '../vip-offer.contracts.js';
 @Check(
   'vip_offers_rewards_check',
   `CASE WHEN jsonb_typeof(rewards) = 'array' THEN jsonb_array_length(rewards) BETWEEN 1 AND 20 AND octet_length(rewards::text) <= 32768 ELSE false END`,
+)
+@Check(
+  'vip_offers_entitlement_scope_check',
+  `entitlement_scope IN ('PLAYER', 'CHARACTER')`,
 )
 export class VipOffer {
   @PrimaryGeneratedColumn('uuid', {
@@ -35,6 +43,13 @@ export class VipOffer {
   @Column({ name: 'sort_order', type: 'integer', default: 0 })
   sortOrder: number;
   @Column({ type: 'jsonb' }) rewards: VipReward[];
+  @Column({
+    name: 'entitlement_scope',
+    type: 'varchar',
+    length: 16,
+    default: 'CHARACTER',
+  })
+  entitlementScope: VipEntitlementScope;
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
   @UpdateDateColumn({ name: 'updated_at', type: 'timestamptz' })

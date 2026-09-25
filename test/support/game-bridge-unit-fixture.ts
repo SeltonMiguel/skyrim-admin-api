@@ -39,6 +39,9 @@ export function gameFixture() {
     type: 'BRIDGE_PING',
     payload: { nonce: 'ping' },
     idempotencyKey: 'key',
+    // PostgreSQL defaults for rows without an explicit actor.
+    idempotencyScope: 'STAFF',
+    actorType: 'STAFF',
     correlationId: randomUUID(),
     status: S.PENDING,
     dispatchAttempts: 0,
@@ -100,6 +103,7 @@ export function gameFixture() {
               !rows[name].some((row) =>
                 matches(row, {
                   gameServerId: input.gameServerId,
+                  idempotencyScope: input.idempotencyScope,
                   idempotencyKey: input.idempotencyKey,
                 }),
               )

@@ -106,9 +106,22 @@ describeDatabase('Admin read APIs with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(9);
+    expect(await database.runMigrations()).toHaveLength(22);
     expect(await database.runMigrations()).toHaveLength(0);
     // Roll back only this stage and prove previous permission data survives.
+    await database.undoLastMigration(); // Etapa 10.17 VIP Entitlements
+    await database.undoLastMigration(); // Etapa 10.16 Player Settings
+    await database.undoLastMigration(); // Etapa 10.15 Player Chat
+    await database.undoLastMigration(); // Etapa 10.14 Player Marketplace
+    await database.undoLastMigration(); // Etapa 10.13 Player Trades
+    await database.undoLastMigration(); // Etapa 10.12 Economy
+    await database.undoLastMigration(); // Etapa 10.9 Player Guilds
+    await database.undoLastMigration(); // Etapa 10.8 Player Groups
+    await database.undoLastMigration(); // Etapa 10.7 Professions
+    await database.undoLastMigration(); // Etapa 10.4 Player Characters
+    await database.undoLastMigration(); // Etapa 10.3 Player Sessions
+    await database.undoLastMigration(); // Etapa 10.2 Generic Actor
+    await database.undoLastMigration(); // Etapa 10.1 Player Accounts
     await database.undoLastMigration(); // Etapa 09 Server Control
     await database.undoLastMigration(); // Etapa 08 VIP Store
     await database.undoLastMigration(); // Etapa 07 World permission grants
@@ -123,7 +136,7 @@ describeDatabase('Admin read APIs with real PostgreSQL', () => {
         "SELECT * FROM permissions WHERE name IN ('DASHBOARD_READ', 'GAME_BRIDGE_READ')",
       ),
     ).toEqual([]);
-    expect(await database.runMigrations()).toHaveLength(5);
+    expect(await database.runMigrations()).toHaveLength(18);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -182,7 +195,7 @@ describeDatabase('Admin read APIs with real PostgreSQL', () => {
     expect(
       (await database.driver.createSchemaBuilder().log()).upQueries,
     ).toEqual([]);
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(9);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(22);
     expect(await database.query('SELECT * FROM permissions')).toHaveLength(36);
   });
   it.each(Object.values(R))(

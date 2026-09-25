@@ -26,6 +26,15 @@ export const MAX_PRICE_MINOR = 2147483647;
 export const MAX_REWARDS = 20;
 export const MAX_OFFER_BYTES = 32768;
 export type VipCurrency = 'BRL';
+// Who holds an entitlement to the offer (10.17): the account (PLAYER) or one
+// character identity (CHARACTER). Explicit, never inferred from the code or
+// name; offers from before 10.17 default to CHARACTER because every reward
+// type (ITEM, HORSE, TITLE, SPELL) is a character gameplay benefit.
+export enum VipEntitlementScope {
+  PLAYER = 'PLAYER',
+  CHARACTER = 'CHARACTER',
+}
+export const DEFAULT_ENTITLEMENT_SCOPE = VipEntitlementScope.CHARACTER;
 export interface OfferContent {
   name: string;
   description: string;
@@ -33,6 +42,7 @@ export interface OfferContent {
   currency: VipCurrency;
   sortOrder: number;
   rewards: VipReward[];
+  entitlementScope: VipEntitlementScope;
 }
 export interface NewOffer extends OfferContent {
   code: string;
@@ -82,6 +92,15 @@ export function offerActive(value: unknown): boolean {
     throw new BadRequestException('Invalid active state');
   return value;
 }
+export function offerScope(value: unknown): VipEntitlementScope {
+  if (
+    !Object.values(VipEntitlementScope).includes(value as VipEntitlementScope)
+  )
+    throw new BadRequestException(
+      'Supported entitlement scopes: PLAYER, CHARACTER',
+    );
+  return value as VipEntitlementScope;
+}
 export function vipRewards(value: unknown): VipReward[] {
   const data = commandJson(value, MAX_OFFER_BYTES);
   if (!Array.isArray(data) || data.length < 1 || data.length > MAX_REWARDS)
@@ -130,12 +149,13 @@ const parsers: {
   currency: offerCurrency,
   sortOrder: (value) => offerInteger(value, 1000000),
   rewards: vipRewards,
+  entitlementScope: offerScope,
 };
 export function newOffer(value: unknown): NewOffer {
   const data = fields(
     commandJson(value, MAX_OFFER_BYTES),
     ['code', 'name', 'description', 'priceMinor', 'currency', 'rewards'],
-    ['active', 'sortOrder'],
+    ['active', 'sortOrder', 'entitlementScope'],
   );
   return {
     code: offerCode(data.code),
@@ -147,6 +167,10 @@ export function newOffer(value: unknown): NewOffer {
     sortOrder:
       data.sortOrder === undefined ? 0 : parsers.sortOrder(data.sortOrder),
     active: data.active === undefined ? false : offerActive(data.active),
+    entitlementScope:
+      data.entitlementScope === undefined
+        ? DEFAULT_ENTITLEMENT_SCOPE
+        : offerScope(data.entitlementScope),
   };
 }
 export function offerPatch(value: unknown): Partial<OfferContent> {

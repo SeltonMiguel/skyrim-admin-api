@@ -43,6 +43,8 @@ describe('VIP catalog contracts', () => {
       active: false,
       sortOrder: 0,
       rewards: [{ type: 'ITEM', itemId: 'item', quantity: 10000 }],
+      // 10.17: explicit, conservative default.
+      entitlementScope: 'CHARACTER',
     });
   });
   it.each([
@@ -167,6 +169,7 @@ describe('VIP catalog contracts', () => {
         'priceMinor',
         'currency',
         'rewards',
+        'entitlementScope',
       ].sort(),
     );
     expect(JSON.stringify(projected)).not.toMatch(

@@ -7,6 +7,8 @@ const example: Record<string, string> = {
   ...parse(readFileSync('.env.example')),
   JWT_ACCESS_SECRET: randomBytes(48).toString('hex'),
   JWT_REFRESH_SECRET: randomBytes(48).toString('hex'),
+  PLAYER_JWT_ACCESS_SECRET: randomBytes(48).toString('hex'),
+  PLAYER_JWT_REFRESH_SECRET: randomBytes(48).toString('hex'),
 };
 
 describe('Environment validation', () => {
@@ -181,5 +183,189 @@ describe('Game Bridge environment validation', () => {
       expect(() => validateEnvironment({ ...example, [field]: value })).toThrow(
         field,
       );
+  });
+});
+
+describe('Player auth environment validation', () => {
+  it('provides separate defaults and leaves Discord disabled when unset', () => {
+    const { playerAuth, jwt } = validateEnvironment(example);
+    expect(playerAuth).toMatchObject({
+      accessSecret: example.PLAYER_JWT_ACCESS_SECRET,
+      refreshSecret: example.PLAYER_JWT_REFRESH_SECRET,
+      accessTtl: 900,
+      refreshTtl: 30 * 86400,
+      rateLimitPerMinute: 20,
+      discord: null,
+    });
+    expect([jwt.accessSecret, jwt.refreshSecret]).not.toContain(
+      playerAuth.accessSecret,
+    );
+  });
+  describe.each(['development', 'production'])('%s', (nodeEnv) => {
+    it.each(['PLAYER_JWT_ACCESS_SECRET', 'PLAYER_JWT_REFRESH_SECRET'])(
+      'requires %s without falling back to staff secrets',
+      (field) => {
+        for (const value of [undefined, '', 'short', ' '.repeat(40)])
+          expect(() =>
+            validateEnvironment({
+              ...example,
+              NODE_ENV: nodeEnv,
+              [field]: value,
+            }),
+          ).toThrow(field);
+        for (const staff of ['JWT_ACCESS_SECRET', 'JWT_REFRESH_SECRET'])
+          expect(() =>
+            validateEnvironment({
+              ...example,
+              NODE_ENV: nodeEnv,
+              [field]: example[staff],
+            }),
+          ).toThrow(field);
+      },
+    );
+  });
+  it('rejects shared player secrets and unsafe player TTLs', () => {
+    expect(() =>
+      validateEnvironment({
+        ...example,
+        PLAYER_JWT_REFRESH_SECRET: example.PLAYER_JWT_ACCESS_SECRET,
+      }),
+    ).toThrow('PLAYER_JWT_REFRESH_SECRET');
+    for (const [field, value] of [
+      ['PLAYER_JWT_ACCESS_TTL', '2h'],
+      ['PLAYER_JWT_REFRESH_TTL', '91d'],
+      ['PLAYER_JWT_REFRESH_TTL', '10m'],
+      ['PLAYER_AUTH_RATE_LIMIT_PER_MINUTE', '0'],
+    ])
+      expect(() => validateEnvironment({ ...example, [field]: value })).toThrow(
+        field,
+      );
+  });
+  it('uses distinct ephemeral player secrets only in test', () => {
+    const { playerAuth, jwt } = validateEnvironment({
+      ...example,
+      NODE_ENV: 'test',
+      JWT_ACCESS_SECRET: '',
+      JWT_REFRESH_SECRET: '',
+      PLAYER_JWT_ACCESS_SECRET: '',
+      PLAYER_JWT_REFRESH_SECRET: '',
+    });
+    const secrets = [
+      playerAuth.accessSecret,
+      playerAuth.refreshSecret,
+      jwt.accessSecret,
+      jwt.refreshSecret,
+    ];
+    expect(new Set(secrets).size).toBe(4);
+  });
+  it('requires complete Discord credentials and an exact redirect allowlist', () => {
+    const discord = {
+      DISCORD_CLIENT_ID: '1234',
+      DISCORD_CLIENT_SECRET: 'client-secret-value',
+      DISCORD_REDIRECT_URIS:
+        'http://127.0.0.1:53682/callback, https://example.test/cb',
+    };
+    expect(
+      validateEnvironment({ ...example, ...discord }).playerAuth.discord,
+    ).toEqual({
+      clientId: '1234',
+      clientSecret: 'client-secret-value',
+      redirectUris: [
+        'http://127.0.0.1:53682/callback',
+        'https://example.test/cb',
+      ],
+    });
+    for (const partial of [
+      { DISCORD_CLIENT_SECRET: '' },
+      { DISCORD_CLIENT_ID: '' },
+      { DISCORD_REDIRECT_URIS: '' },
+      { DISCORD_REDIRECT_URIS: 'not a url' },
+      { DISCORD_REDIRECT_URIS: 'https://example.test/cb#fragment' },
+    ]) {
+      const validate = () =>
+        validateEnvironment({ ...example, ...discord, ...partial });
+      expect(validate).toThrow('DISCORD_CLIENT_SECRET');
+      expect(validate).not.toThrow('client-secret-value');
+    }
+  });
+});
+
+describe('Player character environment validation', () => {
+  it('defaults the link challenge to 10 minutes within 1m–1h bounds', () => {
+    expect(validateEnvironment(example).playerCharacters).toEqual({
+      challengeTtl: 600,
+    });
+    for (const value of ['30s', '2h', '0m', 'x'])
+      expect(() =>
+        validateEnvironment({ ...example, PLAYER_LINK_CHALLENGE_TTL: value }),
+      ).toThrow('PLAYER_LINK_CHALLENGE_TTL');
+  });
+});
+
+describe('Player groups and realtime environment validation', () => {
+  it('defaults the invite TTL to 10 minutes and the AUTH timeout to 5 seconds', () => {
+    const config = validateEnvironment(example);
+    expect(config.playerGroups).toEqual({ inviteTtl: 600 });
+    expect(config.realtime).toEqual({ authTimeoutMs: 5000 });
+    for (const value of ['30s', '2d'])
+      expect(() =>
+        validateEnvironment({ ...example, PLAYER_GROUP_INVITE_TTL: value }),
+      ).toThrow('PLAYER_GROUP_INVITE_TTL');
+    for (const value of ['50', '60001', 'x'])
+      expect(() =>
+        validateEnvironment({ ...example, REALTIME_AUTH_TIMEOUT_MS: value }),
+      ).toThrow('REALTIME_AUTH_TIMEOUT_MS');
+  });
+});
+
+describe('Player guilds environment validation', () => {
+  it('defaults the guild invite TTL to 7 days within 1 hour to 30 days', () => {
+    expect(validateEnvironment(example).playerGuilds).toEqual({
+      inviteTtl: 7 * 86400,
+    });
+    expect(
+      validateEnvironment({ ...example, PLAYER_GUILD_INVITE_TTL: '1h' })
+        .playerGuilds.inviteTtl,
+    ).toBe(3600);
+    for (const value of ['59m', '31d', '0d', 'x'])
+      expect(() =>
+        validateEnvironment({ ...example, PLAYER_GUILD_INVITE_TTL: value }),
+      ).toThrow('PLAYER_GUILD_INVITE_TTL');
+  });
+});
+
+describe('Player chat environment validation', () => {
+  it('defaults retention to 7 days and the send limit to 5 per 10 seconds', () => {
+    expect(validateEnvironment(example).playerChat).toEqual({
+      retention: 7 * 86400,
+      rateLimitCount: 5,
+      rateLimitWindow: 10,
+    });
+    expect(
+      validateEnvironment({
+        ...example,
+        PLAYER_CHAT_RETENTION: '1d',
+        PLAYER_CHAT_RATE_LIMIT_COUNT: '20',
+        PLAYER_CHAT_RATE_LIMIT_WINDOW: '1m',
+      }).playerChat,
+    ).toEqual({ retention: 86400, rateLimitCount: 20, rateLimitWindow: 60 });
+    for (const value of ['23h', '31d', '0d', 'x'])
+      expect(() =>
+        validateEnvironment({ ...example, PLAYER_CHAT_RETENTION: value }),
+      ).toThrow('PLAYER_CHAT_RETENTION');
+    for (const value of ['0', '101', '1.5', 'x'])
+      expect(() =>
+        validateEnvironment({
+          ...example,
+          PLAYER_CHAT_RATE_LIMIT_COUNT: value,
+        }),
+      ).toThrow('PLAYER_CHAT_RATE_LIMIT_COUNT');
+    for (const value of ['0s', '2h', 'x'])
+      expect(() =>
+        validateEnvironment({
+          ...example,
+          PLAYER_CHAT_RATE_LIMIT_WINDOW: value,
+        }),
+      ).toThrow('PLAYER_CHAT_RATE_LIMIT_WINDOW');
   });
 });

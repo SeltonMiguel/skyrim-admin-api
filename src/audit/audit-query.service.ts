@@ -6,7 +6,16 @@ import {
 import { DataSource } from 'typeorm';
 import { AuditLog } from './entities/audit-log.entity.js';
 import { AuditQueryDto } from './dto/audit-query.dto.js';
-import type { AuditPageDto } from './dto/audit-response.dto.js';
+import type { AuditLogDto, AuditPageDto } from './dto/audit-response.dto.js';
+import { ActorType } from '../actors/actor.contracts.js';
+
+// Represents STAFF, PLAYER and SYSTEM without rewriting historical rows.
+export function auditEntry(entry: AuditLog): AuditLogDto {
+  return {
+    ...entry,
+    actorType: entry.actorType ?? (entry.actorStaffId ? ActorType.STAFF : null),
+  };
+}
 
 @Injectable()
 export class AuditQueryService {
@@ -44,7 +53,7 @@ export class AuditQueryService {
       .take(query.limit)
       .getManyAndCount();
     return {
-      items,
+      items: items.map(auditEntry),
       total,
       page: query.page,
       limit: query.limit,
@@ -52,11 +61,11 @@ export class AuditQueryService {
     };
   }
 
-  async get(id: string): Promise<AuditLog> {
+  async get(id: string): Promise<AuditLogDto> {
     const entry = await this.database
       .getRepository<AuditLog>('AuditLog')
       .findOneBy({ id });
     if (!entry) throw new NotFoundException('Audit entry not found');
-    return entry;
+    return auditEntry(entry);
   }
 }

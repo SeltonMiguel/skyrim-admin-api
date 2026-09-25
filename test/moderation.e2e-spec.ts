@@ -107,7 +107,7 @@ describeDatabase('Moderation with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(9);
+    expect(await database.runMigrations()).toHaveLength(22);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -177,17 +177,51 @@ describeDatabase('Moderation with real PostgreSQL', () => {
     );
     expect(rows.map((r: { tablename: string }) => r.tablename)).toEqual([
       'audit_logs',
+      'character_professions',
+      'economy_accounts',
+      'economy_entries',
+      'economy_transactions',
       'game_command_results',
       'game_commands',
       'game_connections',
       'game_servers',
       'migrations',
       'permissions',
+      'player_character_link_challenges',
+      'player_characters',
+      'player_chat_direct_threads',
+      'player_chat_messages',
+      'player_chat_requests',
+      'player_group_invites',
+      'player_group_members',
+      'player_groups',
+      'player_guild_invites',
+      'player_guild_members',
+      'player_guilds',
+      'player_identities',
+      'player_marketplace_currency_escrows',
+      'player_marketplace_custody_events',
+      'player_marketplace_listings',
+      'player_marketplace_purchases',
+      'player_marketplace_requests',
+      'player_marketplace_settlement_events',
+      'player_sessions',
+      'player_settings',
+      'player_trade_currency_escrows',
+      'player_trade_items',
+      'player_trade_offers',
+      'player_trade_requests',
+      'player_trade_settlement_events',
+      'player_trades',
+      'player_vip_entitlements',
+      'players',
+      'profession_experience_events',
       'role_permissions',
       'roles',
       'server_control_operations',
       'staff_sessions',
       'staff_users',
+      'vip_entitlement_requests',
       'vip_offers',
     ]);
   });

@@ -42,7 +42,8 @@
     "pg": "^8.16.3",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
-    "typeorm": "^0.3.28"
+    "typeorm": "^0.3.28",
+    "ws": "^8.21.3"
   },
   "devDependencies": {
     "@nestjs/cli": "^12.0.0",
@@ -52,6 +53,7 @@
     "@types/jest": "^30.0.0",
     "@types/node": "^24.0.0",
     "@types/supertest": "^7.0.0",
+    "@types/ws": "^8.18.1",
     "jest": "^30.2.0",
     "oxlint": "^1.58.0",
     "prettier": "^3.4.2",

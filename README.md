@@ -5,6 +5,7 @@ autenticação/RBAC (Etapa 01), auditoria administrativa (Etapa 02) e infraestru
 de Game Bridge/Commands (Etapa 03), consultas administrativas (Etapa 04) e
 Character Management assíncrono (Etapa 05), Moderation (Etapa 06), World Management
 (Etapa 07), catálogo VIP Store (Etapa 08) e Server Control (Etapa 09).
+Player Services (Etapa 10) foi iniciado com o modelo de contas de jogador.
 O transporte real para Skyrim continua
 reservado a uma etapa futura.
 
@@ -14,7 +15,8 @@ Requisitos: Node.js 22 ou superior (validado com Node 24), npm e Docker com Comp
 
 ```bash
 cp .env.example .env
-# Configure JWT_ACCESS_SECRET e JWT_REFRESH_SECRET antes de continuar (veja abaixo).
+# Configure JWT_ACCESS_SECRET, JWT_REFRESH_SECRET, PLAYER_JWT_ACCESS_SECRET e
+# PLAYER_JWT_REFRESH_SECRET antes de continuar (veja abaixo).
 docker compose up -d
 npm install
 npm run migration:run
@@ -243,7 +245,8 @@ A Etapa 03 adiciona GameServer, GameConnection, GameCommand e GameCommandResult,
 com migration explícita e serviços internos exportados por GameBridgeModule.
 BRIDGE_PING permanece disponível; a Etapa 05 acrescenta 17 comandos tipados de
 Character Management, a Etapa 06 acrescenta oito de Moderation e a Etapa 07 quatro
-de World Management, totalizando 30 tipos fechados. GameGateway usa DisconnectedGameGateway em produção:
+de World Management; a Subetapa 10.5 acrescenta duas queries player-facing
+(CHARACTER_PROFILE_QUERY e CHARACTER_SKILLS_QUERY), totalizando 32 tipos fechados. GameGateway usa DisconnectedGameGateway em produção:
 nunca simula execução bem-sucedida. O MockGameGateway existe somente nos testes.
 
 Commands usam idempotência por servidor/chave, correlationId próprio, requestId
@@ -407,6 +410,7 @@ src/
     migrations/
   game-bridge/        # Servidores, conexões, comandos e gateway interno
   health/             # Consulta real de disponibilidade
+  player-accounts/    # Contas e identidades externas de jogador (sem auth)
   server-control/     # Start/pause/restart e gateway abstrato do Agent
   app.module.ts
   main.ts
@@ -465,3 +469,146 @@ administráveis além do registro (`code`, `name`, `enabled`). A migration
 `1789880000000-ServerControl` adiciona apenas a tabela: nove migrations,
 36 permissions e 93 grants. Consulte [operações, estados, gateway e
 pendências](docs/server-control.md).
+
+## Player Services
+
+A Etapa 10 foi iniciada. A Subetapa 10.1 implementa o Player Account Model:
+`players` (UUID canônico, displayName, status ACTIVE/SUSPENDED/BANNED) e
+`player_identities` (provider DISCORD/STEAM e providerSubject opaco, com
+`UNIQUE(provider, provider_subject)`). O `PlayerAccountService` é interno; não há
+rotas HTTP novas. Player e Staff são identidades separadas, sem FK ou coluna
+compartilhada, e nenhum token OAuth, senha ou e-mail é armazenado.
+
+A migration `1789890000000-PlayerAccounts` adiciona as duas tabelas.
+
+A Subetapa 10.2 torna Audit e GameCommand actor-aware (STAFF, PLAYER, SYSTEM) e
+isola a idempotência por scope (`STAFF` compartilhado, `PLAYER:<id>`,
+`SYSTEM:<source>`), sem alterar as APIs staff nem reescrever o Audit histórico.
+A migration `1789900000000-GenericActor` adiciona o ator genérico.
+
+A Subetapa 10.3 implementa Player Auth em `/api/v1/player/auth` (Discord
+`discord/exchange`, `refresh`, `logout`) e `GET /api/v1/player/me`, com
+`player_sessions`, tokens e `PlayerAuthGuard` próprios. O primeiro login Discord
+cria o player; SUSPENDED/BANNED são bloqueados inclusive com access token válido.
+Configure `PLAYER_JWT_ACCESS_SECRET` e `PLAYER_JWT_REFRESH_SECRET` (obrigatórias fora
+de `test`, distintas entre si e das secrets de staff) e, para habilitar o login,
+`DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET` e `DISCORD_REDIRECT_URIS`. Sem Discord
+configurado, o exchange responde 503. Tokens de staff e de player não são
+intercambiáveis. A migration `1789910000000-PlayerSessions` cria as sessões.
+
+A Subetapa 10.4 implementa Character Ownership: `POST /api/v1/player/character-links`
+abre um vínculo PENDING e devolve uma única vez um challenge para digitar no jogo;
+`GET .../:linkId` e `POST .../:linkId/revoke` operam só vínculos próprios. O vínculo
+só vira VERIFIED pela confirmação interna do Agent (`confirmFromAgent`, usada na
+Etapa 11); não há endpoint de Agent nem GameCommand. Um character fica VERIFIED
+para no máximo um player por servidor. A migration `1789920000000-PlayerCharacters`
+completa treze migrations, 36 permissions e 93 grants.
+
+A Subetapa 10.5 permite ao player consultar perfil e skills de um character
+VERIFIED: `POST /api/v1/player/game-servers/:gameServerId/characters/:characterId/`
+`profile-query` e `skills-query` (Idempotency-Key obrigatório, 202 + Location) e
+`GET /api/v1/player/character-operations/:operationId`, visível só para o próprio
+player. Os commands usam ator PLAYER e scope de idempotência próprio; o resultado
+vem do Skyrim, validado, sem snapshot. Não há migration nova.
+
+A Subetapa 10.10 acrescenta, no mesmo padrão, `properties-query` (casas) e
+`holds-query`, somente leitura, sobre os contratos existentes
+`CHARACTER_PROPERTIES_QUERY` e `CHARACTER_HOLDS_QUERY`. O player não compra, vende,
+concede nem revoga propriedades ou holds; essas mutations continuam exclusivas da
+Admin API. Não há migration nova: continuam dezesseis.
+
+A Subetapa 10.11 acrescenta `horses-query` (cavalos/mounts), somente leitura,
+sobre o contrato existente `CHARACTER_HORSES_QUERY`. Dar, revogar, comprar ou
+chamar cavalos não é exposto ao player. Sem migration nova.
+
+A Subetapa 10.6 lista os characters do player em `GET /api/v1/player/me/characters`
+(paginado, VERIFIED antes de PENDING, sem REVOKED) e `GET .../:characterLinkId`.
+Retorna apenas identidade e servidor, sem character selecionado no servidor nem
+dados de runtime. Também não tem migration: continuam treze.
+
+A Subetapa 10.7 implementa Professions por character, identificadas por servidor +
+character e preservadas se a ownership mudar (TAILOR, HUNTER, MINER,
+BLACKSMITH, ALCHEMIST, CHARCOAL_BURNER, COOK): seleção única em
+`/api/v1/player/me/characters/:characterLinkId/profession` para vínculos VERIFIED
+e XP concedido apenas pelo serviço interno `grantFromAgent` (ator SYSTEM:AGENT,
+idempotente por evento). Nível = maior N com `100 * (N - 1)^2 <= XP`, máximo 100.
+A migration `1789930000000-Professions` adiciona as profissões.
+
+A Subetapa 10.8 adiciona Groups (party de até 5 characters VERIFIED do mesmo
+servidor, com convites) em `/api/v1/player/groups` e `/api/v1/player/group-invites`,
+e a fundação realtime: WebSocket em `/api/v1/realtime` (biblioteca `ws`), com
+handshake por frame `AUTH` contendo o access token da superfície PLAYER ou STAFF,
+fechamento na expiração do token e fan-out decidido pelo servidor a partir do
+`RealtimeEventBus`. Realtime é best-effort e de processo único; o estado verdadeiro
+continua na API HTTP. A migration `1789940000000-PlayerGroups` completa quinze
+migrations.
+
+A Subetapa 10.9 adiciona Guilds persistentes (não são Skyrim Factions) em
+`/api/v1/player/guilds`, `/api/v1/player/guild-invites` e
+`/api/v1/player/me/characters/:characterLinkId/guild`. A guild pertence ao
+character identity (servidor + `characterExternalId`): a ownership VERIFIED só
+autoriza o Player atual, e membership e cargo sobrevivem a uma troca de dono.
+Cargos MASTER/OFFICER/MEMBER, limite provisório de 50 membros, convites com TTL
+`PLAYER_GUILD_INVITE_TTL` (padrão 7d) e eventos `GUILD_*` no realtime da 10.8.
+Sem GameCommand nem integração com o jogo. A migration `1789950000000-PlayerGuilds`
+completa dezesseis migrations.
+
+A Subetapa 10.12 cria a economia backend-owned: ledger de partidas dobradas
+imutável em GOLD (unidades inteiras), por character identity, com balances como
+projeção mantida pelo banco, idempotência por ator e crédito/débito SYSTEM e
+transfer apenas internos. O player lê a wallet e o histórico em
+`/api/v1/player/me/characters/:characterLinkId/wallet[/transactions]`; nenhuma
+rota altera saldo e o gold do Skyrim não é sincronizado. A migration
+`1789960000000-Economy` completa dezessete migrations.
+
+A Subetapa 10.13 adiciona trades entre characters do mesmo servidor em
+`/api/v1/player/trades` (criar, trocar a própria oferta, aceitar a versão atual
+da oferta da contraparte via `counterpartyOfferVersion`, cancelar, ler) e
+`/api/v1/player/me/characters/:characterLinkId/trades`, com `Idempotency-Key`
+obrigatório nas mutations. GOLD é reservado em `TRADE_ESCROW` no segundo aceite:
+trades só de GOLD completam na hora; com GAME_ITEM ficam em
+AWAITING_GAME_CONFIRMATION até a confirmação interna do Agent (Etapa 11), que
+só pode pedir SETTLED com os itens sob custódia reversível; se o ledger recusar a
+liquidação, o trade continua aguardando. A
+migration `1789970000000-PlayerTrades` completa dezoito migrations.
+
+A Subetapa 10.14 adiciona o Marketplace: um character lista um GAME_ITEM
+(`itemId`, `quantity`, `priceGold`) em `/api/v1/player/marketplace/listings`; a
+listing nasce PENDING_CUSTODY e só fica ACTIVE (pública e comprável) quando o
+Agent confirma a custódia do item pelo contrato interno
+`MarketplaceCustodyService`. A compra reserva o GOLD do buyer em `MARKET_ESCROW`
+(listing RESERVED, purchase AWAITING_GAME_CONFIRMATION) e o Agent liquida pelo
+`MarketplaceSettlementService` (SOLD e seller pago, ou FAILED com estorno). O
+player lê as próprias listings e compras em
+`/api/v1/player/me/characters/:characterLinkId/marketplace/{listings,purchases}`.
+A migration `1789980000000-PlayerMarketplace` completa dezenove migrations.
+
+A Subetapa 10.15 adiciona o Chat de texto plano: GLOBAL
+(`/api/v1/player/chat/global`), GROUP (`/api/v1/player/groups/:groupId/chat`),
+GUILD (`/api/v1/player/guilds/:guildId/chat`) e DIRECT
+(`/api/v1/player/chat/direct/:targetCharacterId`), com históricos paginados por
+HTTP e entrega de mensagens novas por `CHAT_MESSAGE_CREATED` no realtime. DIRECT
+liga os ownership links atuais: um novo dono do character não herda as mensagens
+privadas. Mensagens expiram após `PLAYER_CHAT_RETENTION` (padrão 7d) e os envios
+exigem `Idempotency-Key` e respeitam `PLAYER_CHAT_RATE_LIMIT_COUNT`/`_WINDOW`
+(padrão 5 por 10s, em memória, instância única). A migration
+`1789990000000-PlayerChat` completa vinte migrations.
+
+A Subetapa 10.16 adiciona Player Settings account-scoped em
+`GET/PATCH /api/v1/player/settings`: `locale` (BCP 47 canônico), `timeZone`
+(IANA) e os flags `allowDirectMessages`, `allowTradeRequests`,
+`allowGroupInvites` e `allowGuildInvites` (defaults sem row: `pt-BR`, `UTC` e
+`true`). Os flags barram só novas interações de outros players (DIRECT, Trade,
+Group e Guild invites) com o mesmo 404 genérico de target indisponível; nada
+existente é cancelado. A migration `1790000000000-PlayerSettings` completa vinte
+e uma migrations.
+
+A Subetapa 10.17, última da Etapa 10, integra o catálogo VIP da Etapa 08 ao
+player por entitlements: cada oferta ganha `entitlementScope` explícito (PLAYER ou
+CHARACTER; ofertas antigas ficam CHARACTER) e `VipEntitlementService` concede e
+revoga direitos internamente (STAFF/SYSTEM, idempotente, auditado). O player só lê:
+`GET /api/v1/player/vip/entitlements` e
+`GET /api/v1/player/me/characters/:characterLinkId/vip/{entitlements,effective}`.
+Não há pagamento, checkout nem entrega pelo Agent (Etapa 11). A migration
+`1790010000000-VipEntitlements` completa vinte e duas migrations.
+Consulte [arquitetura, decisões e roadmap da Etapa 10](docs/player-services.md).

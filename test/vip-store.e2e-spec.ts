@@ -64,7 +64,20 @@ describeDatabase('VIP Store with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(9);
+    expect(await database.runMigrations()).toHaveLength(22);
+    await database.undoLastMigration(); // Etapa 10.17 VIP Entitlements
+    await database.undoLastMigration(); // Etapa 10.16 Player Settings
+    await database.undoLastMigration(); // Etapa 10.15 Player Chat
+    await database.undoLastMigration(); // Etapa 10.14 Player Marketplace
+    await database.undoLastMigration(); // Etapa 10.13 Player Trades
+    await database.undoLastMigration(); // Etapa 10.12 Economy
+    await database.undoLastMigration(); // Etapa 10.9 Player Guilds
+    await database.undoLastMigration(); // Etapa 10.8 Player Groups
+    await database.undoLastMigration(); // Etapa 10.7 Professions
+    await database.undoLastMigration(); // Etapa 10.4 Player Characters
+    await database.undoLastMigration(); // Etapa 10.3 Player Sessions
+    await database.undoLastMigration(); // Etapa 10.2 Generic Actor
+    await database.undoLastMigration(); // Etapa 10.1 Player Accounts
     await database.undoLastMigration(); // Etapa 09 Server Control
     await database.undoLastMigration();
     expect(await database.query('SELECT * FROM permissions')).toHaveLength(35);
@@ -84,7 +97,7 @@ describeDatabase('VIP Store with real PostgreSQL', () => {
     ).toEqual([
       { role_name: 'COORDINATOR', permission_name: 'VIP_STORE_WRITE' },
     ]);
-    expect(await database.runMigrations()).toHaveLength(2);
+    expect(await database.runMigrations()).toHaveLength(15);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -227,6 +240,8 @@ describeDatabase('VIP Store with real PostgreSQL', () => {
       currency: 'BRL',
       active: false,
       rewardCount: 4,
+      // 10.17: explicit scope, conservative default.
+      entitlementScope: 'CHARACTER',
     });
     expect(JSON.stringify(entries[0].metadata)).not.toMatch(
       /opaque:|description|payload|rewards|token|password/,
@@ -337,6 +352,7 @@ describeDatabase('VIP Store with real PostgreSQL', () => {
         'priceMinor',
         'currency',
         'rewards',
+        'entitlementScope',
       ].sort(),
     );
     expect(body.items[0]).toEqual(offer);

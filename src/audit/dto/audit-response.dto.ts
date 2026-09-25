@@ -1,18 +1,34 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { RoleName } from '../../rbac/roles.js';
 import { AuditAction, AuditOutcome } from '../audit.types.js';
+import { ActorType, SystemSource } from '../../actors/actor.contracts.js';
 
 export class AuditLogDto {
   @ApiProperty({ format: 'uuid' })
   id: string;
+  @ApiProperty({
+    enum: ActorType,
+    nullable: true,
+    description:
+      'Historical rows without a stored type are STAFF when actorStaffId is set; null means no actor.',
+  })
+  actorType: ActorType | null;
   @ApiProperty({ type: String, format: 'uuid', nullable: true })
   actorStaffId: string | null;
   @ApiProperty({ type: String, nullable: true })
   actorUsername: string | null;
   @ApiProperty({ type: String, nullable: true })
   actorDisplayName: string | null;
-  @ApiProperty({ enum: RoleName, nullable: true })
+  @ApiProperty({
+    enum: RoleName,
+    nullable: true,
+    description: 'Staff only; always null for PLAYER and SYSTEM.',
+  })
   actorRole: RoleName | null;
+  @ApiProperty({ type: String, format: 'uuid', nullable: true })
+  actorPlayerId: string | null;
+  @ApiProperty({ enum: SystemSource, nullable: true })
+  actorSystemSource: SystemSource | null;
   @ApiProperty({ enum: AuditAction })
   action: AuditAction;
   @ApiProperty({ enum: AuditOutcome })

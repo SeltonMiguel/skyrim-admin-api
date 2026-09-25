@@ -5,7 +5,9 @@ Agent/SKSE ou scheduler. A Etapa 05 adiciona endpoints de domínio e 17 comandos
 Character tipados, documentados em [Character Management](character-management.md),
 além de `BRIDGE_PING`. A Etapa 06 adiciona oito comandos de
 [Moderation](moderation.md) e a Etapa 07 adiciona quatro de
-[World Management](world-management.md), totalizando 30 tipos fechados. Não existe
+[World Management](world-management.md). A Subetapa 10.5 adiciona
+`CHARACTER_PROFILE_QUERY` e `CHARACTER_SKILLS_QUERY`, criados por players
+([Player Services](player-services.md)), totalizando 32 tipos fechados. Não existe
 interpretação de strings como console Skyrim, shell ou comandos do sistema.
 
 ## Serviços e configuração

@@ -84,7 +84,20 @@ describeDatabase('Game Bridge with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(9);
+    expect(await database.runMigrations()).toHaveLength(22);
+    await database.undoLastMigration(); // Etapa 10.17 VIP Entitlements
+    await database.undoLastMigration(); // Etapa 10.16 Player Settings
+    await database.undoLastMigration(); // Etapa 10.15 Player Chat
+    await database.undoLastMigration(); // Etapa 10.14 Player Marketplace
+    await database.undoLastMigration(); // Etapa 10.13 Player Trades
+    await database.undoLastMigration(); // Etapa 10.12 Economy
+    await database.undoLastMigration(); // Etapa 10.9 Player Guilds
+    await database.undoLastMigration(); // Etapa 10.8 Player Groups
+    await database.undoLastMigration(); // Etapa 10.7 Professions
+    await database.undoLastMigration(); // Etapa 10.4 Player Characters
+    await database.undoLastMigration(); // Etapa 10.3 Player Sessions
+    await database.undoLastMigration(); // Etapa 10.2 Generic Actor
+    await database.undoLastMigration(); // Etapa 10.1 Player Accounts
     await database.undoLastMigration(); // Etapa 09 Server Control
     await database.undoLastMigration(); // Etapa 08 VIP Store
     await database.undoLastMigration(); // Etapa 07 World permission grants
@@ -104,7 +117,7 @@ describeDatabase('Game Bridge with real PostgreSQL', () => {
         [schema, 'game_%'],
       ),
     ).toEqual([]);
-    expect(await database.runMigrations()).toHaveLength(7);
+    expect(await database.runMigrations()).toHaveLength(20);
     expect(await database.runMigrations()).toHaveLength(0);
     gateway = new MockGameGateway();
     clock = new TestBridgeClock();
@@ -171,7 +184,7 @@ describeDatabase('Game Bridge with real PostgreSQL', () => {
         [schema, 'game_%'],
       ),
     ).toHaveLength(4);
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(9);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(22);
   });
   it('registers and locates servers and rejects duplicate code through the database', async () => {
     expect(await servers.get(serverId)).toMatchObject({ enabled: true });

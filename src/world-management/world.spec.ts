@@ -40,10 +40,10 @@ const incomplete: SubmitCommand = {
 void incomplete;
 const cases = worldCases(randomUUID());
 describe('World closed contracts', () => {
-  it('registers exactly four World operations in the 30-command catalog', () => {
+  it('registers exactly four World operations in the 32-command catalog', () => {
     expect(WORLD_COMMAND_TYPES).toHaveLength(4);
-    expect(COMMAND_TYPES).toHaveLength(30);
-    expect(new Set(COMMAND_TYPES).size).toBe(30);
+    expect(COMMAND_TYPES).toHaveLength(32);
+    expect(new Set(COMMAND_TYPES).size).toBe(32);
   });
   it.each(cases)(
     'validates $type payload/result, policy, audit allowlist and redaction',
