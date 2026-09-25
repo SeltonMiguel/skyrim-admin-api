@@ -5,6 +5,8 @@ import { DataSource } from 'typeorm';
 import request from 'supertest';
 import type { App } from 'supertest/types.js';
 import { GameCommandWorker } from '../src/game-agent/game-command.worker.js';
+import { ServerControlWorker } from '../src/server-control/server-control.worker.js';
+import { GameConnectionService } from '../src/game-bridge/game-connection.service.js';
 import { compiledDatabaseArtifacts } from './compiled-database.js';
 import { loadEnvironment } from '../src/config/environment.js';
 import { createDatabaseOptions } from '../src/database/database.options.js';
@@ -20,6 +22,7 @@ import { GameGateway } from '../src/game-bridge/game-gateway.js';
 import { ServerControlOperation } from '../src/server-control/entities/server-control-operation.entity.js';
 import { ServerControlGateway } from '../src/server-control/server-control-gateway.js';
 import { ServerControlDispatcher } from '../src/server-control/server-control-dispatcher.js';
+import { ServerControlReceiver } from '../src/server-control/server-control-receiver.js';
 import {
   SERVER_CONTROL_POLICY,
   SERVER_CONTROL_TYPES,
@@ -67,6 +70,13 @@ describeDatabase('Server Control with real PostgreSQL', () => {
       "SELECT * FROM audit_logs WHERE metadata->>'operationId' = $1",
       [id],
     );
+  // Ends the server's in-flight operation (one per server) so the next
+  // request of a test is not refused with 409.
+  const settle = (serverId = server.id) =>
+    database.query(
+      "UPDATE server_control_operations SET status = 'SUCCEEDED', completed_at = now(), dispatched_at = COALESCE(dispatched_at, now()) WHERE game_server_id = $1 AND status IN ('PENDING', 'DISPATCHED')",
+      [serverId],
+    );
   const setEnabled = (enabled: boolean) =>
     database
       .getRepository<GameServer>('GameServer')
@@ -84,7 +94,7 @@ describeDatabase('Server Control with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(23);
+    expect(await database.runMigrations()).toHaveLength(24);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -92,6 +102,8 @@ describeDatabase('Server Control with real PostgreSQL', () => {
       .useValue(database)
       // This suite drives the command lifecycle by hand.
       .overrideProvider(GameCommandWorker)
+      .useValue({})
+      .overrideProvider(ServerControlWorker)
       .useValue({})
       .overrideProvider(ServerControlGateway)
       .useValue(gateway)
@@ -127,6 +139,13 @@ describeDatabase('Server Control with real PostgreSQL', () => {
       code: randomUUID(),
       name: 'Server control test',
     });
+    // A real session row for the claim's target (FK); the mock offers it.
+    gateway.connectionId = (
+      await app.get(GameConnectionService).connect({
+        gameServerId: server.id,
+        externalConnectionId: randomUUID(),
+      })
+    ).id;
   });
   afterAll(async () => {
     await app?.close();
@@ -142,7 +161,7 @@ describeDatabase('Server Control with real PostgreSQL', () => {
     expect(
       (await database.driver.createSchemaBuilder().log()).upQueries,
     ).toEqual([]);
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(23);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(24);
     expect(await database.query('SELECT * FROM permissions')).toHaveLength(37);
     expect(await database.query('SELECT * FROM role_permissions')).toHaveLength(
       95,
@@ -228,6 +247,7 @@ describeDatabase('Server Control with real PostgreSQL', () => {
         if (authorized)
           expect((await read(id)).requestedByStaffId).toBe(staffIds.get(role));
         expect(await audits(id)).toHaveLength(1);
+        await settle();
       }
       expect(await count()).toBe(3);
     },
@@ -270,11 +290,23 @@ describeDatabase('Server Control with real PostgreSQL', () => {
         {
           operationId: operation.id,
           gameServerId: server.id,
+          connectionId: gateway.connectionId,
           type,
           correlationId: operation.correlationId,
           requestedAt: operation.createdAt.toISOString(),
+          issuedAt: operation.dispatchClaimedAt!.toISOString(),
+          notAfter: operation.notAfter!.toISOString(),
         },
       ]);
+      // The claim fixed the target and both persistent deadlines.
+      expect(operation.dispatchConnectionId).toBe(gateway.connectionId);
+      expect(
+        operation.notAfter!.getTime() - operation.dispatchClaimedAt!.getTime(),
+      ).toBe(10000);
+      expect(
+        operation.resultDeadlineAt!.getTime() -
+          operation.dispatchClaimedAt!.getTime(),
+      ).toBe(300000);
       const entries = await audits(operation.id);
       expect(entries).toHaveLength(1);
       expect(entries[0]).toMatchObject({
@@ -345,6 +377,7 @@ describeDatabase('Server Control with real PostgreSQL', () => {
       await post('SERVER_RESTART', key, R.COORDINATOR, other.id).expect(202)
     ).body;
     expect(scoped.operationId).not.toBe(first.operationId);
+    await settle();
     const raced = randomUUID();
     const responses = await Promise.all([
       post('SERVER_START', raced),
@@ -420,7 +453,8 @@ describeDatabase('Server Control with real PostgreSQL', () => {
       }
       const { body } = await post(type, key).expect(202);
       expect(await audits(body.operationId)).toHaveLength(1);
-      gateway.reset();
+      await settle();
+      gateway.sends = [];
     }
   });
   it('dispatches only after commit and holds no transaction or lock during gateway I/O', async () => {
@@ -485,6 +519,7 @@ describeDatabase('Server Control with real PostgreSQL', () => {
       }
       const [entry] = await audits(accepted.body.operationId);
       expect(entry.outcome).toBe('SUCCESS');
+      await settle();
     }
     // Failed and ambiguous work is never resent by the recovery path.
     const sends = gateway.sends.length;
@@ -493,37 +528,51 @@ describeDatabase('Server Control with real PostgreSQL', () => {
   });
   it('recovers unclaimed work after commit, fails it if the server was disabled, and never resends claims', async () => {
     const base = {
-      gameServerId: server.id,
       status: S.PENDING,
-      correlationId: randomUUID(),
       requestedByStaffId: staffIds.get(R.DEV)!,
       type: 'SERVER_PAUSE' as const,
     };
+    const fresh = async () =>
+      (await servers.register({ code: randomUUID(), name: 'Recovery' })).id;
     const orphan = await operations().save(
-      operations().create({ ...base, idempotencyKey: randomUUID() }),
+      operations().create({
+        ...base,
+        gameServerId: server.id,
+        correlationId: randomUUID(),
+        idempotencyKey: randomUUID(),
+      }),
     );
+    // Claimed and never reconciled (crash during send): possibly delivered.
+    const now = new Date();
     const claimed = await operations().save(
       operations().create({
         ...base,
+        gameServerId: await fresh(),
         correlationId: randomUUID(),
         idempotencyKey: randomUUID(),
-        dispatchClaimedAt: new Date(),
+        dispatchClaimedAt: now,
+        dispatchConnectionId: gateway.connectionId,
+        notAfter: new Date(now.getTime() + 10000),
+        resultDeadlineAt: new Date(now.getTime() + 300000),
       }),
     );
     await dispatcher.dispatchPending();
     expect(gateway.sends.map((s) => s.operationId)).toEqual([orphan.id]);
     expect((await read(orphan.id)).status).toBe(S.DISPATCHED);
     expect((await read(claimed.id)).status).toBe(S.PENDING);
-    await dispatcher.dispatch(orphan.id);
+    expect(await dispatcher.dispatch(orphan.id)).toBe('SKIPPED');
+    expect(await dispatcher.dispatch(claimed.id)).toBe('SKIPPED');
     expect(gateway.sends).toHaveLength(1);
+    await setEnabled(false);
+    await settle();
     const disabled = await operations().save(
       operations().create({
         ...base,
+        gameServerId: server.id,
         correlationId: randomUUID(),
         idempotencyKey: randomUUID(),
       }),
     );
-    await setEnabled(false);
     try {
       await dispatcher.dispatchPending();
       expect(await read(disabled.id)).toMatchObject({
@@ -535,10 +584,158 @@ describeDatabase('Server Control with real PostgreSQL', () => {
       await setEnabled(true);
     }
   });
+  it('holds work without an eligible Agent before the claim and fails it safely after the pending timeout', async () => {
+    const agent = gateway.connectionId;
+    gateway.connectionId = null;
+    const { body } = await post('SERVER_RESTART').expect(202);
+    expect(body.status).toBe(S.PENDING);
+    expect(await dispatcher.dispatch(body.operationId)).toBe('HELD');
+    await dispatcher.dispatchPending();
+    expect(gateway.sends).toEqual([]);
+    const held = await read(body.operationId);
+    expect(held).toMatchObject({
+      dispatchClaimedAt: null,
+      dispatchConnectionId: null,
+      notAfter: null,
+      resultDeadlineAt: null,
+    });
+    // Still in flight: the server accepts nothing else meanwhile.
+    await post('SERVER_START').expect(409);
+    // Not yet due.
+    expect(await dispatcher.expirePending()).toEqual([]);
+    await database.query(
+      "UPDATE server_control_operations SET created_at = now() - interval '31 seconds' WHERE id = $1",
+      [body.operationId],
+    );
+    expect(await dispatcher.expirePending()).toEqual([
+      {
+        operationId: body.operationId,
+        gameServerId: server.id,
+        type: 'SERVER_RESTART',
+      },
+    ]);
+    const detail = (await get(body.operationId).expect(200)).body;
+    // Nothing was sent: FAILED is certain, never UNCERTAIN.
+    expect(detail).toMatchObject({
+      status: S.FAILED,
+      errorCode: 'DISPATCH_EXPIRED',
+      errorMessage:
+        'No eligible server control Agent before the dispatch deadline',
+      dispatchedAt: null,
+    });
+    // The claim can no longer happen, even if an Agent shows up now.
+    gateway.connectionId = agent;
+    expect(await dispatcher.dispatch(body.operationId)).toBe('SKIPPED');
+    expect(gateway.sends).toEqual([]);
+    await post('SERVER_START').expect(202);
+  });
+  it('turns a possibly delivered operation without result into UNCERTAIN at its persistent deadline and never resends it', async () => {
+    const { body } = await post('SERVER_RESTART').expect(202);
+    expect(body.status).toBe(S.DISPATCHED);
+    const receiver = app.get(ServerControlReceiver);
+    expect(await receiver.expireResults()).toEqual([]);
+    // As after a backend restart: only the persisted deadline matters.
+    await database.query(
+      "UPDATE server_control_operations SET result_deadline_at = now() - interval '1 second' WHERE id = $1",
+      [body.operationId],
+    );
+    expect(await receiver.expireResults()).toEqual([
+      {
+        operationId: body.operationId,
+        gameServerId: server.id,
+        type: 'SERVER_RESTART',
+      },
+    ]);
+    const detail = (await get(body.operationId).expect(200)).body;
+    expect(detail).toMatchObject({
+      operationId: body.operationId,
+      status: S.UNCERTAIN,
+      errorCode: 'RESULT_TIMEOUT',
+      errorMessage: 'No result before the deadline; outcome unknown',
+    });
+    expect(detail.dispatchedAt).not.toBeNull();
+    expect(detail.completedAt).not.toBeNull();
+    await dispatcher.dispatchPending();
+    expect(await dispatcher.dispatch(body.operationId)).toBe('SKIPPED');
+    expect(gateway.sends).toHaveLength(1);
+    // UNCERTAIN is terminal: a new, explicit request is possible.
+    const next = await post('SERVER_RESTART').expect(202);
+    expect(next.body.operationId).not.toBe(body.operationId);
+    expect(gateway.sends).toHaveLength(2);
+  });
+  it('keeps at most one non-terminal operation per server under concurrency, in the database', async () => {
+    const responses = await Promise.all(
+      SERVER_CONTROL_TYPES.flatMap((type) =>
+        Array.from({ length: 3 }, () => post(type)),
+      ),
+    );
+    expect(responses.filter((r) => r.status === 202)).toHaveLength(1);
+    expect(responses.filter((r) => r.status === 409)).toHaveLength(8);
+    for (const refused of responses.filter((r) => r.status === 409))
+      expect(refused.body.message).toBe(
+        'Another server control operation is in progress',
+      );
+    expect(await count()).toBe(1);
+    expect(gateway.sends).toHaveLength(1);
+    // The index holds even for writers that bypass the service.
+    await expect(
+      operations().insert({
+        gameServerId: server.id,
+        type: 'SERVER_PAUSE',
+        status: S.PENDING,
+        idempotencyKey: randomUUID(),
+        correlationId: randomUUID(),
+        requestedByStaffId: staffIds.get(R.DEV)!,
+      }),
+    ).rejects.toThrow(/server_control_operations_active_key/);
+    // Other servers are independent.
+    const other = await servers.register({ code: randomUUID(), name: 'Other' });
+    await post('SERVER_START', randomUUID(), R.COORDINATOR, other.id).expect(
+      202,
+    );
+  });
+  it('enforces lifecycle coherence with database checks', async () => {
+    const insert = (values: Record<string, unknown>) =>
+      operations().insert({
+        gameServerId: server.id,
+        type: 'SERVER_START',
+        idempotencyKey: randomUUID(),
+        correlationId: randomUUID(),
+        requestedByStaffId: staffIds.get(R.DEV)!,
+        ...values,
+      } as never);
+    const now = new Date();
+    const claim = {
+      dispatchClaimedAt: now,
+      notAfter: now,
+      resultDeadlineAt: now,
+    };
+    for (const values of [
+      // UNCERTAIN only past the delivery boundary, with a reason.
+      { status: S.UNCERTAIN, completedAt: now, errorCode: 'RESULT_TIMEOUT' },
+      { status: S.UNCERTAIN, completedAt: now, ...claim },
+      { status: S.UNCERTAIN, errorCode: 'RESULT_TIMEOUT', ...claim },
+      // A claim fixes both deadlines.
+      { status: S.PENDING, dispatchClaimedAt: now },
+      { status: S.PENDING, notAfter: now },
+      { status: S.PENDING, dispatchConnectionId: gateway.connectionId },
+      { status: 'TIMEOUT', completedAt: now, errorCode: 'RESULT_TIMEOUT' },
+    ])
+      await expect(insert(values)).rejects.toThrow(/check/);
+    await insert({
+      status: S.UNCERTAIN,
+      completedAt: now,
+      dispatchedAt: now,
+      errorCode: 'RESULT_TIMEOUT',
+      ...claim,
+    });
+  });
   it('protects detail by stored type and current grants, hides internals and isolates other domains', async () => {
     const ids = new Map<ServerControlType, string>();
-    for (const type of SERVER_CONTROL_TYPES)
+    for (const type of SERVER_CONTROL_TYPES) {
       ids.set(type, (await post(type).expect(202)).body.operationId);
+      await settle();
+    }
     const detail = await get(ids.get('SERVER_RESTART')!, R.DEV).expect(200);
     const stored = await read(ids.get('SERVER_RESTART')!);
     expect(Object.keys(detail.body).sort()).toEqual(
@@ -640,7 +837,86 @@ describeDatabase('Server Control with real PostgreSQL', () => {
         .expect(404);
     expect(await count()).toBe(0);
   });
+  it('reconciles Etapa 09 work in the 11.3 migration, reverts to the old schema and reapplies', async () => {
+    await database.undoLastMigration(); // Etapa 11.3 Server Control Transport
+    const staff = staffIds.get(R.DEV)!;
+    const now = new Date();
+    // The Etapa 09 schema allowed several non-terminal operations per server.
+    const legacy = async (
+      status: string,
+      claimedAt: Date | null,
+      dispatchedAt: Date | null,
+    ) => {
+      const id = randomUUID();
+      await database.query(
+        "INSERT INTO server_control_operations(id, game_server_id, type, status, idempotency_key, correlation_id, requested_by_staff_id, dispatch_claimed_at, dispatched_at) VALUES ($1, $2, 'SERVER_RESTART', $3, $4, $5, $6, $7, $8)",
+        [
+          id,
+          server.id,
+          status,
+          randomUUID(),
+          randomUUID(),
+          staff,
+          claimedAt,
+          dispatchedAt,
+        ],
+      );
+      return id;
+    };
+    const claimed = await legacy('PENDING', now, null);
+    const dispatched = await legacy('DISPATCHED', now, now);
+    const unclaimed = [
+      await legacy('PENDING', null, null),
+      await legacy('PENDING', null, null),
+    ];
+    const state = async (id: string) =>
+      (
+        await database.query(
+          'SELECT status, error_code FROM server_control_operations WHERE id = $1',
+          [id],
+        )
+      )[0];
+    expect(await database.runMigrations()).toHaveLength(1);
+    // Possibly delivered before any result receiver existed: unknown.
+    for (const id of [claimed, dispatched]) {
+      expect(await state(id)).toEqual({
+        status: 'UNCERTAIN',
+        error_code: 'RESULT_TIMEOUT',
+      });
+      expect(await read(id)).toMatchObject({
+        notAfter: expect.any(Date),
+        resultDeadlineAt: expect.any(Date),
+      });
+    }
+    // Never sent: failing is safe.
+    for (const id of unclaimed)
+      expect(await state(id)).toEqual({
+        status: 'FAILED',
+        error_code: 'DISPATCH_EXPIRED',
+      });
+    await database.undoLastMigration();
+    expect(await state(claimed)).toEqual({
+      status: 'DISPATCHED',
+      error_code: null,
+    });
+    expect(await state(unclaimed[0])).toEqual({
+      status: 'FAILED',
+      error_code: 'AGENT_UNAVAILABLE',
+    });
+    expect(
+      await database.query(
+        "SELECT column_name FROM information_schema.columns WHERE table_schema = $1 AND table_name = 'server_control_operations' AND column_name IN ('dispatch_connection_id', 'not_after', 'result_deadline_at')",
+        [schema],
+      ),
+    ).toEqual([]);
+    expect(await database.runMigrations()).toHaveLength(1);
+    expect(await database.runMigrations()).toHaveLength(0);
+    expect(
+      (await database.driver.createSchemaBuilder().log()).upQueries,
+    ).toEqual([]);
+  });
   it('reverts only the operation table and reapplies cleanly', async () => {
+    await database.undoLastMigration(); // Etapa 11.3 Server Control Transport
     await database.undoLastMigration(); // Etapa 11.1 Game Agent Transport
     await database.undoLastMigration(); // Etapa 10.17 VIP Entitlements
     await database.undoLastMigration(); // Etapa 10.16 Player Settings
@@ -666,7 +942,7 @@ describeDatabase('Server Control with real PostgreSQL', () => {
     expect(await database.query('SELECT * FROM role_permissions')).toHaveLength(
       93,
     );
-    expect(await database.runMigrations()).toHaveLength(15);
+    expect(await database.runMigrations()).toHaveLength(16);
     expect(await database.runMigrations()).toHaveLength(0);
     expect(
       (await database.driver.createSchemaBuilder().log()).upQueries,

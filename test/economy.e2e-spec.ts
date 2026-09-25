@@ -207,7 +207,8 @@ describeDatabase('Economy ledger and wallet with real PostgreSQL', () => {
     });
     await database.initialize();
     // Apply, revert (empty ledger) and reapply the economy migration.
-    expect(await database.runMigrations()).toHaveLength(23);
+    expect(await database.runMigrations()).toHaveLength(24);
+    await database.undoLastMigration(); // Etapa 11.3 Server Control Transport
     await database.undoLastMigration(); // Etapa 11.1 Game Agent Transport
     await database.undoLastMigration(); // Etapa 10.17 VIP Entitlements
     await database.undoLastMigration(); // Etapa 10.16 Player Settings
@@ -221,7 +222,7 @@ describeDatabase('Economy ledger and wallet with real PostgreSQL', () => {
         [schema],
       ),
     ).toEqual([]);
-    expect(await database.runMigrations()).toHaveLength(7);
+    expect(await database.runMigrations()).toHaveLength(8);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -264,7 +265,7 @@ describeDatabase('Economy ledger and wallet with real PostgreSQL', () => {
   it('adds the ledger tables with no schema diff and database-enforced account shape', async () => {
     expect(database.options.synchronize).toBe(false);
     expect(await database.showMigrations()).toBe(false);
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(23);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(24);
     const diff = await database.driver.createSchemaBuilder().log();
     expect([diff.upQueries, diff.downQueries]).toEqual([[], []]);
     const account = (
@@ -1008,8 +1009,9 @@ describeDatabase('Economy ledger and wallet with real PostgreSQL', () => {
     expect(sums).toEqual([]);
     const before = await ledgerCounts();
     // No credentials, entitlements, settings, messages, listings or trades
-    // here, so 11.1, 10.17, 10.16, 10.15, 10.14 and 10.13 revert; 10.12 then
+    // here, so 11.3, 11.1, 10.17, 10.16, 10.15, 10.14 and 10.13 revert; 10.12 then
     // refuses.
+    await database.undoLastMigration(); // Etapa 11.3 Server Control Transport
     await database.undoLastMigration();
     await database.undoLastMigration();
     await database.undoLastMigration();
@@ -1020,7 +1022,7 @@ describeDatabase('Economy ledger and wallet with real PostgreSQL', () => {
       'economy ledger is not empty',
     );
     expect(await ledgerCounts()).toEqual(before);
-    expect(await database.runMigrations()).toHaveLength(6);
+    expect(await database.runMigrations()).toHaveLength(7);
     expect(await database.showMigrations()).toBe(false);
   });
 });

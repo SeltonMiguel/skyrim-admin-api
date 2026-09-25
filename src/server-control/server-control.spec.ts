@@ -12,9 +12,13 @@ import {
   isServerControlType,
   SERVER_CONTROL_ERRORS,
   SERVER_CONTROL_POLICY,
+  SERVER_CONTROL_REMOTE_FAILURES,
+  SERVER_CONTROL_TERMINAL,
   SERVER_CONTROL_TYPES,
   ServerControlStatus as S,
 } from './server-control.contracts.js';
+import { AgentServerControlGateway } from '../game-agent/agent-server-control.gateway.js';
+import { ServerControlWorker } from './server-control.worker.js';
 import {
   DisconnectedServerControlGateway,
   ServerControlGateway,
@@ -54,11 +58,29 @@ describe('Server Control contracts', () => {
       'DISPATCHED',
       'SUCCEEDED',
       'FAILED',
+      'UNCERTAIN',
+    ]);
+    expect(SERVER_CONTROL_TERMINAL).toEqual([
+      'SUCCEEDED',
+      'FAILED',
+      'UNCERTAIN',
     ]);
     expect(Object.keys(SERVER_CONTROL_ERRORS)).toEqual([
       'AGENT_UNAVAILABLE',
       'AGENT_REJECTED',
       'SERVER_DISABLED',
+      'DISPATCH_EXPIRED',
+      'DELIVERY_EXPIRED',
+      'INVALID_PROCESS_STATE',
+      'EXECUTION_FAILED',
+      'RESULT_TIMEOUT',
+      'OUTCOME_UNKNOWN',
+    ]);
+    // Remote failures are a closed subset of the stored catalog.
+    expect(SERVER_CONTROL_REMOTE_FAILURES).toEqual([
+      'DELIVERY_EXPIRED',
+      'INVALID_PROCESS_STATE',
+      'EXECUTION_FAILED',
     ]);
   });
   it('maps each operation to its own existing permission and Audit action', () => {
@@ -87,18 +109,36 @@ describe('Server Control contracts', () => {
           ),
         ).toBe(role === R.COORDINATOR || role === R.DEV);
   });
-  it('wires the Disconnected gateway by default, which never accepts', async () => {
+  it('wires the Host Agent gateway in production; the Disconnected fallback never targets or accepts', async () => {
     const providers = Reflect.getMetadata(
       'providers',
       ServerControlModule,
     ) as unknown[];
     expect(providers).toContainEqual({
       provide: ServerControlGateway,
-      useClass: DisconnectedServerControlGateway,
+      useClass: AgentServerControlGateway,
     });
-    await expect(
-      new DisconnectedServerControlGateway().send(),
-    ).resolves.toEqual({ accepted: false, reason: 'UNAVAILABLE' });
+    expect(providers).toContain(ServerControlWorker);
+    const disconnected = new DisconnectedServerControlGateway();
+    expect(disconnected.target()).toBeNull();
+    await expect(disconnected.send()).resolves.toEqual({
+      accepted: false,
+      reason: 'UNAVAILABLE',
+    });
+  });
+  it('never shares the GameCommand retry pipeline', () => {
+    const files = globSync(
+      fileURLToPath(new URL('./**/*.ts', import.meta.url)),
+    ).filter((file) => !file.endsWith('.spec.ts'));
+    for (const file of files) {
+      const imports = [
+        ...readFileSync(file, 'utf8').matchAll(/import[^;]+from '([^']+)'/g),
+      ].map((m) => m[0]);
+      for (const statement of imports)
+        expect(statement).not.toMatch(
+          /game-command-|game-gateway|agent-game\.gateway|GameCommandBus|GameCommandDispatcher|GameCommandWorker|GameGateway\b/,
+        );
+    }
   });
   it('presents an allowlist without Idempotency-Key or internal claim', () => {
     const operation = Object.assign(new ServerControlOperation(), {

@@ -409,3 +409,29 @@ describe('Host Agent environment validation', () => {
     ),
   );
 });
+
+describe('Server Control environment validation', () => {
+  it('defaults to 30s pending, 10s delivery window, 5min result timeout', () => {
+    expect(validateEnvironment(example).serverControl).toEqual({
+      pendingTimeoutMs: 30000,
+      deliveryWindowMs: 10000,
+      resultTimeoutMs: 300000,
+      workerIntervalMs: 1000,
+    });
+  });
+  it.each([
+    { SERVER_CONTROL_PENDING_TIMEOUT_MS: '499' },
+    { SERVER_CONTROL_DELIVERY_WINDOW_MS: '99' },
+    { SERVER_CONTROL_RESULT_TIMEOUT_MS: '3600001' },
+    { SERVER_CONTROL_WORKER_INTERVAL_MS: '49' },
+    // The result deadline never precedes the end of the delivery window.
+    {
+      SERVER_CONTROL_DELIVERY_WINDOW_MS: '10000',
+      SERVER_CONTROL_RESULT_TIMEOUT_MS: '10000',
+    },
+  ])('rejects %o', (override) =>
+    expect(() => validateEnvironment({ ...example, ...override })).toThrow(
+      /SERVER_CONTROL_/,
+    ),
+  );
+});

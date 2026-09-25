@@ -192,7 +192,7 @@ describeDatabase('Host Agent transport with real PostgreSQL', () => {
     await admin.query(`CREATE SCHEMA "${schema}"`);
     database = await schemaSource(options);
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(23);
+    expect(await database.runMigrations()).toHaveLength(24);
     expect(await database.runMigrations()).toHaveLength(0);
     ({ created: app, url } = await bootApp(database));
     registry = app.get(AgentSessionRegistry);
@@ -240,7 +240,7 @@ describeDatabase('Host Agent transport with real PostgreSQL', () => {
     expect(
       (await database.driver.createSchemaBuilder().log()).upQueries,
     ).toEqual([]);
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(23);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(24);
     expect(await database.query('SELECT * FROM permissions')).toHaveLength(37);
     expect(await database.query('SELECT * FROM role_permissions')).toHaveLength(
       95,
@@ -256,6 +256,7 @@ describeDatabase('Host Agent transport with real PostgreSQL', () => {
         [schema],
       );
     expect(await columns()).toHaveLength(4);
+    await database.undoLastMigration(); // Etapa 11.3 Server Control Transport
     await database.undoLastMigration();
     expect(
       await database.query(
@@ -268,7 +269,7 @@ describeDatabase('Host Agent transport with real PostgreSQL', () => {
     expect(await database.query('SELECT * FROM role_permissions')).toHaveLength(
       93,
     );
-    expect(await database.runMigrations()).toHaveLength(1);
+    expect(await database.runMigrations()).toHaveLength(2);
     expect(await database.runMigrations()).toHaveLength(0);
     expect(
       (await database.driver.createSchemaBuilder().log()).upQueries,
@@ -940,7 +941,17 @@ describeDatabase('Host Agent transport with real PostgreSQL', () => {
         type: 'ERROR',
         payload: { code: 'INVALID_MESSAGE', retryable: false },
       });
-      for (const type of ['DOMAIN_EVENT', 'SERVER_CONTROL_RESULT']) {
+      // So is a malformed SERVER_CONTROL_RESULT (11.3).
+      const control = envelope('SERVER_CONTROL_RESULT', {
+        commandId: randomUUID(),
+        outcome: 'SUCCEEDED',
+      });
+      socket.send(control);
+      expect(await reply(socket, control.messageId as string)).toMatchObject({
+        type: 'ERROR',
+        payload: { code: 'INVALID_MESSAGE', retryable: false },
+      });
+      for (const type of ['DOMAIN_EVENT']) {
         const message = envelope(type, {
           commandId: randomUUID(),
           outcome: 'SUCCEEDED',
@@ -1028,10 +1039,13 @@ describeDatabase('Host Agent transport with real PostgreSQL', () => {
   });
 
   it('refuses to revert while credentials exist', async () => {
+    await database.undoLastMigration(); // Etapa 11.3 Server Control Transport
     await expect(database.undoLastMigration()).rejects.toThrow(
       'Game Agent credentials exist',
     );
-    expect(await database.showMigrations()).toBe(false);
     expect(await database.query('SELECT * FROM migrations')).toHaveLength(23);
+    expect(await database.runMigrations()).toHaveLength(1);
+    expect(await database.showMigrations()).toBe(false);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(24);
   });
 });

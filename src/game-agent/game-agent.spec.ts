@@ -31,6 +31,7 @@ import {
   MAX_AGENT_CAPABILITIES,
   MAX_AGENT_FRAME_BYTES,
   parseEnvelope,
+  serverControlResultPayload,
 } from './agent-protocol.contracts.js';
 import type { AgentEnvelope } from './agent-protocol.contracts.js';
 import { AgentSessionRegistry } from './agent-session.registry.js';
@@ -41,9 +42,13 @@ import type {
 import { AgentMessageRouter } from './agent-message.router.js';
 import { AgentGateway } from './agent.gateway.js';
 import { AgentGameGateway } from './agent-game.gateway.js';
+import { AgentServerControlGateway } from './agent-server-control.gateway.js';
+import type { ServerControlRequest } from '../server-control/server-control-gateway.js';
 import {
   COMMAND_DEDUP_CAPABILITY,
   GAME_COMMAND_CAPABILITY,
+  SERVER_CONTROL_CAPABILITY,
+  supportsServerControl,
   supportedCommandTypes,
   supportsCommand,
 } from './agent-capabilities.js';
@@ -496,6 +501,7 @@ describe('Host Agent gateway: HELLO commit vs registry visibility', () => {
         connections as never,
         registry,
         { acknowledge: jest.fn(), result: jest.fn() } as never,
+        { result: jest.fn() } as never,
         clock,
       ),
       registry,
@@ -731,15 +737,19 @@ describe('Host Agent message router', () => {
       acknowledge: jest.fn(async () => ({})),
       result: jest.fn(async () => ({ close: 'SESSION_CLOSED' as const })),
     };
+    const serverControl = {
+      result: jest.fn(async () => ({ close: 'SERVER_MISMATCH' as const })),
+    };
     const router = new AgentMessageRouter(
       connections,
       registry,
       commands as never,
+      serverControl as never,
       clock as BridgeClock,
     );
     const session = snapshot();
     activate(registry, session, socket());
-    return { router, session, heartbeat, registry, commands };
+    return { router, session, heartbeat, registry, commands, serverControl };
   };
   const envelope = (overrides: Record<string, unknown> = {}) =>
     parseEnvelope(JSON.stringify(frame(overrides)));
@@ -814,9 +824,26 @@ describe('Host Agent message router', () => {
     expect(commands.result).toHaveBeenCalledTimes(1);
     expect(heartbeat).not.toHaveBeenCalled();
   });
+  it('delegates SERVER_CONTROL_RESULT to the Server Control adapter only', async () => {
+    const { router, session, commands, serverControl } = setup();
+    const result = envelope({
+      type: 'SERVER_CONTROL_RESULT',
+      payload: { any: 1 },
+    });
+    expect(await router.route(session, result)).toEqual({
+      close: 'SERVER_MISMATCH',
+    });
+    expect(serverControl.result).toHaveBeenCalledWith(session, result);
+    expect(commands.result).not.toHaveBeenCalled();
+    await router.route(
+      session,
+      envelope({ type: 'SERVER_CONTROL_RESULT', gameServerId: randomUUID() }),
+    );
+    expect(serverControl.result).toHaveBeenCalledTimes(1);
+  });
   it('answers later-substep flows with NOT_IMPLEMENTED and accepts Agent ERROR frames', async () => {
     const { router, session, heartbeat } = setup();
-    for (const type of ['DOMAIN_EVENT', 'SERVER_CONTROL_RESULT']) {
+    for (const type of ['DOMAIN_EVENT']) {
       const message = envelope({ type, payload: { anything: 1 } });
       expect(await router.route(session, message)).toEqual({
         reply: expect.objectContaining({
@@ -901,12 +928,37 @@ describe('Host Agent boundaries', () => {
       .map((file) => ({ file, source: readFileSync(file, 'utf8') }));
   const imports = (source: string) =>
     [...source.matchAll(/from '([^']+)'/g)].map((m) => m[1]);
-  it('never reaches domain modules, Player/Staff realtime or Server Control', () => {
+  it('never reaches domain modules, Player/Staff realtime or process control', () => {
     for (const { source } of sources('game-agent'))
       for (const module of imports(source))
         expect(module).not.toMatch(
-          /player-|professions|vip-|economy|server-control|character-management|moderation|world-management|realtime|socket\.io|electron|child_process/,
+          /player-|professions|vip-|economy|character-management|moderation|world-management|realtime|socket\.io|electron|child_process/,
         );
+  });
+  it('reaches Server Control only through its gateway, result adapter and contracts', () => {
+    const allowed: Record<string, RegExp> = {
+      'agent-server-control.gateway.ts':
+        /server-control\/(server-control-gateway|server-control\.contracts)\.js$/,
+      'agent-server-control.adapter.ts':
+        /server-control\/(server-control-receiver|server-control-rejection)\.js$/,
+      'agent-capabilities.ts': /server-control\/server-control\.contracts\.js$/,
+      'agent-session.registry.ts':
+        /server-control\/server-control\.contracts\.js$/,
+      'agent-protocol.contracts.ts':
+        /server-control\/server-control\.contracts\.js$/,
+      'game-agent.module.ts': /server-control\/server-control\.module\.js$/,
+    };
+    for (const { file, source } of sources('game-agent')) {
+      const name = file.split('/').pop()!;
+      for (const module of imports(source).filter((m) =>
+        m.includes('server-control/'),
+      ))
+        expect(module).toMatch(allowed[name] ?? /^$/);
+      // The Agent never creates an operation nor picks its action.
+      expect(source).not.toMatch(
+        /ServerControlService|ServerControlDispatcher/,
+      );
+    }
   });
   it('lets only the adapter and the worker use the command lifecycle, and nothing create commands', () => {
     for (const { file, source } of sources('game-agent')) {
@@ -1105,5 +1157,202 @@ describe('GameCommand capabilities and the real Agent gateway', () => {
     ).toMatchObject({ accepted: false, reason: 'UNAVAILABLE' });
     for (const target of [ws, dropped.ws, withdrawn.ws, aborted.ws])
       expect(target.send).not.toHaveBeenCalled();
+  });
+});
+
+describe('Server Control capabilities, protocol and the real Agent gateway', () => {
+  const caps = [SERVER_CONTROL_CAPABILITY, 'SERVER_START', 'SERVER_RESTART'];
+  it('requires the protocol capability and the exact action capability', () => {
+    expect(supportsServerControl(caps, 'SERVER_START')).toBe(true);
+    expect(supportsServerControl(caps, 'SERVER_PAUSE')).toBe(false);
+    expect(supportsServerControl(caps.slice(1), 'SERVER_START')).toBe(false);
+    // GameCommand capabilities grant nothing here.
+    expect(
+      supportsServerControl(
+        ['GAME_COMMAND_V1', 'COMMAND_DEDUP_V1', 'SERVER_START'],
+        'SERVER_START',
+      ),
+    ).toBe(false);
+  });
+  it('parses a closed SERVER_CONTROL_RESULT and refuses anything else', () => {
+    const ids = {
+      operationId: randomUUID(),
+      correlationId: randomUUID(),
+      type: 'SERVER_START',
+    };
+    expect(
+      serverControlResultPayload({ ...ids, outcome: 'SUCCEEDED' }),
+    ).toEqual({ ...ids, outcome: 'SUCCEEDED' });
+    expect(
+      serverControlResultPayload({
+        ...ids,
+        outcome: 'FAILED',
+        errorCode: 'DELIVERY_EXPIRED',
+        runtime: { gameProcessState: 'STOPPED', skseReady: false },
+      }),
+    ).toEqual({
+      ...ids,
+      outcome: 'FAILED',
+      errorCode: 'DELIVERY_EXPIRED',
+      runtime: { gameProcessState: G.STOPPED, skseReady: false },
+    });
+    expect(
+      serverControlResultPayload({ ...ids, outcome: 'UNCERTAIN' }),
+    ).toEqual({ ...ids, outcome: 'UNCERTAIN' });
+    for (const payload of [
+      { ...ids, outcome: 'TIMEOUT' },
+      { ...ids, outcome: 'FAILED' },
+      { ...ids, outcome: 'FAILED', errorCode: 'AGENT_UNAVAILABLE' },
+      {
+        ...ids,
+        outcome: 'FAILED',
+        errorCode: 'EXECUTION_FAILED',
+        message: 'x',
+      },
+      { ...ids, outcome: 'SUCCEEDED', errorCode: 'EXECUTION_FAILED' },
+      { ...ids, outcome: 'SUCCEEDED', stack: 'Error: at ...' },
+      { ...ids, outcome: 'SUCCEEDED', command: 'shutdown -r' },
+      { ...ids, type: 'SERVER_STOP', outcome: 'SUCCEEDED' },
+      { ...ids, type: 'SHELL_COMMAND', outcome: 'SUCCEEDED' },
+      { ...ids, operationId: 'x', outcome: 'SUCCEEDED' },
+      { ...ids, correlationId: undefined, outcome: 'SUCCEEDED' },
+      {
+        ...ids,
+        outcome: 'SUCCEEDED',
+        runtime: { gameProcessState: 'FLYING', skseReady: true },
+      },
+      {
+        ...ids,
+        outcome: 'SUCCEEDED',
+        runtime: { gameProcessState: 'RUNNING' },
+      },
+      {
+        ...ids,
+        outcome: 'SUCCEEDED',
+        runtime: { gameProcessState: 'RUNNING', skseReady: true, pid: 1 },
+      },
+    ])
+      expect(reason(() => serverControlResultPayload(payload))).toBe(
+        'PROTOCOL_ERROR',
+      );
+  });
+  const setup = () => {
+    const registry = new AgentSessionRegistry();
+    const ws = socket();
+    // Skyrim stopped and SKSE not ready: Server Control still works.
+    const session = snapshot({
+      capabilities: caps,
+      runtime: { gameProcessState: G.STOPPED, skseReady: false },
+    });
+    activate(registry, session, ws);
+    const gateway = new AgentServerControlGateway(registry, {
+      now: () => new Date('2026-10-01T12:00:00.000Z'),
+    } as BridgeClock);
+    const request: ServerControlRequest = {
+      operationId: randomUUID(),
+      gameServerId: serverId,
+      connectionId: session.connectionId,
+      type: 'SERVER_START',
+      correlationId: randomUUID(),
+      requestedAt: '2026-10-01T11:59:59.000Z',
+      issuedAt: '2026-10-01T12:00:00.000Z',
+      notAfter: '2026-10-01T12:00:10.000Z',
+    };
+    return { registry, ws, session, gateway, request };
+  };
+  it('targets an ACTIVE session with the capability whatever the game runtime', () => {
+    const { registry, session, gateway } = setup();
+    expect(gateway.target(serverId, 'SERVER_START')).toBe(session.connectionId);
+    expect(gateway.target(serverId, 'SERVER_PAUSE')).toBeNull();
+    expect(gateway.target(randomUUID(), 'SERVER_START')).toBeNull();
+    registry.remove(serverId, session.connectionId);
+    expect(gateway.target(serverId, 'SERVER_START')).toBeNull();
+  });
+  it('sends one typed SERVER_CONTROL with notAfter to exactly the claimed session', async () => {
+    const { ws, gateway, request } = setup();
+    expect(await gateway.send(request, new AbortController().signal)).toEqual({
+      accepted: true,
+    });
+    expect(ws.send).toHaveBeenCalledTimes(1);
+    const sent = JSON.parse(ws.send.mock.calls[0][0] as string);
+    expect(sent).toMatchObject({
+      protocolVersion: '1',
+      type: 'SERVER_CONTROL',
+      gameServerId: serverId,
+    });
+    expect(sent.payload).toEqual({
+      operationId: request.operationId,
+      correlationId: request.correlationId,
+      type: 'SERVER_START',
+      issuedAt: request.issuedAt,
+      notAfter: request.notAfter,
+    });
+    expect(JSON.stringify(sent)).not.toMatch(
+      /idempotency|staff|actor|token|command|path|script|args/i,
+    );
+  });
+  it('reports proven non-delivery and never redirects when the session or capability changed after the claim', async () => {
+    const { registry, ws, session, gateway, request } = setup();
+    const signal = new AbortController().signal;
+    // A newer session (duplicate connection) owns the server now.
+    const other = snapshot({ capabilities: caps });
+    const otherSocket = socket();
+    activate(registry, other, otherSocket);
+    expect(await gateway.send(request, signal)).toEqual({
+      accepted: false,
+      reason: 'UNAVAILABLE',
+    });
+    expect(otherSocket.send).not.toHaveBeenCalled();
+    expect(ws.send).not.toHaveBeenCalled();
+    // Capability withdrawn by a heartbeat.
+    const withdrawn = setup();
+    withdrawn.registry.heartbeat(
+      serverId,
+      withdrawn.session.connectionId,
+      {
+        gameProcessState: G.STOPPED,
+        skseReady: false,
+        capabilities: ['SERVER_START'],
+      },
+      new Date(),
+    );
+    expect(await withdrawn.gateway.send(withdrawn.request, signal)).toEqual({
+      accepted: false,
+      reason: 'UNAVAILABLE',
+    });
+    // Aborted, or the socket is no longer open.
+    const aborted = setup();
+    const controller = new AbortController();
+    controller.abort();
+    expect(
+      await aborted.gateway.send(aborted.request, controller.signal),
+    ).toMatchObject({ accepted: false });
+    const closed = setup();
+    (closed.ws as { readyState: number }).readyState = 3;
+    expect(await closed.gateway.send(closed.request, signal)).toMatchObject({
+      accepted: false,
+    });
+    expect(aborted.ws.send).not.toHaveBeenCalled();
+    expect(closed.ws.send).not.toHaveBeenCalled();
+    void session;
+  });
+  it('updates the runtime snapshot without refreshing liveness', () => {
+    const { registry, session } = setup();
+    expect(
+      registry.updateRuntime(serverId, session.connectionId, {
+        gameProcessState: G.STARTING,
+        skseReady: false,
+      }),
+    ).toBe(true);
+    expect(registry.getSession(serverId)).toMatchObject({
+      runtime: { gameProcessState: G.STARTING, skseReady: false },
+      lastHeartbeatAt: new Date(0),
+    });
+    expect(
+      registry.updateRuntime(serverId, randomUUID(), {
+        gameProcessState: G.RUNNING,
+        skseReady: true,
+      }),
+    ).toBe(false);
   });
 });

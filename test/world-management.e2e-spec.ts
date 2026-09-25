@@ -108,7 +108,7 @@ describeDatabase('World with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(23);
+    expect(await database.runMigrations()).toHaveLength(24);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -503,6 +503,7 @@ describeDatabase('World with real PostgreSQL', () => {
         .expect(404);
   });
   it('reverses only the four permissions and nine grants and reapplies cleanly', async () => {
+    await database.undoLastMigration(); // Etapa 11.3 Server Control Transport
     await database.undoLastMigration(); // Etapa 11.1 Game Agent Transport
     await database.undoLastMigration(); // Etapa 10.17 VIP Entitlements
     await database.undoLastMigration(); // Etapa 10.16 Player Settings
@@ -529,7 +530,7 @@ describeDatabase('World with real PostgreSQL', () => {
         "SELECT * FROM permissions WHERE name LIKE 'WORLD_%'",
       ),
     ).toEqual([]);
-    expect(await database.runMigrations()).toHaveLength(17);
+    expect(await database.runMigrations()).toHaveLength(18);
     expect(await database.runMigrations()).toHaveLength(0);
     expect(
       await database.query(

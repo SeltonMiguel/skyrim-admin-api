@@ -10,6 +10,12 @@ type Journal = {
   state: 'RECEIVED' | 'FORWARDED' | 'COMPLETED';
   result?: Record<string, unknown>;
 };
+// Server Control journal (at-most-once): EXECUTING without an outcome can
+// only ever be reported as UNCERTAIN, never executed again.
+type OperationJournal = {
+  state: 'RECEIVED' | 'EXECUTING' | 'COMPLETED';
+  outcome?: Record<string, unknown>;
+};
 
 // Host Agent simulator for e2e tests. It speaks the real v1 protocol over
 // the real socket and implements the durable journal contract the backend
@@ -26,6 +32,9 @@ export class FakeAgent {
     readonly journal = new Map<string, Journal>(),
     // Side effects actually applied per commandId.
     readonly executions = new Map<string, number>(),
+    readonly operations = new Map<string, OperationJournal>(),
+    // Process actions actually performed per operationId.
+    readonly performed = new Map<string, number>(),
   ) {
     this.client = new RealtimeTestClient(`${url}/api/v1/agent`);
   }
@@ -133,6 +142,68 @@ export class FakeAgent {
       outcome: 'SUCCEEDED',
       result: entry.result,
     });
+  }
+  controls(operationId?: string): Frame[] {
+    return this.client.messages.filter(
+      (m) =>
+        m.type === 'SERVER_CONTROL' &&
+        (!operationId ||
+          (m.payload as Frame['payload'])?.operationId === operationId),
+    ) as Frame[];
+  }
+  async control(operationId: string, timeoutMs = 5000): Promise<Frame> {
+    return this.client.until(() => this.controls(operationId)[0], timeoutMs);
+  }
+  controlResult(
+    ids: Record<string, unknown>,
+    outcome: Record<string, unknown>,
+  ): Frame {
+    return this.send('SERVER_CONTROL_RESULT', {
+      operationId: ids.operationId,
+      correlationId: ids.correlationId,
+      type: ids.type,
+      ...outcome,
+    });
+  }
+  // Journal-driven, at most once per operationId: refuses after notAfter,
+  // records EXECUTING before acting, and replays the stored outcome. With
+  // report=false it acts and "crashes" before sending the result.
+  perform(
+    control: Frame,
+    outcome: Record<string, unknown> = { outcome: 'SUCCEEDED' },
+    report = true,
+  ): Frame | undefined {
+    const { operationId, notAfter } = control.payload as {
+      operationId: string;
+      notAfter: string;
+    };
+    let entry = this.operations.get(operationId);
+    if (!entry) {
+      entry = { state: 'RECEIVED' };
+      this.operations.set(operationId, entry);
+      if (Date.now() > Date.parse(notAfter))
+        entry.outcome = { outcome: 'FAILED', errorCode: 'DELIVERY_EXPIRED' };
+      else {
+        entry.state = 'EXECUTING';
+        this.performed.set(
+          operationId,
+          (this.performed.get(operationId) ?? 0) + 1,
+        );
+        entry.outcome = outcome;
+      }
+      entry.state = 'COMPLETED';
+    }
+    return report
+      ? this.controlResult(control.payload!, entry.outcome!)
+      : undefined;
+  }
+  // After a reconnect: resend what the journal knows, never re-execute.
+  replay(control: Frame): Frame {
+    const entry = this.operations.get(control.payload!.operationId as string);
+    return this.controlResult(
+      control.payload!,
+      entry?.state === 'COMPLETED' ? entry.outcome! : { outcome: 'UNCERTAIN' },
+    );
   }
   reply(frame: Frame, timeoutMs = 5000): Promise<Frame> {
     return this.client.until(

@@ -238,7 +238,8 @@ describeDatabase('Player trades with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(23);
+    expect(await database.runMigrations()).toHaveLength(24);
+    await database.undoLastMigration(); // Etapa 11.3 Server Control Transport
     await database.undoLastMigration(); // Etapa 11.1 Game Agent Transport
     await database.undoLastMigration(); // Etapa 10.17 VIP Entitlements
     await database.undoLastMigration(); // Etapa 10.16 Player Settings
@@ -251,7 +252,7 @@ describeDatabase('Player trades with real PostgreSQL', () => {
         [schema],
       ),
     ).toEqual([]);
-    expect(await database.runMigrations()).toHaveLength(6);
+    expect(await database.runMigrations()).toHaveLength(7);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -307,7 +308,7 @@ describeDatabase('Player trades with real PostgreSQL', () => {
   it('adds the trade tables and TRADE_ESCROW with database-enforced lifecycle', async () => {
     expect(database.options.synchronize).toBe(false);
     expect(await database.showMigrations()).toBe(false);
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(23);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(24);
     const diff = await database.driver.createSchemaBuilder().log();
     expect([diff.upQueries, diff.downQueries]).toEqual([[], []]);
     const insertTrade = (a: string, b: string) =>
@@ -1290,8 +1291,9 @@ describeDatabase('Player trades with real PostgreSQL', () => {
   });
   it('refuses to revert while trades exist', async () => {
     await reconciled();
-    // No credentials, entitlements, settings, messages or listings here: 11.1
+    // No credentials, entitlements, settings, messages or listings here: 11.3, 11.1
     // and 10.17 to 10.14 revert, then 10.13 refuses and is kept.
+    await database.undoLastMigration(); // Etapa 11.3 Server Control Transport
     await database.undoLastMigration();
     await database.undoLastMigration();
     await database.undoLastMigration();
@@ -1300,7 +1302,7 @@ describeDatabase('Player trades with real PostgreSQL', () => {
     await expect(database.undoLastMigration()).rejects.toThrow(
       'player trades exist',
     );
-    expect(await database.runMigrations()).toHaveLength(5);
+    expect(await database.runMigrations()).toHaveLength(6);
     expect(await database.showMigrations()).toBe(false);
   });
 });

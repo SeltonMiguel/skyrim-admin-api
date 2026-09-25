@@ -142,7 +142,7 @@ describeDatabase('Player groups with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(23);
+    expect(await database.runMigrations()).toHaveLength(24);
     await database.undoLastMigration();
     expect(await database.runMigrations()).toHaveLength(1);
     expect(await database.runMigrations()).toHaveLength(0);
@@ -185,7 +185,7 @@ describeDatabase('Player groups with real PostgreSQL', () => {
   it('adds the three group tables with database-enforced membership invariants', async () => {
     expect(database.options.synchronize).toBe(false);
     expect(await database.showMigrations()).toBe(false);
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(23);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(24);
     const diff = await database.driver.createSchemaBuilder().log();
     expect([diff.upQueries, diff.downQueries]).toEqual([[], []]);
     const owner = await login();
@@ -794,6 +794,7 @@ describeDatabase('Player groups with real PostgreSQL', () => {
     }
   });
   it('reverts only the group tables and reapplies cleanly', async () => {
+    await database.undoLastMigration(); // Etapa 11.3 Server Control Transport
     await database.undoLastMigration(); // Etapa 11.1 Game Agent Transport
     await database.undoLastMigration(); // Etapa 10.17 VIP Entitlements
     await database.undoLastMigration(); // Etapa 10.16 Player Settings
@@ -809,7 +810,7 @@ describeDatabase('Player groups with real PostgreSQL', () => {
         [schema],
       ),
     ).toEqual([]);
-    expect(await database.runMigrations()).toHaveLength(9);
+    expect(await database.runMigrations()).toHaveLength(10);
     expect(await database.runMigrations()).toHaveLength(0);
     expect(
       (await database.driver.createSchemaBuilder().log()).upQueries,
