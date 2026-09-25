@@ -14,6 +14,13 @@ import type { PageQueryDto } from '../admin-queries/dto/query.dto.js';
 import type { VipOffer } from './entities/vip-offer.entity.js';
 import { newOffer, offerPatch, offerActive } from './vip-offer.contracts.js';
 import { adminOffer } from './vip-offer.presenter.js';
+// Raised when an offer that already has entitlements would change scope:
+// the offer stays untouched and no Audit is written.
+class EntitlementScopeFrozen extends ConflictException {
+  constructor() {
+    super('Entitlement scope is frozen once the offer has entitlements');
+  }
+}
 function authorize(auth: AuthenticatedStaff, permission: P) {
   if (!auth.permissions.includes(permission))
     throw new ForbiddenException('Missing required permissions');
@@ -68,6 +75,7 @@ export class VipAdminService {
               currency: offer.currency,
               active: offer.active,
               rewardCount: offer.rewards.length,
+              entitlementScope: offer.entitlementScope,
             },
           };
         } catch (error) {
@@ -96,7 +104,17 @@ export class VipAdminService {
         statusCode: 200,
       },
       async (manager) => {
+        // FOR UPDATE on the offer conflicts with the FOR SHARE every grant
+        // takes, so a grant and a scope change never interleave: either the
+        // grant committed first (and the change is refused) or the change
+        // did (and the grant sees the new scope).
         const offer = await this.find(manager, id, true);
+        if (
+          patch.entitlementScope !== undefined &&
+          patch.entitlementScope !== offer.entitlementScope &&
+          (await this.hasEntitlements(manager, offer.id))
+        )
+          throw new EntitlementScopeFrozen();
         const changedFields = Object.keys(patch)
           .filter(
             (key) =>
@@ -128,7 +146,17 @@ export class VipAdminService {
           metadata,
         };
       },
+      (error) => !(error instanceof EntitlementScopeFrozen),
     );
+  }
+  // Any entitlement, whatever its status (ACTIVE, REVOKED or EXPIRED),
+  // freezes the scope: the offer never mixes scopes in its history.
+  private async hasEntitlements(manager: EntityManager, offerId: string) {
+    const [row] = await manager.query(
+      'SELECT EXISTS (SELECT 1 FROM player_vip_entitlements WHERE vip_offer_id = $1) AS frozen',
+      [offerId],
+    );
+    return row.frozen === true;
   }
   async setActive(id: string, value: unknown, auth: AuthenticatedStaff) {
     authorize(auth, P.VIP_STORE_WRITE);

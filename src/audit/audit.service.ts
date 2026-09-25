@@ -82,10 +82,11 @@ export class AuditService {
 
   // Reusable audited operation: SUCCESS commits with the mutation, FAILURE is
   // appended only after rollback, using a fresh transaction/connection.
+  // recordFailure may be a predicate to leave specific refusals unaudited.
   async execute<T>(
     event: AuditEvent,
     operation: (manager: EntityManager) => Promise<AuditResult<T>>,
-    recordFailure = true,
+    recordFailure: boolean | ((error: unknown) => boolean) = true,
   ): Promise<T> {
     const snapshot: AuditEvent = { ...event, actor: auditActor(event.actor) };
     try {
@@ -104,7 +105,11 @@ export class AuditService {
         return result.value;
       });
     } catch (error) {
-      if (recordFailure && snapshot.actor) {
+      const failure =
+        typeof recordFailure === 'function'
+          ? recordFailure(error)
+          : recordFailure;
+      if (failure && snapshot.actor) {
         // No error messages, SQL, DTOs or exception objects enter metadata.
         await this.record({
           ...snapshot,

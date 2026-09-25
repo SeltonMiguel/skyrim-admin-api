@@ -13,6 +13,7 @@ export function publicOffer(offer: VipOffer): VipOfferPublicDto {
     priceMinor: offer.priceMinor,
     currency: offer.currency,
     rewards: vipRewards(offer.rewards),
+    entitlementScope: offer.entitlementScope,
   };
 }
 export function adminOffer(offer: VipOffer): VipOfferAdminDto {

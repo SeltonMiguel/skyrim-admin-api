@@ -23,6 +23,7 @@ import {
   offerText,
   vipRewards,
 } from '../vip-offer.contracts.js';
+import { VipEntitlementScope } from '../vip-offer.contracts.js';
 import type { VipCurrency, VipReward } from '../vip-offer.contracts.js';
 export class VipItemRewardDto {
   @ApiProperty({ enum: ['ITEM'] }) type: 'ITEM';
@@ -97,6 +98,15 @@ export class OfferContentDto {
   @Transform(({ value }: { value: unknown }) => vipRewards(value))
   @IsArray()
   rewards: VipReward[];
+  @ApiPropertyOptional({
+    enum: VipEntitlementScope,
+    default: VipEntitlementScope.CHARACTER,
+    description:
+      'Who holds the entitlement: the account (PLAYER) or one character identity (CHARACTER). Applies to new grants only.',
+  })
+  @ValidateIf((_o, value: unknown) => value !== undefined)
+  @IsIn(Object.values(VipEntitlementScope))
+  entitlementScope?: VipEntitlementScope;
 }
 export class CreateVipOfferDto extends OfferContentDto {
   @ApiProperty({
@@ -129,6 +139,8 @@ export class VipOfferPublicDto {
   priceMinor: number;
   @ApiProperty({ enum: ['BRL'] }) currency: VipCurrency;
   @ApiProperty(rewardSchema) rewards: VipReward[];
+  @ApiProperty({ enum: VipEntitlementScope })
+  entitlementScope: VipEntitlementScope;
 }
 export class VipOfferAdminDto extends VipOfferPublicDto {
   @ApiProperty() active: boolean;

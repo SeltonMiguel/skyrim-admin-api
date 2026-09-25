@@ -7,6 +7,7 @@ import { PlayerTradesModule } from './player-trades/player-trades.module.js';
 import { PlayerMarketplaceModule } from './player-marketplace/player-marketplace.module.js';
 import { PlayerChatModule } from './player-chat/player-chat.module.js';
 import { PlayerSettingsModule } from './player-settings/player-settings.module.js';
+import { VipEntitlementsModule } from './vip-entitlements/vip-entitlements.module.js';
 import { ProfessionsModule } from './professions/professions.module.js';
 import { PlayerCharacterOperationsModule } from './player-character-operations/player-character-operations.module.js';
 import { PlayerCharactersModule } from './player-characters/player-characters.module.js';
@@ -57,6 +58,7 @@ import { HealthModule } from './health/health.module.js';
     PlayerMarketplaceModule,
     PlayerChatModule,
     PlayerSettingsModule,
+    VipEntitlementsModule,
     RealtimeModule,
   ],
 })
