@@ -587,6 +587,29 @@ produto a partir das medições.
 | P3-1 | P3 | F-DB2…F-DB7, R3–R9, S6, S7, S11–S13, C4, C5, M5 | seções acima | baixo | agrupar em lotes de hardening | 12.1–12.4 conforme a área |
 | P3-2 | P3 | Logs JSON e tracing | §13, §15 | diagnóstico mais lento | log estruturado; tracing opcional | 12.3 |
 
+## 25.1 Status após a 12.1
+
+Detalhes em `docs/security.md`. Evidência: `test/security.e2e-spec.ts` e os
+testes unitários citados lá.
+
+| Finding | Status | Como |
+| --- | --- | --- |
+| P0-1 / S1 login Staff | **resolvido** | buckets por IP e por username antes do Argon2; teto de Argon2 simultâneos; 429 genérico com Retry-After |
+| P0-2 / S2 proxy | **resolvido** | `TRUST_PROXY` explícito (`true` recusado), uma política para `request.ip`, rate limit, Audit e WebSocket |
+| P1-1 / S3 reuso de refresh | **resolvido** | detecção sem migration (token válido e não atual = rotacionado; janela de graça para corrida); revoga só a sessão; Audit Staff e Player |
+| P1-2 / S4, R1 limites WS/HELLO | **resolvido** para instância única | Origin, tentativas por IP, pendentes, total e por identidade no realtime; tentativas, falhas, pendentes e HELLO simultâneos no Agent |
+| P1-2 / R2 reautorização Staff por evento | aberto | mantida a revalidação por entrega (correta); cache curto fica para a 12.6, se a carga pedir |
+| P1-3 / S8–S10 headers, Swagger, body | **resolvido** | Helmet com CSP de API; `SWAGGER_ENABLED` desligado em produção; body de 100 kB testado; 413 em vez de 500 |
+| S7 Origin WebSocket | **resolvido** | `REALTIME_ALLOWED_ORIGINS`; o Agent ignora Origin por desenho |
+| S13 PermissionGuard | **resolvido** | fail-closed + `@PermissionsCheckedInService()` + validação no startup + teste estrutural |
+| R7 mapa do limiter de auth | **resolvido** | `MemoryRateLimiter` limitado (50 000 chaves, poda e descarte) |
+| R8 / §11 mutations Player | **parcial** | limites por player em character queries e trade/listing/purchase/cancel; Staff GameCommand, convites, offer/accept de trade e chat reads seguem sem limite próprio |
+| S6 socket Player após logout/revogação | **resolvido** (instância única) | logout e reuso de refresh fecham, após o commit, os sockets da mesma sessão (4001 `SESSION_REVOKED`); outras sessões não são afetadas |
+| S6 socket Player após ban/suspend | aberto (gap operacional, 12.4) | não há mutation de status de conta Player (só SQL); manual DB account-status changes do not proactively close existing Player realtime sockets |
+| S11, S12, S14 | aberto | hardening restante |
+| P2-7 / S15 multer | aberto (não alcançável) | proposta: `@nestjs/*` 12.1.x (platform-express 12.1.0 → multer 2.4.0), num commit isolado |
+| P2-5 rate limits distribuídos | aberto | a interface `RateLimiter` já isola o store; implementação compartilhada na 12.5 |
+
 ## 26. Roadmap final da Stage 12
 
 A ordem sugerida na abertura (multi-instância primeiro) foi **alterada**. Os P0

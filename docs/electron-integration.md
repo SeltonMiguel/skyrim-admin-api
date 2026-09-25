@@ -244,8 +244,16 @@ AUTH o cliente não envia mutations, subscriptions, ACK de evento ou refresh pel
 socket; qualquer frame adicional fecha com PROTOCOL_ERROR. Todas as mutations
 vão por HTTP. Staff usa outra audience/surface e não recebe esses eventos.
 
-Close codes: 4000 AUTH_TIMEOUT, 4001 UNAUTHORIZED, 4002 TOKEN_EXPIRED,
-4003 PROTOCOL_ERROR; 1001 no shutdown. Em expiração, obtenha access válido e abra
+Close codes: 4000 AUTH_TIMEOUT, 4001 UNAUTHORIZED (reason `SESSION_REVOKED`
+quando o backend revoga a sessão Player do socket, por logout ou reuso de
+refresh: não reconecte com o mesmo token; faça login de novo), 4002 TOKEN_EXPIRED,
+4003 PROTOCOL_ERROR, 4004 CONNECTION_LIMIT (12.1: sockets demais para a mesma
+conta); 1001 no shutdown. Desde a 12.1 (`docs/security.md`):
+- o upgrade pode ser recusado com 403 (Origin de browser fora da lista), 429 (`Retry-After`) ou 503;
+- um cliente sem header Origin (processo main do Electron) é julgado só pelo token;
+- um renderer que usa o WebSocket do browser envia Origin (`file://`, `app://…`), que precisa estar em `REALTIME_ALLOWED_ORIGINS`;
+- refresh Player em single-flight: um token rotacionado reapresentado depois da janela de graça revoga a sessão;
+- queries de personagem e mutations de trade/marketplace têm limite por minuto por Player (429 com `Retry-After`). Em expiração, obtenha access válido e abra
 novo socket. Em falha de rede, reconnect com backoff e jitter; não criar loop
 agressivo nem assumir ordem/completude/exactly-once de eventos.
 

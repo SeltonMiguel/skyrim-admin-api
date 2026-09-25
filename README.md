@@ -704,3 +704,18 @@ A Subetapa 12.0 audita o backend para produção e define o plano da Etapa 12:
 [Hardening audit](docs/hardening-audit.md) (inventário de runtime, multi-instância,
 segurança, recuperação, findings P0–P3 e roadmap) e
 [Release readiness](docs/release-readiness.md) (checklist verificável de release).
+
+A Subetapa 12.1 fecha os riscos concretos de autenticação e abuso da réplica
+única:
+- rate limit do login e do refresh Staff antes do Argon2, com teto de Argon2 simultâneos;
+- detecção de reuso de refresh (Staff e Player), com revogação da sessão e Audit;
+- `TRUST_PROXY` explícito para o IP de rate limit, Audit e WebSocket;
+- CORS e Origin por allowlist;
+- headers via Helmet;
+- Swagger desligado em produção;
+- RBAC fail-closed validado no startup;
+- tetos de WebSocket e HELLO;
+- limites por Player nas mutations que criam GameCommands ou reservas.
+
+Todos os limites são por processo até a 12.5. Variáveis e semântica em
+[Security](docs/security.md).

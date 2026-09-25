@@ -26,17 +26,24 @@ Regras:
 
 ## Security
 
-- [ ] Login Staff com rate limit por IP e por username e lockout temporário, coberto por teste e2e (P0-1)
-- [ ] Hashing de senha com concorrência limitada: N logins paralelos não excedem o orçamento de memória definido (P0-1)
-- [ ] `trust proxy` configurado por env; teste prova que o IP efetivo do rate limit e do Audit é o do cliente atrás do proxy (P0-2)
-- [ ] Reuso de refresh token (Staff e Player) revoga a sessão e grava Audit, com teste (P1-1)
-- [ ] Tetos de sockets realtime por IP e por identidade, e limite de HELLO do Agent, com teste (P1-2)
-- [ ] Headers de segurança presentes (HSTS no proxy ou na app, `X-Content-Type-Options`, `frame-ancestors`) e `X-Powered-By` ausente, verificados por teste (P1-3)
-- [ ] `/docs` e `/docs-json` indisponíveis com `NODE_ENV=production`, com teste (P1-3)
-- [ ] Limite de body HTTP explícito e documentado (P1-3)
-- [ ] `PermissionGuard` nega por padrão handler Staff sem metadata; teste de fronteira lista toda rota Staff com a sua permissão (S13)
-- [ ] `npm audit --omit=dev` sem HIGH/CRITICAL alcançável; cada exceção justificada por escrito (P2-7)
-- [ ] Socket realtime Player é fechado em logout e em mudança de status da conta (S6)
+Controles descritos em `docs/security.md` (12.1).
+
+
+- [x] Login Staff com rate limit por IP e por username e lockout temporário, coberto por teste e2e (P0-1) — 12.1, `test/security.e2e-spec.ts`
+- [x] Hashing de senha com concorrência limitada: N logins paralelos não excedem o orçamento de memória definido (P0-1) — 12.1: no máximo `STAFF_LOGIN_MAX_CONCURRENT` (4 × 64 MiB) Argon2 simultâneos, excesso = 429; `test/security.e2e-spec.ts`
+- [x] `trust proxy` configurado por env; teste prova que o IP efetivo do rate limit e do Audit é o do cliente atrás do proxy (P0-2) — 12.1, `test/security.e2e-spec.ts`, `test/auth.e2e-spec.ts`, `src/common/net/client-ip.spec.ts`
+- [ ] `TRUST_PROXY` do ambiente de produção configurado com os proxies reais e verificado em staging
+- [x] Reuso de refresh token (Staff e Player) revoga a sessão e grava Audit, com teste (P1-1) — 12.1, `test/security.e2e-spec.ts`
+- [x] Tetos de sockets realtime por IP e por identidade, e limite de HELLO do Agent, com teste (P1-2) — 12.1, `test/security.e2e-spec.ts`; `AUTH_BUSY` em `src/game-agent/game-agent.spec.ts`
+- [x] Headers de segurança presentes (`X-Content-Type-Options`, `X-Frame-Options`, CSP `frame-ancestors`, `Referrer-Policy`) e `X-Powered-By` ausente, verificados por teste (P1-3) — 12.1, `test/security.e2e-spec.ts`
+- [ ] HSTS ativo em produção (no proxy ou via `SECURITY_HSTS_MAX_AGE_SECONDS`), verificado no ambiente
+- [x] `/docs` e `/docs-json` indisponíveis com `NODE_ENV=production`, com teste (P1-3) — 12.1: default desligado em produção (`src/config/environment.spec.ts`), 404 quando desligado (`test/security.e2e-spec.ts`)
+- [x] Limite de body HTTP explícito e documentado (P1-3) — 12.1: 100 kB, 413 testado (`test/security.e2e-spec.ts`), `docs/security.md`
+- [x] `PermissionGuard` nega por padrão handler Staff sem metadata; teste de fronteira lista toda rota Staff com a sua permissão (S13) — 12.1: fail-closed + validação no startup, `src/rbac/permission-metadata.spec.ts`
+- [ ] `npm audit --omit=dev` sem HIGH/CRITICAL alcançável; cada exceção justificada por escrito (P2-7) — multer (não alcançável) justificado em `docs/security.md`; upgrade proposto, não aplicado
+- [ ] CORS_ORIGINS e REALTIME_ALLOWED_ORIGINS de produção configurados com as origens reais do Admin Web/Electron
+- [x] Socket realtime Player é fechado quando o backend revoga a sessão (logout, reuso de refresh), só para aquela sessão (S6) — 12.1, `test/security.e2e-spec.ts`; instância única até a 12.5
+- [ ] Socket realtime Player é fechado em mudança de status da conta (S6) — sem mutation de backend hoje (só SQL); fica para a API de status da 12.4
 - [ ] Segredos de produção gerados com ≥ 32 bytes aleatórios e guardados fora do repositório e do backup do DB
 
 ## Reliability

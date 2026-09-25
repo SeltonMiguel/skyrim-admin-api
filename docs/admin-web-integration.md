@@ -60,9 +60,16 @@ primeiro e único frame:
 
 Resposta `{ "type": "AUTHENTICATED", "surface": "STAFF", "expiresAt": "<ISO>" }`.
 Qualquer outro frame do cliente fecha com 4003. Close codes: 4000 AUTH_TIMEOUT,
-4001 UNAUTHORIZED, 4002 TOKEN_EXPIRED, 4003 PROTOCOL_ERROR, 1001 shutdown. Um
-token Player na surface STAFF (ou Staff na PLAYER) é 4001. Limite de frame
-16 KiB, o mesmo do Player.
+4001 UNAUTHORIZED, 4002 TOKEN_EXPIRED, 4003 PROTOCOL_ERROR, 4004
+CONNECTION_LIMIT (12.1: sockets demais para a mesma conta; os existentes ficam),
+1001 shutdown. Um token Player na surface STAFF (ou Staff na PLAYER) é 4001.
+Limite de frame 16 KiB, o mesmo do Player.
+
+Desde a 12.1 (`docs/security.md`):
+- o upgrade pode ser recusado antes do WebSocket: 403 para Origin fora de `REALTIME_ALLOWED_ORIGINS`, 429 com `Retry-After` para tentativas demais do IP, 503 quando o processo está no limite de sockets;
+- a origem do Admin Web precisa estar em `CORS_ORIGINS` para as chamadas HTTP do browser;
+- login e refresh Staff podem responder 429 genérico com `Retry-After`: respeite o tempo, não tente de novo em loop;
+- refresh em single-flight: um token já rotacionado reapresentado depois de `AUTH_REFRESH_REUSE_GRACE_MS` revoga a sessão.
 
 Envelope: `{ eventId, type, occurredAt, data }`. Os três tipos Staff:
 
