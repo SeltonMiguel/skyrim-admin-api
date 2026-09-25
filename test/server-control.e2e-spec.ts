@@ -795,11 +795,17 @@ describeDatabase('Server Control with real PostgreSQL', () => {
     const control = Object.keys(body.paths).filter((p) =>
       p.includes('/control'),
     );
+    // Three fixed actions plus the read-only list of 11.6.
     expect(control.sort()).toEqual(
-      ['pause', 'restart', 'start'].map(
+      ['operations', 'pause', 'restart', 'start'].map(
         (p) => `/api/v1/game-servers/{serverId}/control/${p}`,
       ),
     );
+    expect(
+      Object.keys(
+        body.paths['/api/v1/game-servers/{serverId}/control/operations'],
+      ),
+    ).toEqual(['get']);
     for (const type of SERVER_CONTROL_TYPES) {
       const route =
         body.paths[

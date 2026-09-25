@@ -132,6 +132,8 @@ describeDatabase(
       ).body as { operationId: string };
     const events = (s: RealtimeTestClient, type: string) =>
       s.events().filter((e) => e.type === type);
+    const playerEvents = (s: RealtimeTestClient) =>
+      s.events().filter((e) => !String(e.type).startsWith('STAFF_'));
     const terminal = async (s: RealtimeTestClient, operationId: string) =>
       s.until(() =>
         events(s, OPERATION).find(
@@ -398,7 +400,8 @@ describeDatabase(
         events(owner, LINK).map((e) => (e.data as { status: string }).status),
       ).toEqual(['PENDING', 'VERIFIED', 'REVOKED', 'PENDING']);
       expect(other.events()).toEqual([]);
-      expect(staff.events()).toEqual([]);
+      // Staff sockets get Staff wake-ups (11.6), never Player events.
+      expect(playerEvents(staff)).toEqual([]);
       expect(
         await database.query(
           'SELECT action FROM audit_logs WHERE resource_id = $1 ORDER BY created_at',
@@ -543,7 +546,8 @@ describeDatabase(
         await pause();
         expect(events(owner, OPERATION)).toHaveLength(1);
         expect(other.events()).toEqual([]);
-        expect(staff.events()).toEqual([]);
+        // Staff sockets get Staff wake-ups (11.6), never Player events.
+        expect(playerEvents(staff)).toEqual([]);
         expect(await auditCount()).toBe(before);
         // A Staff-created command for the same character never enters Player realtime.
         const staffOp = (
@@ -567,7 +571,8 @@ describeDatabase(
         await pause();
         expect(events(owner, OPERATION)).toHaveLength(1);
         expect(other.events()).toEqual([]);
-        expect(staff.events()).toEqual([]);
+        // Staff sockets get Staff wake-ups (11.6), never Player events.
+        expect(playerEvents(staff)).toEqual([]);
       },
     );
 

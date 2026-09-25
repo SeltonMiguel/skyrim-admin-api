@@ -458,6 +458,7 @@ describeDatabase('Player authentication with real PostgreSQL', () => {
       '/api/v1/player/me/characters/{characterLinkId}',
       '/api/v1/player/me/characters/{characterLinkId}/chat/direct/{targetCharacterId}',
       '/api/v1/player/me/characters/{characterLinkId}/chat/global',
+      '/api/v1/player/me/characters/{characterLinkId}/group',
       '/api/v1/player/me/characters/{characterLinkId}/guild',
       '/api/v1/player/me/characters/{characterLinkId}/marketplace/listings',
       '/api/v1/player/me/characters/{characterLinkId}/marketplace/purchases',

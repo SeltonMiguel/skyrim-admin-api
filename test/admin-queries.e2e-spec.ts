@@ -409,6 +409,8 @@ describeDatabase('Admin read APIs with real PostgreSQL', () => {
       protocolVersion: '1',
       connectedAt: now.toISOString(),
       lastHeartbeatAt: now.toISOString(),
+      gameProcessState: null,
+      skseReady: null,
     });
   });
   it.each([

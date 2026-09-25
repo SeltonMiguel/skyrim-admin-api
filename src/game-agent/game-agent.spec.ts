@@ -527,6 +527,7 @@ describe('Host Agent gateway: HELLO commit vs registry visibility', () => {
           },
         }),
       } as never,
+      { changed: jest.fn(async () => undefined) } as never,
     );
     const connect = () => {
       const ws = new FakeAgentSocket();

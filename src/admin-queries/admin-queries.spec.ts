@@ -306,6 +306,10 @@ describe('Admin read models', () => {
       status: 'CONNECTED',
       lastHeartbeatAt: now,
       secret: 'hidden',
+      credentialId: 'hidden-credential',
+      capabilities: ['HIDDEN_CAPABILITY'],
+      gameProcessState: 'RUNNING',
+      skseReady: true,
     });
     const server = Object.assign(new GameServer(), {
       id: 's',
@@ -316,8 +320,13 @@ describe('Admin read models', () => {
     const result = publicServer(server, cutoff);
     expect(result.health).toBe(H.ONLINE);
     expect(result.currentConnection?.id).toBe('c');
+    // The Agent runtime snapshot is public to GAME_BRIDGE_READ (11.6).
+    expect(result.currentConnection).toMatchObject({
+      gameProcessState: 'RUNNING',
+      skseReady: true,
+    });
     expect(JSON.stringify([result, connectionHistory(connection)])).not.toMatch(
-      /hidden|secret|passwordHash/,
+      /hidden|secret|passwordHash|credential|capabilit/i,
     );
     expect(
       publicServer({ ...server, currentConnection: null }, cutoff)

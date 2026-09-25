@@ -405,6 +405,8 @@ describeDatabase('Player characters directory with real PostgreSQL', () => {
         '/api/v1/player/me/characters/{characterLinkId}/profession',
         ['get', 'post'],
       ],
+      // 11.6: read-only current group of a character (cold-start recovery).
+      ['/api/v1/player/me/characters/{characterLinkId}/group', ['get']],
       // 10.9: read-only guild of a character.
       ['/api/v1/player/me/characters/{characterLinkId}/guild', ['get']],
       // 10.12: read-only wallet of a character.
