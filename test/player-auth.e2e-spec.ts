@@ -80,7 +80,10 @@ describeDatabase('Player authentication with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(22);
+    expect(await database.runMigrations()).toHaveLength(25);
+    await database.undoLastMigration(); // Etapa 11.4 Agent Domain Events
+    await database.undoLastMigration(); // Etapa 11.3 Server Control Transport
+    await database.undoLastMigration(); // Etapa 11.1 Game Agent Transport
     await database.undoLastMigration(); // Etapa 10.17 VIP Entitlements
     await database.undoLastMigration(); // Etapa 10.16 Player Settings
     await database.undoLastMigration(); // Etapa 10.15 Player Chat
@@ -98,7 +101,7 @@ describeDatabase('Player authentication with real PostgreSQL', () => {
         [schema],
       ),
     ).toEqual([]);
-    expect(await database.runMigrations()).toHaveLength(11);
+    expect(await database.runMigrations()).toHaveLength(14);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -418,6 +421,7 @@ describeDatabase('Player authentication with real PostgreSQL', () => {
       '/api/v1/player/character-operations/{operationId}',
       '/api/v1/player/chat/direct/{targetCharacterId}',
       '/api/v1/player/chat/global',
+      '/api/v1/player/game-servers',
       '/api/v1/player/game-servers/{gameServerId}/characters/{characterId}/holds-query',
       '/api/v1/player/game-servers/{gameServerId}/characters/{characterId}/horses-query',
       '/api/v1/player/game-servers/{gameServerId}/characters/{characterId}/profile-query',
@@ -454,6 +458,7 @@ describeDatabase('Player authentication with real PostgreSQL', () => {
       '/api/v1/player/me/characters/{characterLinkId}',
       '/api/v1/player/me/characters/{characterLinkId}/chat/direct/{targetCharacterId}',
       '/api/v1/player/me/characters/{characterLinkId}/chat/global',
+      '/api/v1/player/me/characters/{characterLinkId}/group',
       '/api/v1/player/me/characters/{characterLinkId}/guild',
       '/api/v1/player/me/characters/{characterLinkId}/marketplace/listings',
       '/api/v1/player/me/characters/{characterLinkId}/marketplace/purchases',

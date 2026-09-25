@@ -22,6 +22,9 @@ export function currentConnection(
     protocolVersion: connection.protocolVersion,
     connectedAt: connection.connectedAt,
     lastHeartbeatAt: connection.lastHeartbeatAt,
+    // Runtime snapshot only: never the credential or the capabilities.
+    gameProcessState: connection.gameProcessState ?? null,
+    skseReady: connection.skseReady ?? null,
   };
 }
 export function connectionHistory(connection: GameConnection): ConnectionDto {

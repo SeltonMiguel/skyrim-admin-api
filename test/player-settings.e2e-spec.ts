@@ -207,7 +207,10 @@ describeDatabase('Player settings with real PostgreSQL', () => {
     });
     await database.initialize();
     // Apply, revert (no settings) and reapply the 10.16 migration.
-    expect(await database.runMigrations()).toHaveLength(22);
+    expect(await database.runMigrations()).toHaveLength(25);
+    await database.undoLastMigration(); // Etapa 11.4 Agent Domain Events
+    await database.undoLastMigration(); // Etapa 11.3 Server Control Transport
+    await database.undoLastMigration(); // Etapa 11.1 Game Agent Transport
     await database.undoLastMigration(); // Etapa 10.17 VIP Entitlements
     await database.undoLastMigration();
     expect(
@@ -216,7 +219,7 @@ describeDatabase('Player settings with real PostgreSQL', () => {
         [schema],
       ),
     ).toEqual([]);
-    expect(await database.runMigrations()).toHaveLength(2);
+    expect(await database.runMigrations()).toHaveLength(5);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -272,7 +275,7 @@ describeDatabase('Player settings with real PostgreSQL', () => {
   it('adds player_settings keyed by the player with database-enforced shape', async () => {
     expect(database.options.synchronize).toBe(false);
     expect(await database.showMigrations()).toBe(false);
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(22);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(25);
     const diff = await database.driver.createSchemaBuilder().log();
     expect([diff.upQueries, diff.downQueries]).toEqual([[], []]);
     const session = await login();
@@ -702,13 +705,17 @@ describeDatabase('Player settings with real PostgreSQL', () => {
     expect(await rows(heir)).toEqual([]);
   });
   it('refuses to revert while settings exist', async () => {
-    // No entitlements here: 10.17 reverts, then 10.16 refuses and is kept.
+    // No credentials or entitlements here: 11.3, 11.1 and 10.17 revert, then 10.16
+    // refuses and is kept.
+    await database.undoLastMigration(); // Etapa 11.4 Agent Domain Events
+    await database.undoLastMigration(); // Etapa 11.3 Server Control Transport
+    await database.undoLastMigration();
     await database.undoLastMigration();
     await expect(database.undoLastMigration()).rejects.toThrow(
       'player settings exist',
     );
-    expect(await database.runMigrations()).toHaveLength(1);
+    expect(await database.runMigrations()).toHaveLength(4);
     expect(await database.showMigrations()).toBe(false);
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(22);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(25);
   });
 });

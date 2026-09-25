@@ -336,7 +336,9 @@ não verificado, de outro player ou inexistente. O `playerId` deve vir do
 
 **Confirmação pelo Agent:** `CharacterLinkService.confirmFromAgent({ challenge,
 gameServerId, characterExternalId })` é exportado para o transporte autenticado
-da Etapa 11 e não tem rota HTTP. Em uma transação, com lock do vínculo e depois
+e não tem rota HTTP. Desde a 11.4 é chamado pelo `DOMAIN_EVENT
+CHARACTER_OWNERSHIP_PROOF` do Host Agent, com o `gameServerId` da sessão
+(`docs/integration-architecture.md` §10.2). Em uma transação, com lock do vínculo e depois
 do challenge:
 
 1. localiza o challenge pelo hash;
@@ -569,7 +571,10 @@ do character.
 concessão trava a linha de profissão: replays simultâneos aplicam uma vez e
 eventos distintos simultâneos acumulam sem lost update.
 
-Integração real do Agent (eventos de XP e seu transporte) fica para a Etapa 11.
+Desde a 11.4 o `DOMAIN_EVENT PROFESSION_EXPERIENCE` do Host Agent chama este
+contrato com o `gameServerId` da sessão e o `eventId` do protocolo como
+`externalEventId` (`docs/integration-architecture.md` §10.2). Quais ações geram XP
+continua decisão de produto.
 
 ### Groups
 
@@ -609,6 +614,7 @@ ser próprios e VERIFIED, senão 404 `Character not found`):
 | --- | --- |
 | `POST /api/v1/player/groups` `{ characterLinkId }` | 201; character sem group ativo, servidor habilitado |
 | `GET /api/v1/player/groups/:groupId` | só membros ativos; outros → 404 |
+| `GET /api/v1/player/me/characters/:characterLinkId/group` (11.6) | `{ group }` ativo daquele character próprio e VERIFIED, ou `{ group: null }`; mesma projeção do GET por id; sem histórico. Recuperação quando o cliente não conhece o groupId |
 | `POST .../:groupId/invites` `{ actorCharacterLinkId, targetCharacterId }` | leader apenas (membro → 403, não membro → 404); target resolvido pelo servidor do group; não resolvido → 404 `Character not available`; já em group → 409 `Character unavailable`; group cheio → 409. Repetir convite pendente → 200 com o mesmo convite |
 | `GET /api/v1/player/group-invites` | convites PENDING e não expirados para characters próprios |
 | `POST /api/v1/player/group-invites/:inviteId/accept` | só o dono do target; PENDING, não expirado, group ACTIVE, vaga livre, target ainda sem group |
@@ -994,35 +1000,33 @@ qualquer item, o trade para em AWAITING_GAME_CONFIRMATION com o GOLD reservado e
 ofertas congeladas; o Player não cancela (o Agent pode estar executando).
 
 **Contrato Agent (interno, sem rota HTTP):**
-`TradeSettlementService.confirmFromAgent({ tradeId, settlementEventId, outcome })`,
-ator SYSTEM:AGENT. `SETTLED` liquida o escrow para as contrapartes e completa;
+`TradeSettlementService.confirmFromAgent({ gameServerId, tradeId, settlementEventId, outcome })`,
+ator SYSTEM:AGENT. Desde a 11.4 `gameServerId` é obrigatório (servidor da sessão do
+Agent): trade de outro servidor → `SERVER_MISMATCH`, nada muda. O trabalho físico
+chega ao Agent por `WORK_SYNC` (`TRADE_SETTLEMENT`) e a conclusão por
+`DOMAIN_EVENT` (§10.2 de `integration-architecture.md`). `SETTLED` liquida o escrow para as contrapartes e completa;
 `FAILED` devolve o GOLD aos contribuintes (RELEASED) e marca FAILED. Mesmo evento
 e conteúdo → `ALREADY_APPLIED`; mesmo id com outro conteúdo → `EVENT_CONFLICT`;
 trade não AWAITING → `TRADE_NOT_AWAITING`.
 
-**Semântica de SETTLED (condição do protocolo da Etapa 11):** `SETTLED` **não**
-significa que os itens já foram entregues irreversivelmente. O Agent só pode
-enviá-lo depois de validar os GAME_ITEM e colocá-los sob **custódia durável e
-reversível**, da qual consegue repetir a entrega ou liberar os itens se o backend
-recusar a liquidação. **O commit do backend é a autoridade que finaliza o
-trade:**
+**Semântica final (11.4):** `TRADE_SETTLEMENT` com `SUCCEEDED` significa
+fulfillment físico completo: todas as transferências aos destinatários foram
+concluídas e registradas no journal por `workId`. O outcome legado `SETTLED`
+continua aceito com a mesma semântica. Só então o backend liquida GOLD e marca
+Trade `COMPLETED` (o estado persistido correspondente ao Trade settled).
+Não existe obrigação física invisível depois da conclusão.
 
-```
-custódia do Agent → SETTLED → liquidação do GOLD no backend
-                                ├─ sucesso → COMPLETED (o Agent entrega)
-                                └─ falha   → continua AWAITING_GAME_CONFIRMATION
-```
+Antes do sucesso, o Trade fica `AWAITING_GAME_CONFIRMATION`, GOLD reservado e
+work presente em `WORK_SYNC`. Reconnect devolve o mesmo `workId`; o journal evita
+repetir transferências conhecidas e retoma as restantes. Retry do evento após
+conclusão recebe duplicate ACK sem nova liquidação nem efeito físico.
 
-Se o ledger recusar por qualquer motivo (inclusive o teto de saldo do
-recebedor), o retorno é `LEDGER_REJECTED` (com `ledgerReason` interno, ex.
-`BALANCE_LIMIT`, e um log de aviso) e toda a transação é desfeita: o trade
-continua AWAITING_GAME_CONFIRMATION, os escrows continuam RESERVED, o
-`settlementEventId` não fica registrado (pode ser repetido), não há Audit
-`PLAYER_TRADE_SETTLED` nem realtime `TRADE_COMPLETED`. O Agent continua
-responsável pela custódia e pode repetir depois ou enviar `FAILED` (liberando
-itens e GOLD). A 10.13 não reserva capacidade de recebimento: a recusa por teto é
-aceita como temporária, sem corromper o trade nem liberar o escrow. A Etapa 11
-implementa o protocolo real de custódia, entrega e retry.
+Se o ledger recusar (ex.: `BALANCE_LIMIT`), a transação sofre rollback, o Trade
+continua AWAITING e o escrow RESERVED. `LEDGER_REJECTED` é retryable: o Agent
+reenvia o mesmo sucesso, mantendo o fulfillment concluído no journal, sem
+reexecutar transferências nem reportar falha física por uma recusa econômica.
+Timeout/ação de operador continuam pendentes; não há reserva de capacidade de
+recebimento nesta etapa.
 
 **Ownership:** o trade é dos characters. Se a ownership de uma parte deixa de ser
 VERIFIED, o antigo dono perde acesso na hora; um novo dono VERIFIED do mesmo
@@ -1063,7 +1067,7 @@ não publica. Realtime não é fonte de verdade.
 
 - Listings persistidos.
 - Construído sobre wallet, ledger e escrow.
-- Segue **as mesmas regras de custódia do Trade** para LEDGER_CURRENCY e GAME_ITEM,
+- Separa LEDGER_CURRENCY no backend e GAME_ITEM sob custódia do Agent,
   inclusive AWAITING_GAME_CONFIRMATION para itens.
 - **Nenhuma duplicação de saldo ou item por retries**: toda mutation é idempotente
   por ator e liquidada uma única vez.
@@ -1102,14 +1106,21 @@ SOLD, CANCELLED e FAILED são terminais e nunca reabrem (trigger no banco).
 
 **Custódia:** uma listing **nunca** fica ACTIVE só porque o player declarou ter o
 item; o backend não consulta inventário. Contrato interno, sem rota HTTP:
-`MarketplaceCustodyService.confirmFromAgent({ listingId, custodyEventId, outcome })`,
-ator SYSTEM:AGENT. `CUSTODIED` significa que o Agent validou item e quantidade,
+`MarketplaceCustodyService.confirmFromAgent({ gameServerId, listingId, custodyEventId, outcome })`,
+ator SYSTEM:AGENT (`gameServerId` da sessão, obrigatório desde a 11.4:
+`SERVER_MISMATCH` para outro servidor). `CUSTODIED` significa que o Agent validou item e quantidade,
 retirou/reservou o item de forma durável, consegue mantê-lo sob custódia,
 devolvê-lo ao seller se a listing for cancelada e entregá-lo ao buyer de forma
 retryable: PENDING_CUSTODY → ACTIVE. `FAILED`: PENDING_CUSTODY → FAILED. Mesmo id e
 conteúdo → `ALREADY_APPLIED`; mesmo id com outro conteúdo (outcome ou listing) →
-`EVENT_CONFLICT`; listing que já não está PENDING_CUSTODY (ex.: cancelada
-enquanto o Agent agia) → `LISTING_NOT_PENDING`, e o Agent deve devolver o item.
+`EVENT_CONFLICT`. Custody adquirida (`SUCCEEDED`, alias de `CUSTODIED`) que chega
+após `CANCELLED`/`FAILED` mantém a listing terminal e cria ou garante uma única
+`player_marketplace_item_release` PENDING. Sem confirmação de aquisição, não há
+release. Lock da listing e UNIQUE(`listing_id`) garantem unicidade também para
+outros eventIds equivalentes; release terminal nunca é reaberta. O histórico de
+custody já gravado permanece imutável. `WORK_SYNC` recupera a devolução como
+`MARKETPLACE_RELEASE`, com o mesmo workId após reconnect, até COMPLETED/FAILED.
+Outro servidor recebe `SERVER_MISMATCH` sem alteração na listing ou release.
 
 **Player API** (`PlayerAuthGuard`; `Idempotency-Key` obrigatório nas mutations):
 
@@ -1134,9 +1145,17 @@ e listing RESERVED. Postings com `reference_type = PLAYER_MARKETPLACE` e chave p
 fase (`market:<purchaseId>:reserve|settle|release`).
 
 **Settlement (contrato interno, sem rota HTTP):**
-`MarketplaceSettlementService.confirmFromAgent({ purchaseId, settlementEventId, outcome })`,
+`MarketplaceSettlementService.confirmFromAgent({ gameServerId, purchaseId, settlementEventId, outcome })`,
 ator SYSTEM:AGENT, idempotente por `settlementEventId` (replay/conflito como na
-custódia; purchase não AWAITING → `PURCHASE_NOT_AWAITING`).
+custódia; purchase não AWAITING → `PURCHASE_NOT_AWAITING`; outro servidor →
+`SERVER_MISMATCH`).
+
+**Devolução ao seller (11.4):** cancelar uma listing `ACTIVE` ou falhar um
+settlement cria, na mesma transação, uma linha em
+`player_marketplace_item_releases` (`PENDING`). O Agent a recebe por `WORK_SYNC`
+(`MARKETPLACE_RELEASE`) e a conclui por `MarketplaceReleaseService.confirmFromAgent`
+(`RELEASED` → `COMPLETED`, `FAILED` → `FAILED` para o operador). Item custodiado
+nunca é esquecido.
 
 - `SETTLED` só pode ser pedido com o item sob custódia durável/reversível; **não**
   significa que o item já apareceu no inventário final. O backend: MARKET_ESCROW →
@@ -1393,7 +1412,8 @@ continua bloqueando imediatamente).
 **Fan-out:** o servidor escolhe os destinatários; o cliente não entra em rooms nem
 informa player/group. Eventos de Group vão aos donos atuais (VERIFIED) dos membros
 ativos e ao dono do target do convite, em todas as conexões do player. Conexões
-STAFF são autenticadas mas ainda não recebem eventos. O fechamento remove a
+STAFF recebem apenas os wake-ups `STAFF_*` da 11.6, filtrados por permissão
+(`docs/admin-web-integration.md`); nunca eventos Player. O fechamento remove a
 conexão do registry.
 
 **Limitação:** entrega em memória, best-effort e de processo único: sem Redis,
@@ -1653,12 +1673,17 @@ projeção pública do catálogo. Nunca: ator, source, idempotência,
 a projeção segura da oferta, mesmo fora do catálogo público; só revoke ou expiração
 explícitos o encerram. A oferta inativa apenas impede novos grants.
 
-**Entrega (boundary da Etapa 11):** o entitlement é a fonte do direito. A entrega
-de gameplay dos rewards tipados exige o Agent confiável:
-`VipDeliveryService.requestDelivery` devolve `UNAVAILABLE / AGENT_NOT_INTEGRATED`,
-nada é marcado como entregue e não há estado de entrega persistido. A Etapa 11
-implementa a entrega só por operações tipadas e validadas; nunca console,
-Papyrus, shell ou GameCommand livre.
+**Entrega (11.4):** o entitlement é a fonte do direito. Só scope CHARACTER gera
+entrega de gameplay: o grant cria, na mesma transação, uma
+`vip_reward_deliveries` por reward (snapshot). O `VipDeliveryService` cria um
+GameCommand tipado (`CHARACTER_ITEM_GIVE`, `_HORSE_GIVE`, `_TITLE_GIVE`,
+`_SPELL_GIVE`) como `SYSTEM:VIP_DELIVERY`, idempotency key
+`vip-delivery:<deliveryId>`, quando o servidor tem Agent pronto, e reconcilia pelo
+`game_command_id` (`SUCCEEDED`/`FAILED`/`UNCERTAIN`; nunca um segundo command).
+Scope PLAYER nunca escolhe character (nem primeiro, último ou mais recente).
+Revogação/expiração antes do command → `CANCELLED`; depois → sem clawback. Nunca
+console, Papyrus, shell ou GameCommand livre. Detalhes em
+`docs/integration-architecture.md` §10.2.
 
 **Consultas internas:** `hasPlayerEntitlement(playerId, offerCode)` e
 `hasCharacterEntitlement(gameServerId, characterExternalId, offerCode)` para
@@ -1694,9 +1719,8 @@ concorrentes (um REVOKED) e grant × revoke (resultado consistente).
 - Responsável futuramente por **confirmar ownership**, **emitir eventos confiáveis**
   (por exemplo, base para concessão de XP de profissão) e **confirmar
   transferências de GAME_ITEM**.
-- Até a Etapa 11 os gateways permanecem Disconnected: nenhum estado dependente do
-  Agent (ownership VERIFIED, XP concedido, GAME_ITEM transferido) é produzido por
-  simulação em produção.
+- Desde a 11.4 esses fatos chegam pelo Host Agent real (`DOMAIN_EVENT`, `WORK_SYNC`);
+  nenhum estado dependente do Agent é produzido por simulação em produção.
 
 ## Actor model
 
@@ -1829,7 +1853,7 @@ as decisões acima:
 | Tema | Subetapa |
 | --- | --- |
 | Revogação administrativa de vínculos; expiração de trades e de listings; limite de listings por character | futura |
-| Transporte autenticado do Agent chamando `confirmFromAgent` e digitação do challenge no jogo | 11 |
+| Contrato Electron/Launcher, discovery Player e eventos de link/operação | Implementados na 11.5; ver [electron-integration.md](electron-integration.md) |
 | Implementação real de perfil e skills pelo Agent, conforme os contratos da 10.5 | 11 |
 | Settings por character e novas chaves de preferência (ex.: notificações) | futura |
 | Rate limiting distribuído, confiança em proxy e cotas por conta | Etapa 12 |

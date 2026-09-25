@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { isUUID } from 'class-validator';
 import { QueryFailedError } from 'typeorm';
 import { AuditAction } from '../audit/audit.types.js';
+import type { AgentEventHook } from '../actors/agent-event.contracts.js';
 import { systemActor, SystemSource } from '../actors/actor.contracts.js';
 import { externalId } from '../game-bridge/command-validation.js';
 import { LedgerRejectionError } from '../economy/economy-ledger.service.js';
@@ -12,6 +13,7 @@ import {
   ListingStatus,
   MarketSettlementOutcome,
   PurchaseStatus,
+  ReleaseReason,
 } from './player-marketplace.contracts.js';
 import type { MarketSettlementResult } from './player-marketplace.contracts.js';
 
@@ -41,12 +43,19 @@ export class MarketplaceSettlementService {
     private readonly market: PlayerMarketplaceService,
     private readonly escrow: MarketEscrowService,
   ) {}
+  // gameServerId is the authenticated Agent session's server (Etapa 11.4):
+  // an entity of another server is SERVER_MISMATCH and nothing changes.
+  // Item, quantity, parties and price are read from the listing; the Agent
+  // only names the work and the outcome. onAccepted runs in this
+  // transaction before an accepted outcome commits.
   async confirmFromAgent(
     input: {
+      gameServerId: string;
       purchaseId: string;
       settlementEventId: string;
       outcome: MarketSettlementOutcome;
     },
+    onAccepted?: AgentEventHook,
     retried = false,
   ): Promise<MarketSettlementResult> {
     let eventId: string;
@@ -56,6 +65,7 @@ export class MarketplaceSettlementService {
       return reject('INVALID_INPUT');
     }
     if (
+      !isUUID(input.gameServerId) ||
       !isUUID(input.purchaseId) ||
       !Object.values(MarketSettlementOutcome).includes(input.outcome)
     )
@@ -69,6 +79,8 @@ export class MarketplaceSettlementService {
         if (!found) return reject('PURCHASE_NOT_FOUND');
         // Same lock order as the Player API: listing row, then purchase.
         const listing = await this.market.lockListing(manager, found.listingId);
+        if (listing.gameServerId !== input.gameServerId)
+          return reject('SERVER_MISMATCH');
         const purchase = await this.market.purchases(manager).findOneOrFail({
           where: { id: found.id },
           lock: { mode: 'pessimistic_write' },
@@ -81,11 +93,18 @@ export class MarketplaceSettlementService {
           gameServerId: listing.gameServerId,
           settlementEventId: eventId,
         });
-        if (existing)
-          return existing.purchaseId === purchase.id &&
-            existing.outcome === input.outcome
-            ? { outcome: 'ALREADY_APPLIED', status: finalStatus(input.outcome) }
-            : reject('EVENT_CONFLICT');
+        if (existing) {
+          if (
+            existing.purchaseId !== purchase.id ||
+            existing.outcome !== input.outcome
+          )
+            return reject('EVENT_CONFLICT');
+          await onAccepted?.(manager);
+          return {
+            outcome: 'ALREADY_APPLIED',
+            status: finalStatus(input.outcome),
+          };
+        }
         if (purchase.status !== PurchaseStatus.AWAITING_GAME_CONFIRMATION)
           return reject('PURCHASE_NOT_AWAITING');
         const now = new Date();
@@ -113,6 +132,13 @@ export class MarketplaceSettlementService {
           purchaseId: purchase.id,
           outcome: input.outcome,
         });
+        // The Agent still holds the seller's item: its return is tracked.
+        if (!settled)
+          await this.market.createRelease(
+            manager,
+            listing,
+            ReleaseReason.PURCHASE_FAILED,
+          );
         const saved = await this.market
           .listings(manager)
           .findOneByOrFail({ id: listing.id });
@@ -154,6 +180,7 @@ export class MarketplaceSettlementService {
               ),
             },
           );
+        await onAccepted?.(manager);
         return { outcome: 'APPLIED', status };
       }, false);
     } catch (error) {
@@ -177,7 +204,7 @@ export class MarketplaceSettlementService {
         error instanceof QueryFailedError &&
         (error.driverError as { code?: string }).code === '23505'
       )
-        return this.confirmFromAgent(input, true);
+        return this.confirmFromAgent(input, onAccepted, true);
       throw error;
     }
   }

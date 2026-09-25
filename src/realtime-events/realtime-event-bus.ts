@@ -1,10 +1,13 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
+import type { Permission } from '../rbac/permissions.js';
 
 // Domain-facing contract: domains publish typed events after commit and never
 // know how (or whether) they are transported. Realtime is not a source of
 // truth; clients that miss an event re-read state over HTTP.
 export const REALTIME_EVENT_TYPES = [
+  'PLAYER_CHARACTER_LINK_UPDATED',
+  'PLAYER_GAME_OPERATION_UPDATED',
   'GROUP_CREATED',
   'GROUP_INVITE_CREATED',
   'GROUP_INVITE_ACCEPTED',
@@ -41,6 +44,11 @@ export const REALTIME_EVENT_TYPES = [
   'PLAYER_SETTINGS_UPDATED',
   'VIP_ENTITLEMENT_GRANTED',
   'VIP_ENTITLEMENT_REVOKED',
+  // Staff operational wake-ups (11.6): the only STAFF_* types, and the only
+  // types delivered to the Staff surface.
+  'STAFF_GAME_SERVER_UPDATED',
+  'STAFF_GAME_OPERATION_UPDATED',
+  'STAFF_SERVER_CONTROL_UPDATED',
 ] as const;
 export type RealtimeEventType = (typeof REALTIME_EVENT_TYPES)[number];
 export type RealtimeData = Record<string, string | number | boolean | null>;
@@ -50,9 +58,17 @@ export interface RealtimeEnvelope {
   occurredAt: string;
   data: RealtimeData;
 }
+export const isStaffEvent = (type: RealtimeEventType) =>
+  type.startsWith('STAFF_');
 // Recipients are chosen by the server; clients never subscribe to rooms.
+// Player events name their players; Staff events name the permission a
+// Staff session must hold (the one its HTTP read requires), re-checked by
+// the transport at delivery time. A publication never reaches both.
+export type RealtimeTarget =
+  { playerIds: readonly string[] } | { staffPermission: Permission };
 export interface RealtimeRecipients {
   playerIds: readonly string[];
+  staffPermission: Permission | null;
 }
 export type RealtimeListener = (
   envelope: RealtimeEnvelope,
@@ -73,7 +89,7 @@ export class RealtimeEventBus {
   publish(
     type: RealtimeEventType,
     data: RealtimeData,
-    recipients: RealtimeRecipients,
+    target: RealtimeTarget,
   ): RealtimeEnvelope {
     const envelope: RealtimeEnvelope = {
       eventId: randomUUID(),
@@ -87,7 +103,17 @@ export class RealtimeEventBus {
         ),
       ),
     };
-    const targets = { playerIds: [...new Set(recipients.playerIds)] };
+    const staff = 'staffPermission' in target;
+    // Surfaces never cross: a Staff type only to Staff, any other only to
+    // Players. A mismatch is a programming error; it is dropped, not thrown
+    // (publishers run after their commit).
+    if (staff !== isStaffEvent(type)) {
+      this.logger.error(`Realtime event dropped: wrong surface [type=${type}]`);
+      return envelope;
+    }
+    const targets: RealtimeRecipients = staff
+      ? { playerIds: [], staffPermission: target.staffPermission }
+      : { playerIds: [...new Set(target.playerIds)], staffPermission: null };
     for (const listener of this.listeners)
       try {
         listener(envelope, targets);

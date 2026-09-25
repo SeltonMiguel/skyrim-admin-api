@@ -64,6 +64,15 @@ staleness, fecha a conexão como STALE e retorna false; não ressuscita sessões
 `disconnect` registra REQUESTED; repetir retorna false. Não se apaga histórico.
 Servidor disabled impede connect, heartbeat válido e novo dispatch.
 
+**Etapa 11.1:** `game_connections` passa a representar a sessão do Host Agent,
+aberta pelo HELLO de `/api/v1/agent` (credencial, capabilities, estado do processo
+e prontidão do SKSE; `bridge_version` guarda a versão do Agent). `connect` ganhou
+`connectInTransaction` e `heartbeat` aceita o snapshot de runtime; os motivos de
+encerramento passam a ser `SUPERSEDED`, `STALE`, `REQUESTED`, `CLOSED`,
+`CREDENTIAL_REVOKED`, `SHUTDOWN` e `BACKEND_RESTART`, com CHECK. Nada disso
+altera dispatch, ACK ou RESULT (11.2). Ver
+[arquitetura de integração](integration-architecture.md) §4.
+
 ## Command envelope
 
 ```json
@@ -126,14 +135,22 @@ RESULT repete esses cinco campos e acrescenta uma das alternativas:
 { "outcome": "FAILED", "errorCode": "PING_REJECTED" }
 ```
 
-Falhas remotas aceitam somente PING_REJECTED ou BRIDGE_ERROR. `errorMessage` não
+Falhas remotas aceitam somente PING_REJECTED (só ping), BRIDGE_ERROR ou, desde a
+11.2, EXECUTION_FAILED. A 11.2 também aceita `outcome: "UNCERTAIN"` (o Agent não
+consegue provar se o efeito ocorreu), gravado como TIMEOUT/EXECUTION_UNCERTAIN,
+nunca FAILED. `errorMessage` não
 faz parte do contrato remoto: se recebido como campo extra, não é copiado. O
 backend grava mensagem local de catálogo, limitada a 256 caracteres; não armazena
 stack remoto. TIMEOUT é gerado exclusivamente pelo backend.
 
-Servidor, correlationId e sessão do último envio devem coincidir. A sessão deve
-continuar ativa e saudável. Mensagens de sessão substituída/stale são rejeitadas,
-inclusive duplicatas antigas. RESULT success precisa devolver o mesmo nonce.
+Servidor e correlationId devem coincidir, e a sessão que envia deve ser a sessão
+ativa e saudável do servidor; mensagens de sessão substituída/stale são rejeitadas,
+inclusive duplicatas antigas. **Desde a 11.2:** o ACK pertence à tentativa (a sessão
+precisa ser a da última reserva e, se informado, `attempt` precisa ser o atual); o
+RESULT pertence ao command e pode chegar por outra sessão ativa do mesmo servidor
+(reconexão), ficando `dispatchedConnectionId` como procedência. RESULT de command
+PENDING sem reserva → `NOT_DISPATCHED`. As recusas são `BridgeRejection` tipadas
+(409). RESULT success precisa devolver o mesmo nonce.
 
 ACK duplicado preserva o primeiro acknowledgedAt; ACK após terminal é no-op.
 RESULT idêntico repete a resposta sem outro INSERT nem mudança de timestamp.
@@ -177,7 +194,15 @@ UNAVAILABLE, TRANSIENT ou PERMANENT. Aceitação do transporte não é ACK nem s
 do Skyrim. UNAVAILABLE/PERMANENT garantem que essa tentativa não foi entregue;
 TRANSIENT, exceção ou timeout representam entrega incerta.
 
-O adapter padrão `DisconnectedGameGateway` sempre retorna UNAVAILABLE. Sem sessão
+**Desde a 11.2** o provider de produção é `AgentGameGateway` (sessão Host Agent exata
+da reserva, runtime pronto e capability; ver
+[arquitetura de integração](integration-architecture.md) §8.3), chamado pelo
+`GameCommandWorker`, que só reserva tentativas para Agents elegíveis, respeita o
+limite em voo contado no banco e expira PENDING nunca entregáveis
+(`GAME_COMMAND_PENDING_TIMEOUT_MS`, FAILED/DISPATCH_EXPIRED). O envelope ganhou
+`attempt` (= `dispatchAttempts` da reserva).
+
+O adapter `DisconnectedGameGateway` (testes/fallback) sempre retorna UNAVAILABLE. Sem sessão
 saudável nem se chama send. Recusa permanente antes de qualquer possível entrega
 termina FAILED/DISPATCH_REJECTED. Indisponibilidade comprovada em todas as tentativas
 termina FAILED/GATEWAY_UNAVAILABLE ao esgotar o limite. PENDING emite FAILED por

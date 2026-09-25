@@ -280,7 +280,10 @@ describeDatabase('Player chat with real PostgreSQL', () => {
     });
     await database.initialize();
     // Apply, revert (no messages) and reapply the 10.15 migration.
-    expect(await database.runMigrations()).toHaveLength(22);
+    expect(await database.runMigrations()).toHaveLength(25);
+    await database.undoLastMigration(); // Etapa 11.4 Agent Domain Events
+    await database.undoLastMigration(); // Etapa 11.3 Server Control Transport
+    await database.undoLastMigration(); // Etapa 11.1 Game Agent Transport
     await database.undoLastMigration(); // Etapa 10.17 VIP Entitlements
     await database.undoLastMigration(); // Etapa 10.16 Player Settings
     await database.undoLastMigration();
@@ -290,7 +293,7 @@ describeDatabase('Player chat with real PostgreSQL', () => {
         [schema],
       ),
     ).toEqual([]);
-    expect(await database.runMigrations()).toHaveLength(3);
+    expect(await database.runMigrations()).toHaveLength(6);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -345,7 +348,7 @@ describeDatabase('Player chat with real PostgreSQL', () => {
   it('adds the chat tables with database-enforced shape, immutability and purge-only deletes', async () => {
     expect(database.options.synchronize).toBe(false);
     expect(await database.showMigrations()).toBe(false);
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(22);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(25);
     const diff = await database.driver.createSchemaBuilder().log();
     expect([diff.upQueries, diff.downQueries]).toEqual([[], []]);
     const [a, b] = [await party(), await party()];
@@ -1061,15 +1064,18 @@ describeDatabase('Player chat with real PostgreSQL', () => {
     ]);
   });
   it('refuses to revert while chat messages exist', async () => {
-    // No entitlements or settings here: 10.17 and 10.16 revert, then 10.15
-    // refuses and is kept.
+    // No credentials, entitlements or settings here: 11.3, 11.1, 10.17 and 10.16
+    // revert, then 10.15 refuses and is kept.
+    await database.undoLastMigration(); // Etapa 11.4 Agent Domain Events
+    await database.undoLastMigration(); // Etapa 11.3 Server Control Transport
+    await database.undoLastMigration();
     await database.undoLastMigration();
     await database.undoLastMigration();
     await expect(database.undoLastMigration()).rejects.toThrow(
       'chat messages exist',
     );
-    expect(await database.runMigrations()).toHaveLength(2);
+    expect(await database.runMigrations()).toHaveLength(5);
     expect(await database.showMigrations()).toBe(false);
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(22);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(25);
   });
 });

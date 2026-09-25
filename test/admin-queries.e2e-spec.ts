@@ -8,6 +8,7 @@ import type { App } from 'supertest/types.js';
 import { loadEnvironment } from '../src/config/environment.js';
 import type { ApplicationConfig } from '../src/config/environment.js';
 import { createDatabaseOptions } from '../src/database/database.options.js';
+import { GameCommandWorker } from '../src/game-agent/game-command.worker.js';
 import { compiledDatabaseArtifacts } from './compiled-database.js';
 import { setupApp } from '../src/setup-app.js';
 import { AppExpressAdapter } from '../src/common/http/app-express.adapter.js';
@@ -106,9 +107,12 @@ describeDatabase('Admin read APIs with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(22);
+    expect(await database.runMigrations()).toHaveLength(25);
     expect(await database.runMigrations()).toHaveLength(0);
     // Roll back only this stage and prove previous permission data survives.
+    await database.undoLastMigration(); // Etapa 11.4 Agent Domain Events
+    await database.undoLastMigration(); // Etapa 11.3 Server Control Transport
+    await database.undoLastMigration(); // Etapa 11.1 Game Agent Transport
     await database.undoLastMigration(); // Etapa 10.17 VIP Entitlements
     await database.undoLastMigration(); // Etapa 10.16 Player Settings
     await database.undoLastMigration(); // Etapa 10.15 Player Chat
@@ -136,12 +140,15 @@ describeDatabase('Admin read APIs with real PostgreSQL', () => {
         "SELECT * FROM permissions WHERE name IN ('DASHBOARD_READ', 'GAME_BRIDGE_READ')",
       ),
     ).toEqual([]);
-    expect(await database.runMigrations()).toHaveLength(18);
+    expect(await database.runMigrations()).toHaveLength(21);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
       .overrideProvider(DataSource)
       .useValue(database)
+      // This suite drives the command lifecycle by hand.
+      .overrideProvider(GameCommandWorker)
+      .useValue({})
       .overrideProvider(BridgeClock)
       .useValue({ now: () => now })
       .overrideProvider(ConfigService)
@@ -195,8 +202,8 @@ describeDatabase('Admin read APIs with real PostgreSQL', () => {
     expect(
       (await database.driver.createSchemaBuilder().log()).upQueries,
     ).toEqual([]);
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(22);
-    expect(await database.query('SELECT * FROM permissions')).toHaveLength(36);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(25);
+    expect(await database.query('SELECT * FROM permissions')).toHaveLength(37);
   });
   it.each(Object.values(R))(
     'persists both explicit read grants and permits all six GET APIs for %s',
@@ -402,6 +409,8 @@ describeDatabase('Admin read APIs with real PostgreSQL', () => {
       protocolVersion: '1',
       connectedAt: now.toISOString(),
       lastHeartbeatAt: now.toISOString(),
+      gameProcessState: null,
+      skseReady: null,
     });
   });
   it.each([

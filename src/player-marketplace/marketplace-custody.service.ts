@@ -2,13 +2,16 @@ import { Injectable } from '@nestjs/common';
 import { isUUID } from 'class-validator';
 import { QueryFailedError } from 'typeorm';
 import { AuditAction } from '../audit/audit.types.js';
+import type { AgentEventHook } from '../actors/agent-event.contracts.js';
 import { systemActor, SystemSource } from '../actors/actor.contracts.js';
 import { externalId } from '../game-bridge/command-validation.js';
+import type { PlayerMarketplaceItemRelease } from './entities/player-marketplace-item-release.entity.js';
 import type { PlayerMarketplaceCustodyEvent } from './entities/player-marketplace-custody-event.entity.js';
 import { PlayerMarketplaceService } from './player-marketplace.service.js';
 import {
   CustodyOutcome,
   ListingStatus,
+  ReleaseReason,
 } from './player-marketplace.contracts.js';
 import type { CustodyResult } from './player-marketplace.contracts.js';
 
@@ -27,17 +30,24 @@ const finalStatus = (outcome: CustodyOutcome) =>
 // item durably, can keep it in custody, can return it to the seller if the
 // listing is cancelled and can deliver it to a buyer in a retryable way.
 // Only then does the listing become ACTIVE (purchasable). FAILED ends a
-// PENDING_CUSTODY listing. A listing that is no longer PENDING_CUSTODY
-// (e.g. cancelled meanwhile) is refused: the Agent must return the item.
+// PENDING_CUSTODY listing. Late acquired custody of CANCELLED/FAILED
+// listings creates a persistent return obligation without reactivating them.
 @Injectable()
 export class MarketplaceCustodyService {
   constructor(private readonly market: PlayerMarketplaceService) {}
+  // gameServerId is the authenticated Agent session's server (Etapa 11.4):
+  // an entity of another server is SERVER_MISMATCH and nothing changes.
+  // Item, quantity, parties and price are read from the listing; the Agent
+  // only names the work and the outcome. onAccepted runs in this
+  // transaction before an accepted outcome commits.
   async confirmFromAgent(
     input: {
+      gameServerId: string;
       listingId: string;
       custodyEventId: string;
       outcome: CustodyOutcome;
     },
+    onAccepted?: AgentEventHook,
     retried = false,
   ): Promise<CustodyResult> {
     let eventId: string;
@@ -47,6 +57,7 @@ export class MarketplaceCustodyService {
       return reject('INVALID_INPUT');
     }
     if (
+      !isUUID(input.gameServerId) ||
       !isUUID(input.listingId) ||
       !Object.values(CustodyOutcome).includes(input.outcome)
     )
@@ -60,6 +71,8 @@ export class MarketplaceCustodyService {
           lock: { mode: 'pessimistic_write' },
         });
         if (!listing) return reject('LISTING_NOT_FOUND');
+        if (listing.gameServerId !== input.gameServerId)
+          return reject('SERVER_MISMATCH');
         const custody = manager.getRepository<PlayerMarketplaceCustodyEvent>(
           'PlayerMarketplaceCustodyEvent',
         );
@@ -67,11 +80,61 @@ export class MarketplaceCustodyService {
           gameServerId: listing.gameServerId,
           custodyEventId: eventId,
         });
-        if (existing)
-          return existing.listingId === listing.id &&
-            existing.outcome === input.outcome
-            ? { outcome: 'ALREADY_APPLIED', status: finalStatus(input.outcome) }
-            : reject('EVENT_CONFLICT');
+        if (
+          existing &&
+          (existing.listingId !== listing.id ||
+            existing.outcome !== input.outcome)
+        )
+          return reject('EVENT_CONFLICT');
+        if (
+          input.outcome === CustodyOutcome.CUSTODIED &&
+          (listing.status === ListingStatus.CANCELLED ||
+            listing.status === ListingStatus.FAILED)
+        ) {
+          const releases = manager.getRepository<PlayerMarketplaceItemRelease>(
+            'PlayerMarketplaceItemRelease',
+          );
+          const release = await releases.findOneBy({ listingId: listing.id });
+          if (!release) {
+            // Listing lock serializes equivalent eventIds; the UNIQUE listing
+            // constraint also protects the obligation independently of receipts.
+            await this.market.createRelease(
+              manager,
+              listing,
+              listing.status === ListingStatus.CANCELLED
+                ? ReleaseReason.CANCELLED
+                : ReleaseReason.PURCHASE_FAILED,
+            );
+            await this.market.record(
+              manager,
+              agent,
+              AuditAction.PLAYER_MARKETPLACE_LISTING_CUSTODIED,
+              listing,
+              { custodyEventId: eventId, lateCustody: true },
+            );
+          }
+          // Preserve existing append-only custody history (including FAILED).
+          // For a cancelled pending listing, record the acquired custody too.
+          if (!(await custody.findOneBy({ listingId: listing.id })))
+            await custody.insert({
+              gameServerId: listing.gameServerId,
+              custodyEventId: eventId,
+              listingId: listing.id,
+              outcome: input.outcome,
+            });
+          await onAccepted?.(manager);
+          return {
+            outcome: release ? 'ALREADY_APPLIED' : 'APPLIED',
+            status: listing.status,
+          };
+        }
+        if (existing) {
+          await onAccepted?.(manager);
+          return {
+            outcome: 'ALREADY_APPLIED',
+            status: finalStatus(input.outcome),
+          };
+        }
         if (listing.status !== ListingStatus.PENDING_CUSTODY)
           return reject('LISTING_NOT_PENDING');
         const status = finalStatus(input.outcome);
@@ -108,6 +171,7 @@ export class MarketplaceCustodyService {
             saved.sellerCharacterId,
           ]),
         });
+        await onAccepted?.(manager);
         return { outcome: 'APPLIED', status };
       });
     } catch (error) {
@@ -117,7 +181,7 @@ export class MarketplaceCustodyService {
         error instanceof QueryFailedError &&
         (error.driverError as { code?: string }).code === '23505'
       )
-        return this.confirmFromAgent(input, true);
+        return this.confirmFromAgent(input, onAccepted, true);
       throw error;
     }
   }

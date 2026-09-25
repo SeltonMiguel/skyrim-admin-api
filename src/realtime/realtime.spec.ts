@@ -2,12 +2,21 @@ import { jest } from '@jest/globals';
 import { globSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import type { WebSocket } from 'ws';
-import { RealtimeEventBus } from '../realtime-events/realtime-event-bus.js';
-import type { RealtimeEnvelope } from '../realtime-events/realtime-event-bus.js';
+import {
+  REALTIME_EVENT_TYPES,
+  RealtimeEventBus,
+} from '../realtime-events/realtime-event-bus.js';
+import type {
+  RealtimeEnvelope,
+  RealtimeRecipients,
+} from '../realtime-events/realtime-event-bus.js';
+import { Permission } from '../rbac/permissions.js';
 import { MAX_GROUP_MEMBERS } from '../player-groups/player-group.contracts.js';
 import {
   connectionKey,
+  MAX_REALTIME_BUFFERED_BYTES,
   RealtimeConnectionRegistry,
+  sendFrame,
 } from './realtime-connection.registry.js';
 import { parseAuthFrame } from './realtime.gateway.js';
 
@@ -52,6 +61,38 @@ describe('Realtime event bus', () => {
     bus.publish('GROUP_DISBANDED', {}, { playerIds: ['a'] });
     expect(seen).toHaveLength(1);
   });
+  it('never lets a publication cross surfaces', () => {
+    const bus = new RealtimeEventBus();
+    const seen: RealtimeRecipients[] = [];
+    bus.subscribe((_, recipients) => seen.push(recipients));
+    bus.publish(
+      'STAFF_GAME_SERVER_UPDATED',
+      { gameServerId: 's' },
+      { staffPermission: Permission.GAME_BRIDGE_READ },
+    );
+    expect(seen).toEqual([
+      { playerIds: [], staffPermission: Permission.GAME_BRIDGE_READ },
+    ]);
+    // A Staff type to players, or a Player type to Staff, is dropped.
+    bus.publish('STAFF_GAME_OPERATION_UPDATED', {}, { playerIds: ['p'] });
+    bus.publish(
+      'PLAYER_GAME_OPERATION_UPDATED',
+      {},
+      { staffPermission: Permission.GAME_BRIDGE_READ },
+    );
+    bus.publish('CHAT_MESSAGE_CREATED', {}, { playerIds: ['p'] });
+    expect(seen).toEqual([
+      { playerIds: [], staffPermission: Permission.GAME_BRIDGE_READ },
+      { playerIds: ['p'], staffPermission: null },
+    ]);
+  });
+  it('declares exactly three Staff wake-ups', () => {
+    expect(REALTIME_EVENT_TYPES.filter((t) => t.startsWith('STAFF_'))).toEqual([
+      'STAFF_GAME_SERVER_UPDATED',
+      'STAFF_GAME_OPERATION_UPDATED',
+      'STAFF_SERVER_CONTROL_UPDATED',
+    ]);
+  });
 });
 
 describe('Realtime connection registry', () => {
@@ -73,6 +114,34 @@ describe('Realtime connection registry', () => {
     registry.remove(key, two);
     expect(registry.count(key)).toBe(0);
     expect(registry.count()).toBe(1);
+    expect(registry.surface('STAFF')).toHaveLength(1);
+    expect(registry.surface('PLAYER')).toHaveLength(0);
+  });
+  it('drops a slow consumer instead of buffering without bound', () => {
+    const socket = (bufferedAmount: number, readyState: 1 | 3 = 1) => ({
+      readyState,
+      OPEN: 1 as const,
+      bufferedAmount,
+      send: jest.fn(),
+      terminate: jest.fn(),
+    });
+    const fast = socket(MAX_REALTIME_BUFFERED_BYTES);
+    expect(sendFrame(fast, 'f')).toBe(true);
+    expect(fast.send).toHaveBeenCalledWith('f');
+    const slow = socket(MAX_REALTIME_BUFFERED_BYTES + 1);
+    expect(sendFrame(slow, 'f')).toBe(false);
+    expect(slow.send).not.toHaveBeenCalled();
+    expect(slow.terminate).toHaveBeenCalledTimes(1);
+    const closed = socket(0, 3);
+    expect(sendFrame(closed, 'f')).toBe(false);
+    expect(closed.send).not.toHaveBeenCalled();
+    const broken = {
+      ...socket(0),
+      send: jest.fn(() => {
+        throw new Error('broken');
+      }),
+    };
+    expect(sendFrame(broken, 'f')).toBe(false);
   });
 });
 

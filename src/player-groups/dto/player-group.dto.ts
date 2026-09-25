@@ -65,6 +65,14 @@ export class GroupDto {
   members: GroupMemberDto[];
   @ApiProperty({ format: 'date-time' }) createdAt: Date;
 }
+export class CharacterGroupDto {
+  @ApiProperty({
+    type: GroupDto,
+    nullable: true,
+    description: 'null when the character is in no active group.',
+  })
+  group: GroupDto | null;
+}
 export class GroupInviteDto {
   @ApiProperty({ format: 'uuid' }) inviteId: string;
   @ApiProperty({ format: 'uuid' }) groupId: string;

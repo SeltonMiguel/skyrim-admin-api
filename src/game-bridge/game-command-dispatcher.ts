@@ -10,7 +10,7 @@ import { GameCommand } from './entities/game-command.entity.js';
 import { GameConnectionService } from './game-connection.service.js';
 import { GameCommandStore } from './game-command-store.js';
 import { GameGateway } from './game-gateway.js';
-import type { CommandEnvelope } from './command-contract.js';
+import type { CommandEnvelope, CommandType } from './command-contract.js';
 import type { GatewayConnection, TransportAcceptance } from './game-gateway.js';
 
 export const GATEWAY_SEND_TIMEOUT_MS = 1000;
@@ -200,6 +200,83 @@ export class GameCommandDispatcher {
   }
   async retryTimedOutDispatches(): Promise<GameCommand[]> {
     return this.dispatchDue([CommandStatus.DISPATCHED]);
+  }
+  // Commands occupying the server's Agent: DISPATCHED, ACKNOWLEDGED, or
+  // PENDING with a live reservation. Read from the database, so the count
+  // survives restarts and never depends on in-memory bookkeeping.
+  async inFlight(gameServerId: string): Promise<number> {
+    return this.database
+      .getRepository<GameCommand>('GameCommand')
+      .createQueryBuilder('command')
+      .where('command.gameServerId = :gameServerId', { gameServerId })
+      .andWhere(
+        '(command.status IN (:...flying) OR (command.status = :pending AND command.dispatchLeaseId IS NOT NULL))',
+        {
+          flying: [CommandStatus.DISPATCHED, CommandStatus.ACKNOWLEDGED],
+          pending: CommandStatus.PENDING,
+        },
+      )
+      .getCount();
+  }
+  // Dispatches the due commands of one server whose type the caller can
+  // deliver: every due DISPATCHED retry (already in flight) and at most
+  // `pendingLimit` new PENDING ones, oldest first. The caller decides
+  // eligibility (session, runtime, capability) before any reservation, so
+  // an ineligible server never consumes attempts.
+  async dispatchEligible(
+    gameServerId: string,
+    types: readonly CommandType[],
+    pendingLimit: number,
+  ): Promise<GameCommand[]> {
+    if (!types.length) return [];
+    const due = (status: CommandStatus, take: number) =>
+      take <= 0
+        ? Promise.resolve([] as GameCommand[])
+        : this.database
+            .getRepository<GameCommand>('GameCommand')
+            .createQueryBuilder('command')
+            .where('command.gameServerId = :gameServerId', { gameServerId })
+            .andWhere('command.status = :status', { status })
+            .andWhere('command.type IN (:...types)', { types })
+            .andWhere(
+              '(command.ackDeadlineAt IS NULL OR command.ackDeadlineAt <= :now)',
+              { now: this.clock.now() },
+            )
+            .andWhere(
+              '(command.dispatchLeaseExpiresAt IS NULL OR command.dispatchLeaseExpiresAt <= :now)',
+              { now: this.clock.now() },
+            )
+            .orderBy('command.createdAt', 'ASC')
+            .addOrderBy('command.id', 'ASC')
+            .take(take)
+            .getMany();
+    const commands = [
+      ...(await due(CommandStatus.DISPATCHED, 100)),
+      ...(await due(CommandStatus.PENDING, Math.min(pendingLimit, 100))),
+    ];
+    const results: GameCommand[] = [];
+    for (const command of commands)
+      results.push(await this.dispatch(command.id));
+    return results;
+  }
+  // PENDING commands of a server whose type the caller cannot deliver
+  // (observability only; nothing is reserved).
+  async blockedPending(
+    gameServerId: string,
+    types: readonly CommandType[],
+    limit = 20,
+  ): Promise<Pick<GameCommand, 'id' | 'type'>[]> {
+    const query = this.database
+      .getRepository<GameCommand>('GameCommand')
+      .createQueryBuilder('command')
+      .select(['command.id', 'command.type'])
+      .where('command.gameServerId = :gameServerId', { gameServerId })
+      .andWhere('command.status = :pending', {
+        pending: CommandStatus.PENDING,
+      });
+    if (types.length)
+      query.andWhere('command.type NOT IN (:...types)', { types });
+    return query.orderBy('command.createdAt', 'ASC').take(limit).getMany();
   }
   private async dispatchDue(statuses: CommandStatus[]): Promise<GameCommand[]> {
     const commands = await this.database

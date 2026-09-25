@@ -1,3 +1,4 @@
+import { RealtimeEventsModule } from '../realtime-events/realtime-events.module.js';
 import { Module } from '@nestjs/common';
 import { AuditModule } from '../audit/audit.module.js';
 import { PlayerAuthModule } from '../player-auth/player-auth.module.js';
@@ -10,7 +11,7 @@ import { PlayerCharacterDirectoryService } from './player-character-directory.se
 // CharacterLinkService.confirmFromAgent is exported for the Etapa 11 Agent
 // transport; there is no Agent endpoint and no GameCommand in this module.
 @Module({
-  imports: [AuditModule, PlayerAuthModule],
+  imports: [RealtimeEventsModule, AuditModule, PlayerAuthModule],
   providers: [
     CharacterLinkService,
     CharacterOwnershipService,

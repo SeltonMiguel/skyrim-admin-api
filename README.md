@@ -293,7 +293,10 @@ Health é derivado pelo `BridgeClock` e pelo timeout de heartbeat existente:
 com heartbeat ainda válido; `STALE` significa CONNECTED com heartbeat vencido
 (inclusive no instante exato do timeout); `OFFLINE` significa ausência de CONNECTED.
 Detectar STALE não atualiza a conexão. `currentConnection` é a conexão CONNECTED,
-ou null, inclusive quando há apenas histórico de conexões encerradas.
+ou null, inclusive quando há apenas histórico de conexões encerradas. Desde a
+11.6 a conexão traz também `gameProcessState` e `skseReady` do último runtime
+reportado pelo Host Agent (null em sessões sem o transporte do Agent); nunca a
+credencial nem as capabilities.
 
 Listagens retornam `{ items, total, page, limit, totalPages }`, com page=1,
 limit=20, máximo 100 por página e page até 1000000, como Audit. Total zero implica
@@ -459,10 +462,11 @@ A Etapa 09 aceita solicitações `SERVER_START`, `SERVER_PAUSE` e `SERVER_RESTAR
 em `/api/v1/game-servers/:serverId/control/{start|pause|restart}`, somente para
 COORDINATOR e DEV (permissions existentes desde a Etapa 01). Não usa o
 GameCommandBus: as operações ficam em `server_control_operations` e seguem por um
-`ServerControlGateway` abstrato, destinado ao futuro Agent. Em produção o gateway é
-Disconnected, então a solicitação recebe 202 e termina `FAILED/AGENT_UNAVAILABLE`,
-sem sucesso simulado. Idempotency-Key obrigatório, Audit atômico e dispatch
-at-most-once após o commit; detalhe em `/api/v1/server-control-operations/:id`.
+`ServerControlGateway`. Desde a Subetapa 11.3 o gateway de produção é o Host Agent
+(ver abaixo); sem Agent elegível a operação fica PENDING e termina
+`FAILED/DISPATCH_EXPIRED`, sem sucesso simulado. Idempotency-Key obrigatório,
+Audit atômico e dispatch at-most-once após o commit; detalhe em
+`/api/v1/server-control-operations/:id`.
 
 Configuration de servidor não foi implementada: o modelo atual não tem campos
 administráveis além do registro (`code`, `name`, `enabled`). A migration
@@ -612,3 +616,86 @@ revoga direitos internamente (STAFF/SYSTEM, idempotente, auditado). O player só
 Não há pagamento, checkout nem entrega pelo Agent (Etapa 11). A migration
 `1790010000000-VipEntitlements` completa vinte e duas migrations.
 Consulte [arquitetura, decisões e roadmap da Etapa 10](docs/player-services.md).
+
+## Integração (Etapa 11)
+
+A Subetapa 11.0 definiu os contratos de integração: inventário do que espera o
+Agent, transporte, credencial, envelope versionado, garantias de entrega, matriz
+Electron, failure matrix e roadmap 11.1–11.6, em
+[arquitetura de integração](docs/integration-architecture.md).
+
+A Subetapa 11.1 implementa o transporte e a autenticação do **Host Agent**:
+
+- WebSocket próprio em `/api/v1/agent`, separado do realtime Player/Staff. Um
+  único roteador de upgrade decide a superfície; outro path ou query string → 400.
+- Credencial por GameServer: segredo de 256 bits gerado pelo backend, exibido uma
+  vez, armazenado só como SHA-256; até duas ACTIVE (rotação); revogação fecha a
+  sessão na hora. Staff API em
+  `/api/v1/admin/game-servers/:gameServerId/agent-credentials` (GET, POST e
+  `POST …/:credentialId/revoke`), permission `GAME_AGENT_CREDENTIAL_MANAGE`
+  (COORDINATOR e DEV), com Audit.
+- Primeiro frame `HELLO` (protocolVersion `"1"`), resposta `AUTHENTICATED`,
+  `HEARTBEAT` com estado do processo e prontidão do SKSE; uma sessão por servidor
+  (a nova substitui a anterior), timeout de heartbeat e reconciliação no startup.
+  Agent conectado não significa jogo pronto.
+
+A Subetapa 11.2 liga os GameCommands ao Host Agent: um worker despacha os
+commands PENDING só para Agents com runtime pronto (processo RUNNING e SKSE pronto)
+e capability do tipo, sem gastar tentativas enquanto o Agent não é elegível;
+mutations exigem a capability de journal `COMMAND_DEDUP_V1`. O Agent confirma a
+tentativa com `COMMAND_ACK` e devolve `COMMAND_RESULT`, aceito mesmo depois de
+reconexão; `UNCERTAIN` vira TIMEOUT/EXECUTION_UNCERTAIN. Server Control real e
+eventos de domínio ainda recebiam `NOT_IMPLEMENTED` naquela etapa. Nenhuma
+migration nova na 11.2.
+
+A Subetapa 11.3 liga o Server Control ao Host Agent com garantia **at-most-once**:
+a operação é enviada no máximo uma vez (`SERVER_CONTROL` com `notAfter`) para uma
+sessão com `SERVER_CONTROL_V1` e a capability da ação, mesmo com o Skyrim parado e
+sem SKSE; nunca há retry. O `SERVER_CONTROL_RESULT` é aceito também depois de
+reconexão. Sem resultado até o prazo a operação termina `UNCERTAIN` (terminal,
+"não sabemos"), distinta de `FAILED` ("sem efeito"). No máximo uma operação em voo
+por servidor (409). A migration `1790030000000-ServerControlTransport` eleva o total
+para vinte e quatro.
+
+A Subetapa 11.4 liga os domínios de gameplay ao Host Agent. `DOMAIN_EVENT`
+(catálogo fechado: ownership, XP de profissão, settlement de trade, custódia,
+settlement e devolução do marketplace) é deduplicado por `eventId` num receipt
+gravado na mesma transação do efeito e respondido com `DOMAIN_EVENT_ACK` só depois
+do commit. `WORK_SYNC`/`WORK_ITEMS` devolvem, paginado, o trabalho físico pendente
+do servidor da sessão, sempre relido das tabelas de domínio; o servidor vem sempre
+da sessão, e trabalho de outro servidor fecha a sessão (4010). Entitlements VIP
+CHARACTER são entregues por GameCommands tipados `SYSTEM:VIP_DELIVERY`; PLAYER nunca
+escolhe character. A migration `1790040000000-AgentDomainEvents` eleva o total para
+vinte e cinco.
+
+| Variável | Padrão | Regra |
+| --- | --- | --- |
+| `AGENT_AUTH_TIMEOUT_MS` | 5000 | 100–60000; prazo para o HELLO |
+| `AGENT_HEARTBEAT_INTERVAL` | `10s` | intervalo anunciado ao Agent |
+| `AGENT_HEARTBEAT_TIMEOUT` | `30s` | maior que o intervalo e ≤ `GAME_BRIDGE_HEARTBEAT_TIMEOUT_MS` |
+| `AGENT_MAX_IN_FLIGHT_COMMANDS` | 32 | 1–1000; GameCommands em voo por servidor, contados no banco |
+| `AGENT_MESSAGE_RATE_LIMIT_COUNT` | 200 | 10–100000 frames autenticados por sessão e janela |
+| `AGENT_MESSAGE_RATE_LIMIT_WINDOW_MS` | 10000 | 100–3600000; excesso fecha com 4012 |
+| `GAME_COMMAND_WORKER_INTERVAL_MS` | 500 | 50–60000; cadência do worker |
+| `GAME_COMMAND_PENDING_TIMEOUT_MS` | 60000 | 1000–86400000; PENDING nunca reservado vira FAILED/DISPATCH_EXPIRED |
+| `SERVER_CONTROL_PENDING_TIMEOUT_MS` | 30000 | 500–3600000; operação nunca enviada vira FAILED/DISPATCH_EXPIRED |
+| `SERVER_CONTROL_DELIVERY_WINDOW_MS` | 10000 | 100–600000; `notAfter` = claim + janela |
+| `SERVER_CONTROL_RESULT_TIMEOUT_MS` | 300000 | 500–3600000, maior que a janela; sem resultado vira UNCERTAIN |
+| `SERVER_CONTROL_WORKER_INTERVAL_MS` | 1000 | 50–60000; cadência do worker de Server Control |
+| `AGENT_WORK_PUSH_INTERVAL_MS` | 2000 | 100–60000; push best-effort de trabalho novo ao Agent |
+| `VIP_DELIVERY_WORKER_INTERVAL_MS` | 2000 | 50–60000; criação/reconciliação das entregas VIP |
+
+Contrato do painel Player e fronteira local com o Launcher: [Electron integration](docs/electron-integration.md).
+
+A Subetapa 11.6 fecha a Etapa 11. O realtime Staff passa a entregar três
+wake-ups pequenos, publicados depois do commit e filtrados pela permissão do GET
+correspondente, revalidada a cada entrega: `STAFF_GAME_SERVER_UPDATED` (mudança
+real de Agent/runtime), `STAFF_GAME_OPERATION_UPDATED` (GameCommand Staff
+terminal) e `STAFF_SERVER_CONTROL_UPDATED` (SUCCEEDED/FAILED/UNCERTAIN). Para
+cold start sem realtime foram adicionadas três leituras: runtime do Agent em
+`GET /api/v1/game-servers/:id`, `GET /api/v1/game-servers/:serverId/control/operations`
+e `GET /api/v1/player/me/characters/:characterLinkId/group`. Socket realtime com
+mais de 256 KiB não lidos é derrubado. Nenhuma migration nova (vinte e cinco) e
+nenhuma variável de ambiente nova. Contrato do Admin Web:
+[Admin Web integration](docs/admin-web-integration.md); matriz de aceitação da
+Etapa 11 em [Integration architecture §25](docs/integration-architecture.md).

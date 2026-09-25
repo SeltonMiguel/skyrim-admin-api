@@ -40,6 +40,23 @@ export enum MarketSettlementOutcome {
   SETTLED = 'SETTLED',
   FAILED = 'FAILED',
 }
+// Physical return of a custodied item to the seller (Etapa 11.4): created
+// with the transition that ends a listing whose item the Agent holds
+// (cancel of an ACTIVE listing, failed purchase settlement) and tracked
+// until the Agent reports it. A custodied item is never forgotten.
+export enum ReleaseStatus {
+  PENDING = 'PENDING',
+  COMPLETED = 'COMPLETED',
+  FAILED = 'FAILED',
+}
+export enum ReleaseReason {
+  CANCELLED = 'CANCELLED',
+  PURCHASE_FAILED = 'PURCHASE_FAILED',
+}
+export enum ReleaseOutcome {
+  RELEASED = 'RELEASED',
+  FAILED = 'FAILED',
+}
 // Provisional limits, also PostgreSQL CHECKs. No free listings; the price
 // ceiling is the ledger's per-character balance ceiling.
 export const MAX_LISTING_QUANTITY = 10_000;
@@ -51,16 +68,32 @@ type Rejected<R extends string> = {
   outcome: 'REJECTED';
   reason: R;
 };
+// SERVER_MISMATCH: the entity belongs to another GameServer than the
+// authenticated Agent session (Etapa 11.4); nothing changes.
 export type CustodyResult =
   | {
       outcome: 'APPLIED' | 'ALREADY_APPLIED';
-      status: ListingStatus.ACTIVE | ListingStatus.FAILED;
+      status:
+        ListingStatus.ACTIVE | ListingStatus.FAILED | ListingStatus.CANCELLED;
     }
   | Rejected<
       | 'INVALID_INPUT'
       | 'LISTING_NOT_FOUND'
       | 'LISTING_NOT_PENDING'
       | 'EVENT_CONFLICT'
+      | 'SERVER_MISMATCH'
+    >;
+export type ReleaseResult =
+  | {
+      outcome: 'APPLIED' | 'ALREADY_APPLIED';
+      status: ReleaseStatus.COMPLETED | ReleaseStatus.FAILED;
+    }
+  | Rejected<
+      | 'INVALID_INPUT'
+      | 'RELEASE_NOT_FOUND'
+      | 'RELEASE_NOT_PENDING'
+      | 'EVENT_CONFLICT'
+      | 'SERVER_MISMATCH'
     >;
 export type MarketSettlementResult =
   | {
@@ -72,6 +105,7 @@ export type MarketSettlementResult =
       | 'PURCHASE_NOT_FOUND'
       | 'PURCHASE_NOT_AWAITING'
       | 'EVENT_CONFLICT'
+      | 'SERVER_MISMATCH'
       | 'LEDGER_REJECTED'
     > & {
       // Internal detail for LEDGER_REJECTED (e.g. BALANCE_LIMIT).

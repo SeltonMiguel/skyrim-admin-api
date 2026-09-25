@@ -1,3 +1,4 @@
+import { RealtimeEventBus } from '../../src/realtime-events/realtime-event-bus.js';
 import { randomUUID } from 'node:crypto';
 import { ConfigService } from '@nestjs/config';
 import type { DataSource, EntityManager } from 'typeorm';
@@ -145,7 +146,12 @@ export function gameFixture() {
     clock,
     config,
   );
-  const store = new GameCommandStore(database, servers, clock);
+  const store = new GameCommandStore(
+    database,
+    servers,
+    clock,
+    new RealtimeEventBus(),
+  );
   const gateway = new MockGameGateway();
   const context = new RequestContext();
   const bus = new GameCommandBus(database, servers, context, clock);

@@ -294,6 +294,31 @@ export class PlayerGroupService {
     if (!members.some((m) => this.ownedBy(m, actor))) throw groupNotFound();
     return this.view(group, members, actor);
   }
+  // The active group of an own VERIFIED character, else { group: null };
+  // unknown, foreign, PENDING and REVOKED links are the same 404.
+  async forCharacter(
+    actor: PlayerActor,
+    characterLinkId: string,
+  ): Promise<{ group: GroupDto | null }> {
+    const manager = this.database.manager;
+    const link = await this.ownLink(manager, actor, characterLinkId);
+    const membership = await this.members(manager).findOneBy({
+      playerCharacterId: link.id,
+      leftAt: IsNull(),
+    });
+    if (!membership) return { group: null };
+    const group = await manager
+      .getRepository<PlayerGroup>('PlayerGroup')
+      .findOneBy({ id: membership.groupId, status: GroupStatus.ACTIVE });
+    if (!group) return { group: null };
+    return {
+      group: this.view(
+        group,
+        await this.activeMembers(manager, group.id),
+        actor,
+      ),
+    };
+  }
   // Repeating a pending invite returns it unchanged (no Audit, no event).
   async invite(
     actor: PlayerActor,

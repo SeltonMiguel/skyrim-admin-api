@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { DataSource } from 'typeorm';
 import request from 'supertest';
 import type { App } from 'supertest/types.js';
+import { GameCommandWorker } from '../src/game-agent/game-command.worker.js';
 import { compiledDatabaseArtifacts } from './compiled-database.js';
 import { loadEnvironment } from '../src/config/environment.js';
 import { createDatabaseOptions } from '../src/database/database.options.js';
@@ -95,8 +96,11 @@ describeDatabase(
         extra: { ...options.extra, options: `-c search_path=${schema},public` },
       });
       await database.initialize();
-      expect(await database.runMigrations()).toHaveLength(22);
+      expect(await database.runMigrations()).toHaveLength(25);
       // Write pre-10.2 history, then re-apply the migrations over it.
+      await database.undoLastMigration(); // Etapa 11.4 Agent Domain Events
+      await database.undoLastMigration(); // Etapa 11.3 Server Control Transport
+      await database.undoLastMigration(); // Etapa 11.1 Game Agent Transport
       await database.undoLastMigration(); // Etapa 10.17 VIP Entitlements
       await database.undoLastMigration(); // Etapa 10.16 Player Settings
       await database.undoLastMigration(); // Etapa 10.15 Player Chat
@@ -136,12 +140,15 @@ describeDatabase(
           randomUUID(),
         ],
       );
-      expect(await database.runMigrations()).toHaveLength(12);
+      expect(await database.runMigrations()).toHaveLength(15);
       expect(await database.runMigrations()).toHaveLength(0);
       const { AppModule } = await import('../src/app.module.js');
       const module = await Test.createTestingModule({ imports: [AppModule] })
         .overrideProvider(DataSource)
         .useValue(database)
+        // This suite drives the command lifecycle by hand.
+        .overrideProvider(GameCommandWorker)
+        .useValue({})
         .compile();
       app = module.createNestApplication(new AppExpressAdapter());
       app.useLogger(false);
@@ -675,7 +682,10 @@ describeDatabase(
         { ...ping(), idempotencyKey: randomUUID() },
         systemActor(SystemSource.AGENT),
       );
-      // 10.17, 10.16, 10.15, 10.14, 10.13, 10.12, 10.9, 10.8, 10.7, 10.4 and 10.3 revert cleanly; 10.2 then refuses to drop PLAYER/SYSTEM data.
+      // 11.3, 11.1, 10.17, 10.16, 10.15, 10.14, 10.13, 10.12, 10.9, 10.8, 10.7, 10.4 and 10.3 revert cleanly; 10.2 then refuses to drop PLAYER/SYSTEM data.
+      await database.undoLastMigration(); // Etapa 11.4 Agent Domain Events
+      await database.undoLastMigration(); // Etapa 11.3 Server Control Transport
+      await database.undoLastMigration();
       await database.undoLastMigration();
       await database.undoLastMigration();
       await database.undoLastMigration();
@@ -688,7 +698,7 @@ describeDatabase(
       await database.undoLastMigration();
       await database.undoLastMigration();
       await expect(database.undoLastMigration()).rejects.toThrow();
-      expect(await database.runMigrations()).toHaveLength(11);
+      expect(await database.runMigrations()).toHaveLength(14);
       expect(await database.showMigrations()).toBe(false);
       expect(
         await commands().countBy({ actorType: ActorType.SYSTEM }),

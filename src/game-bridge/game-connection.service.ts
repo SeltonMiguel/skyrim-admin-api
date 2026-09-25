@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Optional,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
@@ -10,7 +11,32 @@ import type { ApplicationConfig } from '../config/environment.js';
 import { BridgeClock } from './bridge-clock.js';
 import { identifier, PROTOCOL_VERSION, uuid } from './command-contract.js';
 import { GameServerService } from './game-server.service.js';
+import {
+  connectionFresh,
+  GameServerStatusNotifier,
+} from './game-server-status.notifier.js';
 import { GameConnection } from './entities/game-connection.entity.js';
+import type { DisconnectReason } from './entities/game-connection.entity.js';
+import type { GameProcessState } from '../game-agent/agent-protocol.contracts.js';
+
+export interface RuntimeSnapshot {
+  gameProcessState: GameProcessState;
+  skseReady: boolean;
+  capabilities?: readonly string[];
+}
+export interface ConnectInput {
+  gameServerId: string;
+  externalConnectionId: string;
+  bridgeVersion?: string;
+  protocolVersion?: typeof PROTOCOL_VERSION;
+  // Host Agent session data; absent for internal (transport-less) callers.
+  agent?: {
+    credentialId: string;
+    capabilities: readonly string[];
+    gameProcessState: GameProcessState;
+    skseReady: boolean;
+  } | null;
+}
 
 @Injectable()
 export class GameConnectionService {
@@ -20,6 +46,8 @@ export class GameConnectionService {
     private readonly servers: GameServerService,
     private readonly clock: BridgeClock,
     config: ConfigService<{ application: ApplicationConfig }, true>,
+    // Staff wake-up after commit (11.6); absent in transport-less fixtures.
+    @Optional() private readonly status?: GameServerStatusNotifier,
   ) {
     this.timeout = config.get('application', {
       infer: true,
@@ -29,11 +57,11 @@ export class GameConnectionService {
     connection: GameConnection | null,
     now = this.clock.now(),
   ): connection is GameConnection {
-    return (
-      !!connection &&
-      connection.status === 'CONNECTED' &&
-      connection.lastHeartbeatAt.getTime() + this.timeout > now.getTime()
-    );
+    return connectionFresh(connection, now, this.timeout);
+  }
+  // Signals a possible operational change of the server after a commit.
+  private notify(serverId: string): void {
+    void this.status?.changed(serverId);
   }
   active(serverId: string, manager: EntityManager = this.database.manager) {
     return manager
@@ -44,64 +72,84 @@ export class GameConnectionService {
     const server = await this.servers.get(serverId);
     return server.enabled && this.healthy(await this.active(serverId));
   }
-  async connect(input: {
-    gameServerId: string;
-    externalConnectionId: string;
-    bridgeVersion?: string;
-    protocolVersion?: typeof PROTOCOL_VERSION;
-  }): Promise<GameConnection> {
+  async connect(input: ConnectInput): Promise<GameConnection> {
+    const connection = await this.database.transaction((manager) =>
+      this.connectInTransaction(manager, input),
+    );
+    this.notify(input.gameServerId);
+    return connection;
+  }
+  // Caller owns the short transaction (the Host Agent HELLO also verifies its
+  // credential under the same server lock). The previous CONNECTED session of
+  // the server is closed as SUPERSEDED; the partial unique index keeps one.
+  async connectInTransaction(
+    manager: EntityManager,
+    input: ConnectInput,
+  ): Promise<GameConnection> {
     const {
       gameServerId,
       externalConnectionId,
       bridgeVersion = null,
       protocolVersion = PROTOCOL_VERSION,
+      agent = null,
     } = input;
     identifier(externalConnectionId, 'external connection ID');
     if (bridgeVersion !== null) identifier(bridgeVersion, 'bridge version', 64);
     if (protocolVersion !== PROTOCOL_VERSION)
       throw new BadRequestException('Unsupported protocol version');
-    return this.database.transaction(async (manager) => {
-      const server = await this.servers.get(gameServerId, manager, true);
-      if (!server.enabled) throw new ConflictException('Game server disabled');
-      const repository =
-        manager.getRepository<GameConnection>('GameConnection');
-      const previous = await repository.findOneBy({
+    if (agent) uuid(agent.credentialId);
+    const server = await this.servers.get(gameServerId, manager, true);
+    if (!server.enabled) throw new ConflictException('Game server disabled');
+    const repository = manager.getRepository<GameConnection>('GameConnection');
+    const previous = await repository.findOneBy({
+      gameServerId,
+      externalConnectionId,
+    });
+    if (previous) {
+      if (this.healthy(previous)) return previous;
+      throw new ConflictException('Connection ID cannot be reused');
+    }
+    const now = this.clock.now();
+    await repository.update(
+      { gameServerId, status: 'CONNECTED' },
+      {
+        status: 'DISCONNECTED',
+        disconnectedAt: now,
+        disconnectReason: 'SUPERSEDED',
+      },
+    );
+    return repository.save(
+      repository.create({
+        id: randomUUID(),
         gameServerId,
         externalConnectionId,
-      });
-      if (previous) {
-        if (this.healthy(previous)) return previous;
-        throw new ConflictException('Connection ID cannot be reused');
-      }
-      const now = this.clock.now();
-      await repository.update(
-        { gameServerId, status: 'CONNECTED' },
-        {
-          status: 'DISCONNECTED',
-          disconnectedAt: now,
-          disconnectReason: 'SUPERSEDED',
-        },
-      );
-      return repository.save(
-        repository.create({
-          id: randomUUID(),
-          gameServerId,
-          externalConnectionId,
-          bridgeVersion,
-          protocolVersion,
-          status: 'CONNECTED',
-          connectedAt: now,
-          lastHeartbeatAt: now,
-          disconnectedAt: null,
-          disconnectReason: null,
-          createdAt: now,
-        }),
-      );
-    });
+        bridgeVersion,
+        protocolVersion,
+        status: 'CONNECTED',
+        connectedAt: now,
+        lastHeartbeatAt: now,
+        disconnectedAt: null,
+        disconnectReason: null,
+        credentialId: agent?.credentialId ?? null,
+        capabilities: agent ? [...agent.capabilities] : [],
+        gameProcessState: agent?.gameProcessState ?? null,
+        skseReady: agent?.skseReady ?? null,
+        createdAt: now,
+      }),
+    );
   }
-  async heartbeat(serverId: string, connectionId: string): Promise<boolean> {
+  // A Host Agent heartbeat also refreshes the runtime snapshot; omitted
+  // capabilities keep the announced ones.
+  async heartbeat(
+    serverId: string,
+    connectionId: string,
+    runtime?: RuntimeSnapshot,
+  ): Promise<boolean> {
     uuid(connectionId);
-    return this.database.transaction(async (manager) => {
+    // Only a runtime change or a stale close is an operational change; an
+    // unchanged heartbeat publishes nothing.
+    let changed = false;
+    const alive = await this.database.transaction(async (manager) => {
       const server = await this.servers.get(serverId, manager, true);
       const connection = await this.active(serverId, manager);
       if (!server.enabled || !connection || connection.id !== connectionId)
@@ -109,24 +157,107 @@ export class GameConnectionService {
       const now = this.clock.now();
       if (!this.healthy(connection, now)) {
         await this.close(manager, connection, 'STALE', now);
+        changed = true;
         return false;
       }
       connection.lastHeartbeatAt = now;
+      if (runtime && connection.credentialId) {
+        changed =
+          connection.gameProcessState !== runtime.gameProcessState ||
+          connection.skseReady !== runtime.skseReady;
+        connection.gameProcessState = runtime.gameProcessState;
+        connection.skseReady = runtime.skseReady;
+        if (runtime.capabilities)
+          connection.capabilities = [...runtime.capabilities];
+      }
       await manager
         .getRepository<GameConnection>('GameConnection')
         .save(connection);
       return true;
     });
+    if (changed) this.notify(serverId);
+    return alive;
+  }
+  // Runtime snapshot reported outside a heartbeat (Server Control result).
+  // One autocommit UPDATE on the connection row: no server lock and no
+  // liveness refresh. Only an active Host Agent session is updated.
+  async updateRuntime(
+    serverId: string,
+    connectionId: string,
+    runtime: Omit<RuntimeSnapshot, 'capabilities'>,
+  ): Promise<boolean> {
+    uuid(connectionId);
+    const result = await this.database
+      .getRepository<GameConnection>('GameConnection')
+      .createQueryBuilder()
+      .update()
+      .set({
+        gameProcessState: runtime.gameProcessState,
+        skseReady: runtime.skseReady,
+      })
+      .where('id = :connectionId AND game_server_id = :serverId', {
+        connectionId,
+        serverId,
+      })
+      .andWhere("status = 'CONNECTED' AND credential_id IS NOT NULL")
+      .execute();
+    if (result.affected !== 1) return false;
+    this.notify(serverId);
+    return true;
   }
   async disconnect(serverId: string, connectionId: string): Promise<boolean> {
+    return this.end(serverId, connectionId, 'REQUESTED');
+  }
+  // Closes the session only while it is still the server's active one;
+  // returns false for an already closed, superseded or unknown session.
+  async end(
+    serverId: string,
+    connectionId: string,
+    reason: DisconnectReason,
+  ): Promise<boolean> {
     uuid(connectionId);
-    return this.database.transaction(async (manager) => {
+    const ended = await this.database.transaction(async (manager) => {
       await this.servers.get(serverId, manager, true);
       const connection = await this.active(serverId, manager);
       if (!connection || connection.id !== connectionId) return false;
-      await this.close(manager, connection, 'REQUESTED', this.clock.now());
+      await this.close(manager, connection, reason, this.clock.now());
       return true;
     });
+    if (ended) this.notify(serverId);
+    return ended;
+  }
+  // Closes every session of a credential (revocation), inside the caller's
+  // transaction; the caller then closes the matching sockets after commit.
+  async endByCredential(
+    manager: EntityManager,
+    credentialId: string,
+  ): Promise<number> {
+    const result = await manager
+      .getRepository<GameConnection>('GameConnection')
+      .update(
+        { credentialId, status: 'CONNECTED' },
+        {
+          status: 'DISCONNECTED',
+          disconnectedAt: this.clock.now(),
+          disconnectReason: 'CREDENTIAL_REVOKED',
+        },
+      );
+    return result.affected ?? 0;
+  }
+  // Startup reconciliation: sockets never survive a restart, so no persisted
+  // session can still be live in this (single) instance. History is kept.
+  async endAllActive(reason: DisconnectReason): Promise<number> {
+    const result = await this.database
+      .getRepository<GameConnection>('GameConnection')
+      .update(
+        { status: 'CONNECTED' },
+        {
+          status: 'DISCONNECTED',
+          disconnectedAt: this.clock.now(),
+          disconnectReason: reason,
+        },
+      );
+    return result.affected ?? 0;
   }
   async markStaleConnections(): Promise<number> {
     const candidates = await this.database
@@ -149,13 +280,14 @@ export class GameConnectionService {
         await this.close(manager, current, 'STALE', this.clock.now());
         return 1;
       });
+      this.notify(candidate.gameServerId);
     }
     return count;
   }
   private async close(
     manager: EntityManager,
     connection: GameConnection,
-    reason: GameConnection['disconnectReason'],
+    reason: DisconnectReason,
     now: Date,
   ): Promise<void> {
     connection.status = 'DISCONNECTED';

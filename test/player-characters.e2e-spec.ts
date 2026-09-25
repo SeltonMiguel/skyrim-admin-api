@@ -99,7 +99,10 @@ describeDatabase('Character ownership with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(22);
+    expect(await database.runMigrations()).toHaveLength(25);
+    await database.undoLastMigration(); // Etapa 11.4 Agent Domain Events
+    await database.undoLastMigration(); // Etapa 11.3 Server Control Transport
+    await database.undoLastMigration(); // Etapa 11.1 Game Agent Transport
     await database.undoLastMigration(); // Etapa 10.17 VIP Entitlements
     await database.undoLastMigration(); // Etapa 10.16 Player Settings
     await database.undoLastMigration(); // Etapa 10.15 Player Chat
@@ -110,7 +113,7 @@ describeDatabase('Character ownership with real PostgreSQL', () => {
     await database.undoLastMigration(); // Etapa 10.8 Player Groups
     await database.undoLastMigration(); // Etapa 10.7 Professions
     await database.undoLastMigration();
-    expect(await database.runMigrations()).toHaveLength(10);
+    expect(await database.runMigrations()).toHaveLength(13);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -634,7 +637,11 @@ describeDatabase('Character ownership with real PostgreSQL', () => {
       '/api/v1/player/character-links/{linkId}/revoke',
     ]);
     expect(
-      Object.keys(body.paths).filter((p) => /agent|confirm|verify/i.test(p)),
+      // The Staff credential API (11.1) manages the Agent, not links.
+      Object.keys(body.paths).filter(
+        (p) =>
+          /agent|confirm|verify/i.test(p) && !/\/agent-credentials/.test(p),
+      ),
     ).toEqual([]);
     expect(
       Object.keys(
@@ -660,6 +667,9 @@ describeDatabase('Character ownership with real PostgreSQL', () => {
     ).toBe(0);
   });
   it('reverts only the ownership tables and reapplies cleanly', async () => {
+    await database.undoLastMigration(); // Etapa 11.4 Agent Domain Events
+    await database.undoLastMigration(); // Etapa 11.3 Server Control Transport
+    await database.undoLastMigration(); // Etapa 11.1 Game Agent Transport
     await database.undoLastMigration(); // Etapa 10.17 VIP Entitlements
     await database.undoLastMigration(); // Etapa 10.16 Player Settings
     await database.undoLastMigration(); // Etapa 10.15 Player Chat
@@ -676,7 +686,7 @@ describeDatabase('Character ownership with real PostgreSQL', () => {
         [schema],
       ),
     ).toEqual([]);
-    expect(await database.runMigrations()).toHaveLength(10);
+    expect(await database.runMigrations()).toHaveLength(13);
     expect(await database.runMigrations()).toHaveLength(0);
     expect(
       (await database.driver.createSchemaBuilder().log()).upQueries,

@@ -189,8 +189,19 @@ describeDatabase('Player marketplace with real PostgreSQL', () => {
       },
       key,
     );
-  const custodied = (listingId: string, id?: string) =>
+  // The Agent of the listing's own server (the session server, 11.4).
+  const serverOf = async (table: string, id: string) =>
+    (
+      await database.query(
+        table === 'purchase'
+          ? 'SELECT l.game_server_id FROM player_marketplace_purchases p JOIN player_marketplace_listings l ON l.id = p.listing_id WHERE p.id = $1'
+          : 'SELECT game_server_id FROM player_marketplace_listings WHERE id = $1',
+        [id],
+      )
+    )[0]?.game_server_id ?? server.id;
+  const custodied = async (listingId: string, id?: string) =>
     custody.confirmFromAgent({
+      gameServerId: await serverOf('listing', listingId),
       listingId,
       custodyEventId: id ?? `custody:${randomUUID()}`,
       outcome: CustodyOutcome.CUSTODIED,
@@ -226,12 +237,13 @@ describeDatabase('Player marketplace with real PostgreSQL', () => {
     ) as Record<string, unknown> | undefined;
   const purchasesOf = (p: Party) =>
     get(p.session, `me/characters/${p.link}/marketplace/purchases`);
-  const settle = (
+  const settle = async (
     purchaseId: string,
     outcome: MarketSettlementOutcome,
     id?: string,
   ) =>
     settlement.confirmFromAgent({
+      gameServerId: await serverOf('purchase', purchaseId),
       purchaseId,
       settlementEventId: id ?? `settle:${randomUUID()}`,
       outcome,
@@ -302,7 +314,10 @@ describeDatabase('Player marketplace with real PostgreSQL', () => {
     });
     await database.initialize();
     // Apply, revert (empty marketplace) and reapply the 10.14 migration.
-    expect(await database.runMigrations()).toHaveLength(22);
+    expect(await database.runMigrations()).toHaveLength(25);
+    await database.undoLastMigration(); // Etapa 11.4 Agent Domain Events
+    await database.undoLastMigration(); // Etapa 11.3 Server Control Transport
+    await database.undoLastMigration(); // Etapa 11.1 Game Agent Transport
     await database.undoLastMigration(); // Etapa 10.17 VIP Entitlements
     await database.undoLastMigration(); // Etapa 10.16 Player Settings
     await database.undoLastMigration(); // Etapa 10.15 Player Chat
@@ -313,7 +328,7 @@ describeDatabase('Player marketplace with real PostgreSQL', () => {
         [schema],
       ),
     ).toEqual([]);
-    expect(await database.runMigrations()).toHaveLength(4);
+    expect(await database.runMigrations()).toHaveLength(7);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -371,7 +386,7 @@ describeDatabase('Player marketplace with real PostgreSQL', () => {
   it('adds the marketplace tables and MARKET_ESCROW with a database-enforced lifecycle', async () => {
     expect(database.options.synchronize).toBe(false);
     expect(await database.showMigrations()).toBe(false);
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(22);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(25);
     const diff = await database.driver.createSchemaBuilder().log();
     expect([diff.upQueries, diff.downQueries]).toEqual([[], []]);
     const insert = (quantity: number, price: number) =>
@@ -499,6 +514,7 @@ describeDatabase('Player marketplace with real PostgreSQL', () => {
     });
     expect(
       await custody.confirmFromAgent({
+        gameServerId: server.id,
         listingId,
         custodyEventId: eventId,
         outcome: CustodyOutcome.FAILED,
@@ -522,13 +538,16 @@ describeDatabase('Player marketplace with real PostgreSQL', () => {
       { listingId, custodyEventId: ' ', outcome: CustodyOutcome.FAILED },
       { listingId, custodyEventId: 'e', outcome: 'LOST' as CustodyOutcome },
     ])
-      expect(await custody.confirmFromAgent(input)).toEqual({
+      expect(
+        await custody.confirmFromAgent({ gameServerId: server.id, ...input }),
+      ).toEqual({
         outcome: 'REJECTED',
         reason: 'INVALID_INPUT',
       });
     // Custody failure ends a pending listing.
     expect(
       await custody.confirmFromAgent({
+        gameServerId: server.id,
         listingId: other.listingId,
         custodyEventId: `custody:${randomUUID()}`,
         outcome: CustodyOutcome.FAILED,
@@ -962,7 +981,7 @@ describeDatabase('Player marketplace with real PostgreSQL', () => {
       custodied(pending.listingId),
     ]);
     expect(cancelResponse.status).toBe(200);
-    expect(['APPLIED', 'REJECTED']).toContain(custodyResult.outcome);
+    expect(custodyResult.outcome).toBe('APPLIED');
     expect(await own(seller, pending.listingId)).toMatchObject({
       status: 'CANCELLED',
     });
@@ -1069,7 +1088,12 @@ describeDatabase('Player marketplace with real PostgreSQL', () => {
         outcome: 'LOST' as MarketSettlementOutcome,
       },
     ])
-      expect(await settlement.confirmFromAgent(input)).toEqual({
+      expect(
+        await settlement.confirmFromAgent({
+          gameServerId: server.id,
+          ...input,
+        }),
+      ).toEqual({
         outcome: 'REJECTED',
         reason: 'INVALID_INPUT',
       });
@@ -1275,10 +1299,10 @@ describeDatabase('Player marketplace with real PostgreSQL', () => {
     expect((await cancel(seller, pending.listingId).expect(200)).body).toEqual(
       first.body,
     );
-    // A late custody report is refused: the Agent must return the item.
+    // Late acquired custody creates a persistent return obligation.
     expect(await custodied(pending.listingId)).toEqual({
-      outcome: 'REJECTED',
-      reason: 'LISTING_NOT_PENDING',
+      outcome: 'APPLIED',
+      status: 'CANCELLED',
     });
     const activeListing = await active(seller);
     // Only the seller's current owner can cancel.
@@ -1306,6 +1330,7 @@ describeDatabase('Player marketplace with real PostgreSQL', () => {
       [
         'PLAYER_MARKETPLACE_LISTING_CREATED',
         'PLAYER_MARKETPLACE_LISTING_CANCELLED',
+        'PLAYER_MARKETPLACE_LISTING_CUSTODIED',
       ],
       [
         'PLAYER_MARKETPLACE_LISTING_CREATED',
@@ -1522,6 +1547,7 @@ describeDatabase('Player marketplace with real PostgreSQL', () => {
     });
     const lost = (await list(seller).expect(201)).body;
     await custody.confirmFromAgent({
+      gameServerId: server.id,
       listingId: lost.listingId,
       custodyEventId: `custody:${randomUUID()}`,
       outcome: CustodyOutcome.FAILED,
@@ -1821,16 +1847,27 @@ describeDatabase('Player marketplace with real PostgreSQL', () => {
   });
   it('refuses to revert while marketplace listings exist', async () => {
     await reconciled();
-    // No entitlements, settings or messages here: 10.17, 10.16 and 10.15
-    // revert, then 10.14 refuses and is kept.
+    // Cancelled ACTIVE listings left items to return: 11.4 refuses to
+    // forget them until the Agent reports the releases.
+    await expect(database.undoLastMigration()).rejects.toThrow(
+      'Pending marketplace item releases or VIP reward deliveries exist',
+    );
+    await database.query(
+      "UPDATE player_marketplace_item_releases SET status = 'COMPLETED', release_event_id = gen_random_uuid(), completed_at = now() WHERE status = 'PENDING'",
+    );
+    // No credentials, entitlements, settings or messages here: 11.4, 11.3,
+    // 11.1, 10.17, 10.16 and 10.15 revert, then 10.14 refuses and is kept.
+    await database.undoLastMigration(); // Etapa 11.4 Agent Domain Events
+    await database.undoLastMigration(); // Etapa 11.3 Server Control Transport
+    await database.undoLastMigration();
     await database.undoLastMigration();
     await database.undoLastMigration();
     await database.undoLastMigration();
     await expect(database.undoLastMigration()).rejects.toThrow(
       'marketplace listings exist',
     );
-    expect(await database.runMigrations()).toHaveLength(3);
+    expect(await database.runMigrations()).toHaveLength(6);
     expect(await database.showMigrations()).toBe(false);
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(22);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(25);
   });
 });

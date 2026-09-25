@@ -2,15 +2,17 @@ import {
   Injectable,
   OnApplicationBootstrap,
   OnModuleDestroy,
+  OnModuleInit,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { HttpAdapterHost } from '@nestjs/core';
-import type { IncomingMessage, Server } from 'node:http';
+import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { decodeJwt } from 'jose';
 import { WebSocket, WebSocketServer } from 'ws';
 import type { RawData } from 'ws';
 import type { ApplicationConfig } from '../config/environment.js';
+import { WebSocketUpgradeRouter } from '../websocket/websocket-upgrade.router.js';
 import { AuthService } from '../auth/auth.service.js';
 import { PlayerAuthService } from '../player-auth/player-auth.service.js';
 import { RealtimeEventBus } from '../realtime-events/realtime-event-bus.js';
@@ -18,9 +20,11 @@ import type {
   RealtimeEnvelope,
   RealtimeRecipients,
 } from '../realtime-events/realtime-event-bus.js';
+import type { Permission } from '../rbac/permissions.js';
 import {
   connectionKey,
   RealtimeConnectionRegistry,
+  sendFrame,
 } from './realtime-connection.registry.js';
 import type { RealtimeSurface } from './realtime-connection.registry.js';
 
@@ -42,14 +46,18 @@ export const RealtimeClose = {
 // closed when its access token expires; clients reconnect with a new one.
 @Injectable()
 export class RealtimeGateway
-  implements OnApplicationBootstrap, OnModuleDestroy
+  implements OnModuleInit, OnApplicationBootstrap, OnModuleDestroy
 {
   private readonly authTimeoutMs: number;
   private wss?: WebSocketServer;
-  private server?: Server;
   private unsubscribe?: () => void;
+  // Access token of each authenticated Staff socket, kept only in memory to
+  // re-check its session and grants when a Staff event is delivered.
+  private readonly staffTokens = new Map<WebSocket, string>();
+  // One in-flight re-check per socket, shared by concurrent deliveries.
+  private readonly checks = new Map<WebSocket, Promise<Permission[] | null>>();
   constructor(
-    private readonly adapterHost: HttpAdapterHost,
+    private readonly upgrades: WebSocketUpgradeRouter,
     private readonly bus: RealtimeEventBus,
     private readonly registry: RealtimeConnectionRegistry,
     private readonly players: PlayerAuthService,
@@ -60,42 +68,67 @@ export class RealtimeGateway
       infer: true,
     }).realtime.authTimeoutMs;
   }
-  onApplicationBootstrap(): void {
-    this.server = this.adapterHost.httpAdapter.getHttpServer() as Server;
+  // The upgrade router owns path matching (exact path, no query string).
+  onModuleInit(): void {
     this.wss = new WebSocketServer({
       noServer: true,
       maxPayload: MAX_REALTIME_FRAME_BYTES,
     });
-    this.server.on('upgrade', this.upgrade);
+    this.upgrades.register(REALTIME_PATH, this.upgrade);
+  }
+  onApplicationBootstrap(): void {
     this.unsubscribe = this.bus.subscribe((envelope, recipients) =>
       this.deliver(envelope, recipients),
     );
   }
   onModuleDestroy(): void {
     this.unsubscribe?.();
-    this.server?.off('upgrade', this.upgrade);
     for (const socket of this.wss?.clients ?? [])
       socket.close(RealtimeClose.SHUTDOWN, 'SHUTDOWN');
     this.wss?.close();
   }
-  // Server-chosen fan-out; Group events currently target players only.
+  // Server-chosen fan-out: Player events by identity, Staff events by
+  // permission. Never awaited by the publisher (after its commit).
   private deliver(envelope: RealtimeEnvelope, recipients: RealtimeRecipients) {
     const frame = JSON.stringify(envelope);
     for (const playerId of recipients.playerIds)
       this.registry.send(connectionKey('PLAYER', playerId), frame);
+    const permission = recipients.staffPermission;
+    if (!permission) return;
+    for (const socket of this.registry.surface('STAFF'))
+      void this.authorize(socket).then((grants) => {
+        if (grants?.includes(permission)) sendFrame(socket, frame);
+      });
+  }
+  // Staff grants are re-read at every delivery through the same service as
+  // HTTP (session, account status, current role), so a role change applies
+  // to the next event and nothing is cached beyond one in-flight check. A
+  // session that is no longer valid closes the socket; a database failure
+  // only skips this delivery.
+  private authorize(socket: WebSocket): Promise<Permission[] | null> {
+    const pending = this.checks.get(socket);
+    if (pending) return pending;
+    const token = this.staffTokens.get(socket);
+    if (!token) return Promise.resolve(null);
+    const check = this.staff
+      .authenticate(token)
+      .then(
+        (auth) => auth.permissions,
+        (error: unknown) => {
+          if (error instanceof UnauthorizedException)
+            socket.close(RealtimeClose.UNAUTHORIZED, 'UNAUTHORIZED');
+          return null;
+        },
+      )
+      .finally(() => this.checks.delete(socket));
+    this.checks.set(socket, check);
+    return check;
   }
   private readonly upgrade = (
     request: IncomingMessage,
     socket: Duplex,
     head: Buffer,
   ) => {
-    const url = new URL(request.url ?? '/', 'http://localhost');
-    // Exact path and no query string: credentials must not travel in URLs.
-    if (url.pathname !== REALTIME_PATH || url.search) {
-      socket.write('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
-      socket.destroy();
-      return;
-    }
     this.wss!.handleUpgrade(request, socket, head, (ws) => this.connect(ws));
   };
   private connect(ws: WebSocket): void {
@@ -128,6 +161,7 @@ export class RealtimeGateway
         clearTimeout(timeout);
         state = 'AUTHENTICATED';
         key = connectionKey(frame.surface, identity.id);
+        if (frame.surface === 'STAFF') this.staffTokens.set(ws, frame.token);
         this.registry.add(key, ws);
         expiry = setTimeout(
           () => ws.close(RealtimeClose.TOKEN_EXPIRED, 'TOKEN_EXPIRED'),
@@ -146,6 +180,7 @@ export class RealtimeGateway
       clearTimeout(timeout);
       if (expiry) clearTimeout(expiry);
       if (key) this.registry.remove(key, ws);
+      this.staffTokens.delete(ws);
     });
     ws.on('error', () => ws.terminate());
   }

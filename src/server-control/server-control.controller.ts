@@ -7,6 +7,7 @@ import {
   Param,
   ParseUUIDPipe,
   Post,
+  Query,
   Res,
   UseGuards,
 } from '@nestjs/common';
@@ -36,7 +37,9 @@ import { ServerControlService } from './server-control.service.js';
 import type { ServerControlType } from './server-control.contracts.js';
 import {
   EmptyServerControlBodyDto,
+  ServerControlListQueryDto,
   ServerControlOperationDetailDto,
+  ServerControlOperationPageDto,
   ServerControlOperationReferenceDto,
   ServerControlRouteDto,
 } from './dto/server-control.dto.js';
@@ -173,5 +176,30 @@ export class ServerControlOperationController {
     @CurrentStaff() auth: AuthenticatedStaff,
   ) {
     return this.operations.get(id, auth);
+  }
+}
+@ApiTags('server-control')
+@ApiBearerAuth()
+@ApiBadRequestResponse({ type: HttpErrorDto })
+@ApiUnauthorizedResponse({ type: HttpErrorDto })
+@ApiForbiddenResponse({ type: HttpErrorDto })
+@ApiNotFoundResponse({ type: HttpErrorDto })
+@UseGuards(JwtAuthGuard, PermissionGuard)
+@Controller({ path: 'game-servers/:serverId/control/operations', version: '1' })
+export class ServerControlOperationListController {
+  constructor(private readonly operations: ServerControlService) {}
+  @Get()
+  @ApiOperation({
+    summary: 'List the Server Control operations of a server.',
+    description:
+      'Requires at least one of SERVER_START, SERVER_PAUSE or SERVER_RESTART; only the types the caller holds are listed. Order createdAt DESC, id DESC. Recovery read for a client without known operation ids (in flight, UNCERTAIN).',
+  })
+  @ApiOkResponse({ type: ServerControlOperationPageDto })
+  list(
+    @Param() route: ServerControlRouteDto,
+    @Query() query: ServerControlListQueryDto,
+    @CurrentStaff() auth: AuthenticatedStaff,
+  ) {
+    return this.operations.list(route.serverId, query, auth);
   }
 }

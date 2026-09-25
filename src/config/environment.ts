@@ -12,6 +12,9 @@ export interface ApplicationConfig {
     ackTimeoutMs: number;
     executionTimeoutMs: number;
     maxDispatchAttempts: number;
+    // Never-reserved PENDING commands fail after this (11.2).
+    pendingTimeoutMs: number;
+    workerIntervalMs: number;
   };
   jwt: {
     accessSecret: string;
@@ -43,6 +46,33 @@ export interface ApplicationConfig {
     rateLimitWindow: number;
   };
   realtime: { authTimeoutMs: number };
+  // Server Control over the Host Agent (11.3), at-most-once. The result
+  // timeout always exceeds the delivery window.
+  serverControl: {
+    // Unclaimed PENDING (never sent) fails after this.
+    pendingTimeoutMs: number;
+    // notAfter = claim + window; the Agent refuses later execution.
+    deliveryWindowMs: number;
+    // Claimed without a result after this: UNCERTAIN, never resent.
+    resultTimeoutMs: number;
+    workerIntervalMs: number;
+  };
+  // Host Agent transport (11.1). The heartbeat timeout never exceeds the Game
+  // Bridge connection timeout, so a live socket always has a healthy session.
+  agent: {
+    authTimeoutMs: number;
+    heartbeatIntervalMs: number;
+    heartbeatTimeoutMs: number;
+    // DB-counted GameCommands in flight per server (11.2).
+    maxInFlightCommands: number;
+    // Authenticated frames per session per window (in memory, 11.2).
+    messageRateLimitCount: number;
+    messageRateLimitWindowMs: number;
+    // Best-effort push of new work to connected Agents (11.4).
+    workPushIntervalMs: number;
+  };
+  // VIP CHARACTER reward delivery worker (11.4).
+  vipDelivery: { workerIntervalMs: number };
   bootstrap: { username?: string; displayName?: string; password?: string };
   database: {
     host: string;
@@ -61,6 +91,8 @@ interface Environment {
   GAME_COMMAND_ACK_TIMEOUT_MS: number;
   GAME_COMMAND_EXECUTION_TIMEOUT_MS: number;
   GAME_COMMAND_MAX_DISPATCH_ATTEMPTS: number;
+  GAME_COMMAND_PENDING_TIMEOUT_MS: number;
+  GAME_COMMAND_WORKER_INTERVAL_MS: number;
   DB_HOST: string;
   DB_PORT: number;
   DB_USERNAME: string;
@@ -83,6 +115,18 @@ interface Environment {
   PLAYER_CHAT_RATE_LIMIT_COUNT: number;
   PLAYER_CHAT_RATE_LIMIT_WINDOW: string;
   REALTIME_AUTH_TIMEOUT_MS: number;
+  SERVER_CONTROL_PENDING_TIMEOUT_MS: number;
+  AGENT_WORK_PUSH_INTERVAL_MS: number;
+  VIP_DELIVERY_WORKER_INTERVAL_MS: number;
+  SERVER_CONTROL_DELIVERY_WINDOW_MS: number;
+  SERVER_CONTROL_RESULT_TIMEOUT_MS: number;
+  SERVER_CONTROL_WORKER_INTERVAL_MS: number;
+  AGENT_AUTH_TIMEOUT_MS: number;
+  AGENT_HEARTBEAT_INTERVAL: string;
+  AGENT_HEARTBEAT_TIMEOUT: string;
+  AGENT_MAX_IN_FLIGHT_COMMANDS: number;
+  AGENT_MESSAGE_RATE_LIMIT_COUNT: number;
+  AGENT_MESSAGE_RATE_LIMIT_WINDOW_MS: number;
   DISCORD_CLIENT_ID?: string;
   DISCORD_CLIENT_SECRET?: string;
   DISCORD_REDIRECT_URIS?: string;
@@ -141,6 +185,16 @@ const schema = Joi.object<Environment>({
     .min(1)
     .max(10)
     .default(3),
+  GAME_COMMAND_PENDING_TIMEOUT_MS: Joi.number()
+    .integer()
+    .min(1000)
+    .max(86400000)
+    .default(60000),
+  GAME_COMMAND_WORKER_INTERVAL_MS: Joi.number()
+    .integer()
+    .min(50)
+    .max(60000)
+    .default(500),
   DB_HOST: Joi.string().trim().required(),
   DB_PORT: Joi.number().integer().min(1).max(65535).default(5432),
   DB_USERNAME: Joi.string().trim().required(),
@@ -205,6 +259,58 @@ const schema = Joi.object<Environment>({
     .min(100)
     .max(60000)
     .default(5000),
+  AGENT_WORK_PUSH_INTERVAL_MS: Joi.number()
+    .integer()
+    .min(100)
+    .max(60000)
+    .default(2000),
+  VIP_DELIVERY_WORKER_INTERVAL_MS: Joi.number()
+    .integer()
+    .min(50)
+    .max(60000)
+    .default(2000),
+  SERVER_CONTROL_PENDING_TIMEOUT_MS: Joi.number()
+    .integer()
+    .min(500)
+    .max(3600000)
+    .default(30000),
+  SERVER_CONTROL_DELIVERY_WINDOW_MS: Joi.number()
+    .integer()
+    .min(100)
+    .max(600000)
+    .default(10000),
+  SERVER_CONTROL_RESULT_TIMEOUT_MS: Joi.number()
+    .integer()
+    .min(500)
+    .max(3600000)
+    .default(300000),
+  SERVER_CONTROL_WORKER_INTERVAL_MS: Joi.number()
+    .integer()
+    .min(50)
+    .max(60000)
+    .default(1000),
+  AGENT_AUTH_TIMEOUT_MS: Joi.number()
+    .integer()
+    .min(100)
+    .max(60000)
+    .default(5000),
+  AGENT_HEARTBEAT_INTERVAL: ttl('10s'),
+  AGENT_HEARTBEAT_TIMEOUT: ttl('30s'),
+  AGENT_MAX_IN_FLIGHT_COMMANDS: Joi.number()
+    .integer()
+    .min(1)
+    .max(1000)
+    .default(32),
+  AGENT_MESSAGE_RATE_LIMIT_COUNT: Joi.number()
+    .integer()
+    .min(10)
+    .max(100000)
+    .default(200),
+  AGENT_MESSAGE_RATE_LIMIT_WINDOW_MS: Joi.number()
+    .integer()
+    .min(100)
+    .max(3600000)
+    .default(10000),
   DISCORD_CLIENT_ID: Joi.string().trim().allow('').max(128),
   DISCORD_CLIENT_SECRET: Joi.string().allow('').max(256),
   DISCORD_REDIRECT_URIS: Joi.string().allow('').max(4096),
@@ -261,7 +367,34 @@ export function validateEnvironment(
     throw new Error(
       'Invalid environment variables: PLAYER_CHAT_RATE_LIMIT_WINDOW',
     );
+  const agentInterval = ttlSeconds(value.AGENT_HEARTBEAT_INTERVAL) * 1000;
+  const agentTimeout = ttlSeconds(value.AGENT_HEARTBEAT_TIMEOUT) * 1000;
+  if (
+    agentInterval >= agentTimeout ||
+    agentTimeout > 3600000 ||
+    agentTimeout > value.GAME_BRIDGE_HEARTBEAT_TIMEOUT_MS
+  )
+    throw new Error(
+      'Invalid environment variables: AGENT_HEARTBEAT_INTERVAL, AGENT_HEARTBEAT_TIMEOUT',
+    );
+  if (
+    value.SERVER_CONTROL_RESULT_TIMEOUT_MS <=
+    value.SERVER_CONTROL_DELIVERY_WINDOW_MS
+  )
+    throw new Error(
+      'Invalid environment variables: SERVER_CONTROL_RESULT_TIMEOUT_MS, SERVER_CONTROL_DELIVERY_WINDOW_MS',
+    );
   return {
+    agent: {
+      authTimeoutMs: value.AGENT_AUTH_TIMEOUT_MS,
+      heartbeatIntervalMs: agentInterval,
+      heartbeatTimeoutMs: agentTimeout,
+      maxInFlightCommands: value.AGENT_MAX_IN_FLIGHT_COMMANDS,
+      messageRateLimitCount: value.AGENT_MESSAGE_RATE_LIMIT_COUNT,
+      messageRateLimitWindowMs: value.AGENT_MESSAGE_RATE_LIMIT_WINDOW_MS,
+      workPushIntervalMs: value.AGENT_WORK_PUSH_INTERVAL_MS,
+    },
+    vipDelivery: { workerIntervalMs: value.VIP_DELIVERY_WORKER_INTERVAL_MS },
     playerCharacters: { challengeTtl },
     playerGroups: { inviteTtl },
     playerGuilds: { inviteTtl: guildInviteTtl },
@@ -271,6 +404,12 @@ export function validateEnvironment(
       rateLimitWindow: chatWindow,
     },
     realtime: { authTimeoutMs: value.REALTIME_AUTH_TIMEOUT_MS },
+    serverControl: {
+      pendingTimeoutMs: value.SERVER_CONTROL_PENDING_TIMEOUT_MS,
+      deliveryWindowMs: value.SERVER_CONTROL_DELIVERY_WINDOW_MS,
+      resultTimeoutMs: value.SERVER_CONTROL_RESULT_TIMEOUT_MS,
+      workerIntervalMs: value.SERVER_CONTROL_WORKER_INTERVAL_MS,
+    },
     playerAuth: {
       accessSecret: value.PLAYER_JWT_ACCESS_SECRET || testPlayerAccessSecret,
       refreshSecret: value.PLAYER_JWT_REFRESH_SECRET || testPlayerRefreshSecret,
@@ -284,6 +423,8 @@ export function validateEnvironment(
       ackTimeoutMs: value.GAME_COMMAND_ACK_TIMEOUT_MS,
       executionTimeoutMs: value.GAME_COMMAND_EXECUTION_TIMEOUT_MS,
       maxDispatchAttempts: value.GAME_COMMAND_MAX_DISPATCH_ATTEMPTS,
+      pendingTimeoutMs: value.GAME_COMMAND_PENDING_TIMEOUT_MS,
+      workerIntervalMs: value.GAME_COMMAND_WORKER_INTERVAL_MS,
     },
     jwt: {
       accessSecret: value.JWT_ACCESS_SECRET || testAccessSecret,

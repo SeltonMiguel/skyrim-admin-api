@@ -4,6 +4,9 @@ import type { TerminalStatus } from '../../game-bridge/command-state.js';
 import { COMMAND_TYPES } from '../../game-bridge/command-contract.js';
 import type { CommandType } from '../../game-bridge/command-contract.js';
 import { ServerHealth } from '../server-health.js';
+import { GameProcessState } from '../../game-agent/agent-protocol.contracts.js';
+import { DISCONNECT_REASONS } from '../../game-bridge/entities/game-connection.entity.js';
+import type { DisconnectReason } from '../../game-bridge/entities/game-connection.entity.js';
 
 export class CurrentConnectionDto {
   @ApiProperty({ format: 'uuid' })
@@ -20,6 +23,15 @@ export class CurrentConnectionDto {
   connectedAt: Date;
   @ApiProperty({ format: 'date-time' })
   lastHeartbeatAt: Date;
+  @ApiProperty({
+    enum: GameProcessState,
+    nullable: true,
+    description:
+      'Last runtime reported by the Host Agent (HELLO, heartbeat or Server Control result); null for a session without the Agent transport. Meaningful only while health is ONLINE.',
+  })
+  gameProcessState: GameProcessState | null;
+  @ApiProperty({ type: Boolean, nullable: true })
+  skseReady: boolean | null;
 }
 
 export class ConnectionDto extends CurrentConnectionDto {
@@ -27,8 +39,8 @@ export class ConnectionDto extends CurrentConnectionDto {
   gameServerId: string;
   @ApiProperty({ type: String, format: 'date-time', nullable: true })
   disconnectedAt: Date | null;
-  @ApiProperty({ enum: ['SUPERSEDED', 'STALE', 'REQUESTED'], nullable: true })
-  disconnectReason: 'SUPERSEDED' | 'STALE' | 'REQUESTED' | null;
+  @ApiProperty({ enum: DISCONNECT_REASONS, nullable: true })
+  disconnectReason: DisconnectReason | null;
   @ApiProperty({ format: 'date-time' })
   createdAt: Date;
 }

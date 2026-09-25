@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { DataSource } from 'typeorm';
 import request from 'supertest';
 import type { App } from 'supertest/types.js';
+import { GameCommandWorker } from '../src/game-agent/game-command.worker.js';
 import { compiledDatabaseArtifacts } from './compiled-database.js';
 import { loadEnvironment } from '../src/config/environment.js';
 import { createDatabaseOptions } from '../src/database/database.options.js';
@@ -107,12 +108,15 @@ describeDatabase('Moderation with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(22);
+    expect(await database.runMigrations()).toHaveLength(25);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
       .overrideProvider(DataSource)
       .useValue(database)
+      // This suite drives the command lifecycle by hand.
+      .overrideProvider(GameCommandWorker)
+      .useValue({})
       .overrideProvider(GameGateway)
       .useValue(gateway)
       .overrideProvider(BridgeClock)
@@ -167,20 +171,22 @@ describeDatabase('Moderation with real PostgreSQL', () => {
     expect(
       (await database.driver.createSchemaBuilder().log()).upQueries,
     ).toEqual([]);
-    expect(await database.query('SELECT * FROM permissions')).toHaveLength(36);
+    expect(await database.query('SELECT * FROM permissions')).toHaveLength(37);
     expect(await database.query('SELECT * FROM role_permissions')).toHaveLength(
-      93,
+      95,
     );
     const rows = await database.query(
       'SELECT tablename FROM pg_tables WHERE schemaname = $1 ORDER BY tablename',
       [schema],
     );
     expect(rows.map((r: { tablename: string }) => r.tablename)).toEqual([
+      'agent_domain_event_receipts',
       'audit_logs',
       'character_professions',
       'economy_accounts',
       'economy_entries',
       'economy_transactions',
+      'game_agent_credentials',
       'game_command_results',
       'game_commands',
       'game_connections',
@@ -201,6 +207,7 @@ describeDatabase('Moderation with real PostgreSQL', () => {
       'player_identities',
       'player_marketplace_currency_escrows',
       'player_marketplace_custody_events',
+      'player_marketplace_item_releases',
       'player_marketplace_listings',
       'player_marketplace_purchases',
       'player_marketplace_requests',
@@ -223,6 +230,7 @@ describeDatabase('Moderation with real PostgreSQL', () => {
       'staff_users',
       'vip_entitlement_requests',
       'vip_offers',
+      'vip_reward_deliveries',
     ]);
   });
   it.each(MODERATION_COMMAND_TYPES)(

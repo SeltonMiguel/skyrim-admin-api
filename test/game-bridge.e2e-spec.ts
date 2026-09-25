@@ -1,3 +1,4 @@
+import { RealtimeEventBus } from '../src/realtime-events/realtime-event-bus.js';
 import { Test } from '@nestjs/testing';
 import type { TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
@@ -84,7 +85,10 @@ describeDatabase('Game Bridge with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(22);
+    expect(await database.runMigrations()).toHaveLength(25);
+    await database.undoLastMigration(); // Etapa 11.4 Agent Domain Events
+    await database.undoLastMigration(); // Etapa 11.3 Server Control Transport
+    await database.undoLastMigration(); // Etapa 11.1 Game Agent Transport
     await database.undoLastMigration(); // Etapa 10.17 VIP Entitlements
     await database.undoLastMigration(); // Etapa 10.16 Player Settings
     await database.undoLastMigration(); // Etapa 10.15 Player Chat
@@ -117,7 +121,7 @@ describeDatabase('Game Bridge with real PostgreSQL', () => {
         [schema, 'game_%'],
       ),
     ).toEqual([]);
-    expect(await database.runMigrations()).toHaveLength(20);
+    expect(await database.runMigrations()).toHaveLength(23);
     expect(await database.runMigrations()).toHaveLength(0);
     gateway = new MockGameGateway();
     clock = new TestBridgeClock();
@@ -180,11 +184,11 @@ describeDatabase('Game Bridge with real PostgreSQL', () => {
     ).toEqual([]);
     expect(
       await database.query(
-        'SELECT tablename FROM pg_tables WHERE schemaname = $1 AND tablename LIKE $2',
+        "SELECT tablename FROM pg_tables WHERE schemaname = $1 AND tablename LIKE $2 AND tablename <> 'game_agent_credentials'",
         [schema, 'game_%'],
       ),
     ).toHaveLength(4);
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(22);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(25);
   });
   it('registers and locates servers and rejects duplicate code through the database', async () => {
     expect(await servers.get(serverId)).toMatchObject({ enabled: true });
@@ -492,12 +496,42 @@ describeDatabase('Game Bridge with real PostgreSQL', () => {
       await expect(
         receiver.acknowledge({ ...ack(command), [field]: randomUUID() }),
       ).rejects.toThrow('does not match');
+      // RESULT is bound to the command: an unknown connection is refused
+      // because it is not the server's current session.
       await expect(
         receiver.result({ ...success(command), [field]: randomUUID() }),
-      ).rejects.toThrow('does not match');
+      ).rejects.toThrow(
+        field === 'connectionId' ? 'no longer active' : 'does not match',
+      );
       expect((await read(command.id)).status).toBe(S.DISPATCHED);
     },
   );
+  it('accepts the RESULT of a command from the new session after a reconnect, never its ACK', async () => {
+    const command = await dispatched();
+    await receiver.acknowledge(ack(command));
+    const next = await connections.connect({
+      gameServerId: serverId,
+      externalConnectionId: randomUUID(),
+    });
+    // ACK belongs to the attempt reserved for the old session.
+    await expect(
+      receiver.acknowledge({ ...ack(command), connectionId: next.id }),
+    ).rejects.toThrow('does not match');
+    // RESULT belongs to the command: the new session may report it, without
+    // any retry (ACKNOWLEDGED is never resent).
+    const done = await receiver.result({
+      ...success(command),
+      connectionId: next.id,
+    });
+    expect(done.status).toBe(S.SUCCEEDED);
+    expect(done.dispatchedConnectionId).toBe(command.dispatchedConnectionId);
+    expect(gateway.sends).toHaveLength(1);
+    // The identical result through the same session is an idempotent replay.
+    expect(
+      (await receiver.receive({ ...success(command), connectionId: next.id }))
+        .duplicate,
+    ).toBe(true);
+  });
   it('rejects wrong protocol, nonce, malformed/large payloads and unsupported types', async () => {
     const command = await dispatched();
     await expect(
@@ -906,7 +940,12 @@ describeDatabase('Game Bridge with real PostgreSQL', () => {
       );
     const other = new GameCommandDispatcher(
       otherDb,
-      new GameCommandStore(otherDb, otherServers, clock),
+      new GameCommandStore(
+        otherDb,
+        otherServers,
+        clock,
+        module.get(RealtimeEventBus),
+      ),
       new GameConnectionService(otherDb, otherServers, clock, config),
       otherGateway,
       clock,
@@ -973,7 +1012,12 @@ describeDatabase('Game Bridge with real PostgreSQL', () => {
       );
     const other = new GameCommandDispatcher(
       otherDb,
-      new GameCommandStore(otherDb, otherServers, clock),
+      new GameCommandStore(
+        otherDb,
+        otherServers,
+        clock,
+        module.get(RealtimeEventBus),
+      ),
       new GameConnectionService(otherDb, otherServers, clock, config),
       otherGateway,
       clock,

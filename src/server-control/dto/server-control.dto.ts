@@ -1,5 +1,6 @@
-import { ApiProperty } from '@nestjs/swagger';
-import { IsUUID } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { IsEnum, IsIn, IsOptional, IsUUID } from 'class-validator';
+import { PageQueryDto } from '../../admin-queries/dto/query.dto.js';
 import {
   SERVER_CONTROL_ERRORS,
   SERVER_CONTROL_TYPES,
@@ -22,7 +23,7 @@ export class ServerControlOperationReferenceDto {
   @ApiProperty({
     enum: ServerControlStatus,
     description:
-      'PENDING persisted; DISPATCHED handed to (or possibly delivered by) the transport; FAILED definitely not delivered. Never proof the server started, paused or restarted.',
+      'PENDING persisted, not yet sent (or sent and not reconciled after a crash); DISPATCHED sent once to the Host Agent (or delivery could not be refuted), never resent; SUCCEEDED the Agent reported the effect; FAILED definitely no effect (never delivered, or a definite Agent failure); UNCERTAIN terminal, the backend cannot say whether the action ran (no result before the deadline, or the Agent could not prove it) and it is never retried automatically.',
   })
   status: ServerControlStatus;
   @ApiProperty({ format: 'uuid' }) correlationId: string;
@@ -39,7 +40,29 @@ export class ServerControlOperationDetailDto extends ServerControlOperationRefer
     type: String,
     nullable: true,
     enum: Object.keys(SERVER_CONTROL_ERRORS),
+    description:
+      'Set for FAILED (AGENT_UNAVAILABLE, AGENT_REJECTED, SERVER_DISABLED, DISPATCH_EXPIRED, DELIVERY_EXPIRED, INVALID_PROCESS_STATE, EXECUTION_FAILED) and UNCERTAIN (RESULT_TIMEOUT, OUTCOME_UNKNOWN).',
   })
   errorCode: ServerControlErrorCode | null;
   @ApiProperty({ type: String, nullable: true }) errorMessage: string | null;
+}
+// Cold-start recovery of the Admin Web (11.6): operations of one server,
+// newest first, restricted to the types the caller may read.
+export class ServerControlListQueryDto extends PageQueryDto {
+  @ApiPropertyOptional({ enum: ServerControlStatus })
+  @IsOptional()
+  @IsEnum(ServerControlStatus)
+  status?: ServerControlStatus;
+  @ApiPropertyOptional({ enum: SERVER_CONTROL_TYPES })
+  @IsOptional()
+  @IsIn(SERVER_CONTROL_TYPES)
+  type?: ServerControlType;
+}
+export class ServerControlOperationPageDto {
+  @ApiProperty({ type: ServerControlOperationDetailDto, isArray: true })
+  items: ServerControlOperationDetailDto[];
+  @ApiProperty() total: number;
+  @ApiProperty() page: number;
+  @ApiProperty() limit: number;
+  @ApiProperty() totalPages: number;
 }

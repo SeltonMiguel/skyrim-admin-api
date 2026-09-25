@@ -1,0 +1,565 @@
+import { isUUID } from 'class-validator';
+import { randomUUID } from 'node:crypto';
+import { MAX_COMMAND_RESULT_BYTES } from '../game-bridge/command-limits.js';
+import {
+  PROTOCOL_VERSION,
+  REMOTE_FAILURE_CODES,
+  UNCERTAIN_OUTCOME,
+} from '../game-bridge/command-contract.js';
+import type { RemoteFailureCode } from '../game-bridge/command-contract.js';
+import {
+  isAgentWorkKind,
+  MAX_WORK_PAGE_ITEMS,
+} from './agent-domain-event.contracts.js';
+import type { AgentWorkKind } from './agent-domain-event.contracts.js';
+import {
+  isServerControlType,
+  SERVER_CONTROL_REMOTE_FAILURES,
+} from '../server-control/server-control.contracts.js';
+import type {
+  ServerControlRemoteFailure,
+  ServerControlType,
+} from '../server-control/server-control.contracts.js';
+
+// Host Agent WebSocket protocol v1 (Etapa 11.1). The version is the one the
+// Game Bridge already persists in game_connections.protocol_version; there
+// is no fallback to any other version.
+export const AGENT_PATH = '/api/v1/agent';
+export const AGENT_PROTOCOL_VERSION = PROTOCOL_VERSION;
+// One place for the frame ceiling: a maximal GameCommand result (64 KiB)
+// plus envelope and JSON overhead. ws closes larger frames (1009) itself,
+// before any parse.
+export const MAX_AGENT_FRAME_BYTES = 128 * 1024;
+export const MAX_AGENT_CAPABILITIES = 64;
+if (MAX_AGENT_FRAME_BYTES < 2 * MAX_COMMAND_RESULT_BYTES)
+  throw new Error('Agent frame limit must hold a maximal command result');
+
+// Frames the Agent may send. HELLO only as the first frame.
+export const AGENT_INBOUND_TYPES = [
+  'HELLO',
+  'HEARTBEAT',
+  'COMMAND_ACK',
+  'COMMAND_RESULT',
+  'DOMAIN_EVENT',
+  'SERVER_CONTROL_RESULT',
+  'WORK_SYNC',
+  'ERROR',
+] as const;
+// Frames the backend sends. There is no SERVER_CONTROL_ACK in either
+// direction: an operation is sent once whatever happens, so an ACK would
+// change nothing (11.3).
+export const AGENT_OUTBOUND_TYPES = [
+  'AUTHENTICATED',
+  'HEARTBEAT_ACK',
+  'ERROR',
+  'COMMAND',
+  'COMMAND_RESULT_ACK',
+  'SERVER_CONTROL',
+  'SERVER_CONTROL_RESULT_ACK',
+  'DOMAIN_EVENT_ACK',
+  'WORK_ITEMS',
+] as const;
+export type AgentInboundType = (typeof AGENT_INBOUND_TYPES)[number];
+export type AgentOutboundType = (typeof AGENT_OUTBOUND_TYPES)[number];
+
+// Process state reported by the Host Agent; independent from SKSE
+// readiness. There is no separate CRASHED state: a crashed process is
+// STOPPED (or RESTARTING while the Agent recovers it).
+export enum GameProcessState {
+  UNKNOWN = 'UNKNOWN',
+  STOPPED = 'STOPPED',
+  STARTING = 'STARTING',
+  RUNNING = 'RUNNING',
+  PAUSED = 'PAUSED',
+  STOPPING = 'STOPPING',
+  RESTARTING = 'RESTARTING',
+}
+export interface AgentRuntime {
+  gameProcessState: GameProcessState;
+  skseReady: boolean;
+}
+// Game ready = process RUNNING and the local SKSE bridge ready. A connected
+// Agent alone never means Skyrim is available.
+export const isRuntimeReady = (runtime: AgentRuntime) =>
+  runtime.gameProcessState === GameProcessState.RUNNING && runtime.skseReady;
+
+// Application close codes (4000–4999), distinct from the realtime surface.
+export const AgentClose = {
+  AUTH_TIMEOUT: 4000,
+  UNAUTHORIZED: 4001,
+  PROTOCOL_ERROR: 4003,
+  PROTOCOL_UNSUPPORTED: 4005,
+  SUPERSEDED: 4006,
+  HEARTBEAT_TIMEOUT: 4008,
+  CREDENTIAL_REVOKED: 4009,
+  SERVER_MISMATCH: 4010,
+  SESSION_CLOSED: 4011,
+  RATE_LIMITED: 4012,
+  SHUTDOWN: 1001,
+} as const;
+export type AgentCloseReason = keyof typeof AgentClose;
+// Closed catalog carried by ERROR frames; never exception text or stacks.
+export type AgentErrorCode =
+  | 'NOT_IMPLEMENTED'
+  | 'INVALID_MESSAGE'
+  | 'UNKNOWN_COMMAND'
+  | 'NOT_DISPATCHED'
+  | 'RESULT_CONFLICT'
+  | 'UNKNOWN_OPERATION'
+  | 'OPERATION_MISMATCH'
+  // DOMAIN_EVENT (11.4): same eventId, other content or kind.
+  | 'EVENT_CONFLICT'
+  // DOMAIN_EVENT refused by the domain; `reason` from its closed catalog.
+  | 'DOMAIN_REJECTED'
+  | 'TEMPORARILY_UNAVAILABLE';
+
+export interface AgentEnvelope<T extends string = string> {
+  protocolVersion: typeof AGENT_PROTOCOL_VERSION;
+  type: T;
+  messageId: string;
+  gameServerId: string;
+  occurredAt: string;
+  payload: Record<string, unknown>;
+}
+export interface HelloPayload extends AgentRuntime {
+  credentialId: string;
+  credentialSecret: string;
+  agentVersion: string;
+  capabilities: string[];
+}
+export type HeartbeatPayload = AgentRuntime & { capabilities?: string[] };
+
+export class AgentProtocolError extends Error {
+  constructor(readonly reason: 'PROTOCOL_ERROR' | 'PROTOCOL_UNSUPPORTED') {
+    super(reason);
+  }
+}
+const invalid = (): never => {
+  throw new AgentProtocolError('PROTOCOL_ERROR');
+};
+const plain = (value: unknown): Record<string, unknown> =>
+  value !== null &&
+  typeof value === 'object' &&
+  Object.getPrototypeOf(value) === Object.prototype
+    ? (value as Record<string, unknown>)
+    : invalid();
+function exactKeys(
+  value: Record<string, unknown>,
+  required: readonly string[],
+  optional: readonly string[] = [],
+): void {
+  const keys = Object.keys(value);
+  if (
+    required.some((key) => !keys.includes(key)) ||
+    keys.some((key) => !required.includes(key) && !optional.includes(key))
+  )
+    invalid();
+}
+const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/;
+const uuid = (value: unknown): string =>
+  typeof value === 'string' && isUUID(value) ? value.toLowerCase() : invalid();
+
+// Parses and copies one text frame. Unknown or extra keys are rejected,
+// matching the closed validation used by the rest of the project. A wrong
+// protocol version is reported separately so the Agent learns why.
+export function parseEnvelope(raw: string): AgentEnvelope {
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return invalid();
+  }
+  const frame = plain(value);
+  exactKeys(frame, [
+    'protocolVersion',
+    'type',
+    'messageId',
+    'gameServerId',
+    'occurredAt',
+    'payload',
+  ]);
+  if (typeof frame.protocolVersion !== 'string') invalid();
+  if (frame.protocolVersion !== AGENT_PROTOCOL_VERSION)
+    throw new AgentProtocolError('PROTOCOL_UNSUPPORTED');
+  if (
+    typeof frame.type !== 'string' ||
+    typeof frame.occurredAt !== 'string' ||
+    !ISO_UTC.test(frame.occurredAt) ||
+    Number.isNaN(Date.parse(frame.occurredAt))
+  )
+    invalid();
+  return {
+    protocolVersion: AGENT_PROTOCOL_VERSION,
+    type: frame.type as string,
+    messageId: uuid(frame.messageId),
+    gameServerId: uuid(frame.gameServerId),
+    occurredAt: frame.occurredAt as string,
+    payload: { ...plain(frame.payload) },
+  };
+}
+export const isInboundType = (type: string): type is AgentInboundType =>
+  (AGENT_INBOUND_TYPES as readonly string[]).includes(type);
+
+// 256-bit secrets are 43 base64url characters without padding.
+const SECRET = /^[A-Za-z0-9_-]{43}$/;
+const VERSION = /^[A-Za-z0-9._:-]{1,64}$/;
+// Capabilities express operational compatibility, never authorization.
+const CAPABILITY = /^[A-Z][A-Z0-9_]{0,63}$/;
+function capabilities(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length > MAX_AGENT_CAPABILITIES) invalid();
+  const list = (value as unknown[]).map((item) =>
+    typeof item === 'string' && CAPABILITY.test(item) ? item : invalid(),
+  );
+  if (new Set(list).size !== list.length) invalid();
+  return list;
+}
+function runtime(payload: Record<string, unknown>): AgentRuntime {
+  if (
+    !Object.values(GameProcessState).includes(
+      payload.gameProcessState as GameProcessState,
+    ) ||
+    typeof payload.skseReady !== 'boolean'
+  )
+    invalid();
+  return {
+    gameProcessState: payload.gameProcessState as GameProcessState,
+    skseReady: payload.skseReady as boolean,
+  };
+}
+export function helloPayload(payload: Record<string, unknown>): HelloPayload {
+  exactKeys(payload, [
+    'credentialId',
+    'credentialSecret',
+    'agentVersion',
+    'capabilities',
+    'gameProcessState',
+    'skseReady',
+  ]);
+  if (
+    typeof payload.credentialSecret !== 'string' ||
+    !SECRET.test(payload.credentialSecret) ||
+    typeof payload.agentVersion !== 'string' ||
+    !VERSION.test(payload.agentVersion)
+  )
+    invalid();
+  return {
+    credentialId: uuid(payload.credentialId),
+    credentialSecret: payload.credentialSecret as string,
+    agentVersion: payload.agentVersion as string,
+    capabilities: capabilities(payload.capabilities),
+    ...runtime(payload),
+  };
+}
+// Capabilities may change with the running game (e.g. a plugin update);
+// omitting them keeps the ones announced before.
+export function heartbeatPayload(
+  payload: Record<string, unknown>,
+): HeartbeatPayload {
+  exactKeys(payload, ['gameProcessState', 'skseReady'], ['capabilities']);
+  return {
+    ...runtime(payload),
+    ...(payload.capabilities === undefined
+      ? {}
+      : { capabilities: capabilities(payload.capabilities) }),
+  };
+}
+
+// COMMAND_ACK: the Agent received this delivery attempt. The session (and
+// so the connection) comes from the socket, never from the payload.
+export interface CommandAckPayload {
+  commandId: string;
+  correlationId: string;
+  attempt: number;
+}
+export function commandAckPayload(
+  payload: Record<string, unknown>,
+): CommandAckPayload {
+  exactKeys(payload, ['commandId', 'correlationId', 'attempt']);
+  if (
+    typeof payload.attempt !== 'number' ||
+    !Number.isSafeInteger(payload.attempt) ||
+    payload.attempt < 1
+  )
+    invalid();
+  return {
+    commandId: uuid(payload.commandId),
+    correlationId: uuid(payload.correlationId),
+    attempt: payload.attempt as number,
+  };
+}
+// COMMAND_RESULT: the outcome of the command (any attempt, any session of
+// the server). No free-text message is accepted: the backend stores its
+// own catalog message. The typed result is validated per command type by
+// the Game Bridge.
+export type CommandResultPayload = {
+  commandId: string;
+  correlationId: string;
+} & (
+  | { outcome: 'SUCCEEDED'; result: unknown }
+  | { outcome: 'FAILED'; errorCode: RemoteFailureCode }
+  | { outcome: typeof UNCERTAIN_OUTCOME }
+);
+export function commandResultPayload(
+  payload: Record<string, unknown>,
+): CommandResultPayload {
+  const ids = {
+    commandId: uuid(payload.commandId),
+    correlationId: uuid(payload.correlationId),
+  };
+  switch (payload.outcome) {
+    case 'SUCCEEDED':
+      exactKeys(payload, ['commandId', 'correlationId', 'outcome', 'result']);
+      return { ...ids, outcome: 'SUCCEEDED', result: payload.result };
+    case 'FAILED':
+      exactKeys(payload, [
+        'commandId',
+        'correlationId',
+        'outcome',
+        'errorCode',
+      ]);
+      if (
+        !REMOTE_FAILURE_CODES.includes(payload.errorCode as RemoteFailureCode)
+      )
+        invalid();
+      return {
+        ...ids,
+        outcome: 'FAILED',
+        errorCode: payload.errorCode as RemoteFailureCode,
+      };
+    case UNCERTAIN_OUTCOME:
+      exactKeys(payload, ['commandId', 'correlationId', 'outcome']);
+      return { ...ids, outcome: UNCERTAIN_OUTCOME };
+    default:
+      return invalid();
+  }
+}
+
+// SERVER_CONTROL_RESULT: the outcome of one operation (whatever session
+// received it). Closed: a remote failure code, never free text; the
+// optional runtime is the process state the Agent knows after the action.
+export type ServerControlResultPayload = {
+  operationId: string;
+  correlationId: string;
+  type: ServerControlType;
+  runtime?: AgentRuntime;
+} & (
+  | { outcome: 'SUCCEEDED' }
+  | { outcome: 'FAILED'; errorCode: ServerControlRemoteFailure }
+  | { outcome: typeof UNCERTAIN_OUTCOME }
+);
+export function serverControlResultPayload(
+  payload: Record<string, unknown>,
+): ServerControlResultPayload {
+  const base = ['operationId', 'correlationId', 'type', 'outcome'];
+  const common = {
+    operationId: uuid(payload.operationId),
+    correlationId: uuid(payload.correlationId),
+    type: isServerControlType(payload.type) ? payload.type : invalid(),
+    ...(payload.runtime === undefined
+      ? {}
+      : {
+          runtime: (() => {
+            const value = plain(payload.runtime);
+            exactKeys(value, ['gameProcessState', 'skseReady']);
+            return runtime(value);
+          })(),
+        }),
+  };
+  switch (payload.outcome) {
+    case 'SUCCEEDED':
+    case UNCERTAIN_OUTCOME:
+      exactKeys(payload, base, ['runtime']);
+      return { ...common, outcome: payload.outcome };
+    case 'FAILED':
+      exactKeys(payload, [...base, 'errorCode'], ['runtime']);
+      if (
+        !SERVER_CONTROL_REMOTE_FAILURES.includes(
+          payload.errorCode as ServerControlRemoteFailure,
+        )
+      )
+        invalid();
+      return {
+        ...common,
+        outcome: 'FAILED',
+        errorCode: payload.errorCode as ServerControlRemoteFailure,
+      };
+    default:
+      return invalid();
+  }
+}
+
+// DOMAIN_EVENT (11.4): { eventId, kind, data } with a closed kind and an
+// exact data schema per kind. The Agent reports facts or the completion of
+// backend-defined work; it never names a player, a server, an amount of
+// GOLD, a price, an item term or a final level.
+export type DomainEventPayload =
+  | {
+      eventId: string;
+      kind: 'CHARACTER_OWNERSHIP_PROOF';
+      data: { challenge: string; characterExternalId: string };
+    }
+  | {
+      eventId: string;
+      kind: 'PROFESSION_EXPERIENCE';
+      data: { characterExternalId: string; amount: number };
+    }
+  | {
+      eventId: string;
+      kind: 'TRADE_SETTLEMENT' | 'MARKETPLACE_SETTLEMENT';
+      data: { workId: string; outcome: 'SETTLED' | 'FAILED' };
+    }
+  | {
+      eventId: string;
+      kind: 'MARKETPLACE_CUSTODY';
+      data: { workId: string; outcome: 'CUSTODIED' | 'FAILED' };
+    }
+  | {
+      eventId: string;
+      kind: 'MARKETPLACE_RELEASE';
+      data: { workId: string; outcome: 'RELEASED' | 'FAILED' };
+    };
+const OPAQUE = /^[A-Za-z0-9._:-]{1,128}$/;
+const opaque = (value: unknown): string =>
+  typeof value === 'string' && OPAQUE.test(value) ? value : invalid();
+const oneOf = <T extends string>(value: unknown, allowed: readonly T[]): T =>
+  allowed.includes(value as T) ? (value as T) : invalid();
+export function domainEventPayload(
+  payload: Record<string, unknown>,
+): DomainEventPayload {
+  exactKeys(payload, ['eventId', 'kind', 'data']);
+  const eventId = uuid(payload.eventId);
+  const data = plain(payload.data);
+  const work = (outcomes: readonly string[]) => {
+    exactKeys(data, ['workId', 'outcome']);
+    return {
+      workId: uuid(data.workId),
+      outcome: oneOf(data.outcome, outcomes),
+    };
+  };
+  switch (payload.kind) {
+    case 'CHARACTER_OWNERSHIP_PROOF':
+      exactKeys(data, ['challenge', 'characterExternalId']);
+      if (typeof data.challenge !== 'string' || data.challenge.length > 64)
+        invalid();
+      return {
+        eventId,
+        kind: payload.kind,
+        data: {
+          challenge: data.challenge as string,
+          characterExternalId: opaque(data.characterExternalId),
+        },
+      };
+    case 'PROFESSION_EXPERIENCE':
+      exactKeys(data, ['characterExternalId', 'amount']);
+      if (
+        typeof data.amount !== 'number' ||
+        !Number.isSafeInteger(data.amount) ||
+        data.amount < 1
+      )
+        invalid();
+      return {
+        eventId,
+        kind: payload.kind,
+        data: {
+          characterExternalId: opaque(data.characterExternalId),
+          amount: data.amount as number,
+        },
+      };
+    case 'TRADE_SETTLEMENT': {
+      const result = work(['SUCCEEDED', 'SETTLED', 'FAILED']);
+      return {
+        eventId,
+        kind: payload.kind,
+        data: {
+          workId: result.workId,
+          outcome: result.outcome === 'FAILED' ? 'FAILED' : 'SETTLED',
+        },
+      };
+    }
+    case 'MARKETPLACE_SETTLEMENT':
+      return {
+        eventId,
+        kind: payload.kind,
+        data: work(['SETTLED', 'FAILED']) as {
+          workId: string;
+          outcome: 'SETTLED' | 'FAILED';
+        },
+      };
+    case 'MARKETPLACE_CUSTODY':
+      return {
+        eventId,
+        kind: payload.kind,
+        data: (() => {
+          const result = work(['SUCCEEDED', 'CUSTODIED', 'FAILED']);
+          return {
+            workId: result.workId,
+            outcome:
+              result.outcome === 'FAILED'
+                ? ('FAILED' as const)
+                : ('CUSTODIED' as const),
+          };
+        })(),
+      };
+    case 'MARKETPLACE_RELEASE':
+      return {
+        eventId,
+        kind: payload.kind,
+        data: work(['RELEASED', 'FAILED']) as {
+          workId: string;
+          outcome: 'RELEASED' | 'FAILED';
+        },
+      };
+    default:
+      return invalid();
+  }
+}
+// WORK_SYNC (11.4): the Agent asks for pending work of its own server
+// (never named in the payload). Optional kind filter, opaque cursor and a
+// page limit (1–50).
+export interface WorkSyncPayload {
+  kind?: AgentWorkKind;
+  cursor?: string;
+  limit?: number;
+}
+const CURSOR = /^[A-Za-z0-9_-]{1,512}$/;
+export function workSyncPayload(
+  payload: Record<string, unknown>,
+): WorkSyncPayload {
+  exactKeys(payload, [], ['kind', 'cursor', 'limit']);
+  if (
+    (payload.kind !== undefined && !isAgentWorkKind(payload.kind)) ||
+    (payload.cursor !== undefined &&
+      (typeof payload.cursor !== 'string' || !CURSOR.test(payload.cursor))) ||
+    (payload.limit !== undefined &&
+      (typeof payload.limit !== 'number' ||
+        !Number.isSafeInteger(payload.limit) ||
+        payload.limit < 1 ||
+        payload.limit > MAX_WORK_PAGE_ITEMS))
+  )
+    invalid();
+  return {
+    ...(payload.kind === undefined
+      ? {}
+      : { kind: payload.kind as AgentWorkKind }),
+    ...(payload.cursor === undefined
+      ? {}
+      : { cursor: payload.cursor as string }),
+    ...(payload.limit === undefined ? {} : { limit: payload.limit as number }),
+  };
+}
+
+export function outbound(
+  type: AgentOutboundType,
+  gameServerId: string,
+  payload: Record<string, unknown>,
+  now: Date,
+): AgentEnvelope<AgentOutboundType> {
+  return {
+    protocolVersion: AGENT_PROTOCOL_VERSION,
+    type,
+    messageId: randomUUID(),
+    gameServerId,
+    occurredAt: now.toISOString(),
+    payload,
+  };
+}

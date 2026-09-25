@@ -185,3 +185,35 @@ shape por scope, status e expiração, índices únicos parciais de um ACTIVE po
 oferta + titular, trigger de histórico imutável) e `vip_entitlement_requests`
 (idempotência por scope de ator, append-only). `down` recusa reverter com
 entitlements existentes. Detalhes em `docs/player-services.md`.
+
+A Subetapa 11.1 adiciona `1790020000000-GameAgentTransport`: permission
+`GAME_AGENT_CREDENTIAL_MANAGE` com grants para COORDINATOR e DEV (37 permissions,
+95 grants), `game_agent_credentials` (SHA-256 do segredo com CHECK de formato,
+status ACTIVE/REVOKED coerente com `revoked_at`, trigger de identidade e hash
+imutáveis e histórico sem DELETE) e, em `game_connections`, as colunas da sessão
+do Host Agent (`credential_id` FK, `capabilities` jsonb limitado a 64,
+`game_process_state`, `skse_ready`) com CHECKs de coerência e de
+`disconnect_reason`. `down` recusa reverter com credenciais existentes. Detalhes
+em `docs/integration-architecture.md`.
+
+A Subetapa 11.3 adiciona `1790030000000-ServerControlTransport` (24 migrations):
+status terminal `UNCERTAIN` em `server_control_operations`, colunas do claim
+(`dispatch_connection_id` FK para `game_connections`, `not_after`,
+`result_deadline_at`) com CHECKs de coerência (claim com os dois prazos, UNCERTAIN
+só após o claim, `error_code` em FAILED/UNCERTAIN), índice parcial único de uma
+operação `PENDING`/`DISPATCHED` por servidor e índice `(status,
+result_deadline_at)`. Operações da Etapa 09 ainda abertas são reconciliadas: com
+claim → `UNCERTAIN/RESULT_TIMEOUT`; sem claim → `FAILED/DISPATCH_EXPIRED`. `down`
+volta `UNCERTAIN` para `DISPATCHED` e os novos códigos para o catálogo antigo.
+Detalhes em `docs/integration-architecture.md` §9.1 e `docs/server-control.md`.
+
+A Subetapa 11.4 adiciona `1790040000000-AgentDomainEvents` (25 migrations):
+`agent_domain_event_receipts` (PK servidor + `event_id`, kind fechado, SHA-256 do
+conteúdo canônico, status `APPLIED`/`REJECTED` + reason; nunca o payload),
+`player_marketplace_item_releases` (uma por listing, `PENDING`/`COMPLETED`/`FAILED`
+com CHECK de coerência, reason `CANCELLED`/`PURCHASE_FAILED`, unicidade do
+`release_event_id` por servidor) e `vip_reward_deliveries` (uma por reward de
+entitlement CHARACTER, snapshot jsonb ≤ 4096 bytes, `game_command_id` único, CHECK
+de estado). Backfill: listings já `CANCELLED`/`FAILED` com custódia `CUSTODIED`
+recebem release `PENDING`; entitlements anteriores não recebem deliveries. `down`
+recusa enquanto houver release `PENDING` ou delivery `PENDING`/`COMMAND_CREATED`.

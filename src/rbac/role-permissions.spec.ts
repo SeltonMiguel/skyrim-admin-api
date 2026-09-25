@@ -3,8 +3,8 @@ import { Permission as P } from './permissions.js';
 import { RoleName as R } from './roles.js';
 
 describe('Explicit role permission matrix', () => {
-  it('grants all 36 permissions to coordinator without duplicates', () => {
-    expect(Object.values(P)).toHaveLength(36);
+  it('grants all 37 permissions to coordinator without duplicates', () => {
+    expect(Object.values(P)).toHaveLength(37);
     expect(new Set(ROLE_PERMISSIONS[R.COORDINATOR])).toEqual(
       new Set(Object.values(P)),
     );
@@ -18,6 +18,7 @@ describe('Explicit role permission matrix', () => {
       P.SERVER_START,
       P.SERVER_PAUSE,
       P.SERVER_RESTART,
+      P.GAME_AGENT_CREDENTIAL_MANAGE,
     ]);
     for (const role of [R.GENERAL_CHIEF, R.ADMIN, R.MODERATOR, R.SUPPORT]) {
       for (const permission of [
@@ -27,6 +28,7 @@ describe('Explicit role permission matrix', () => {
         P.STAFF_READ,
         P.STAFF_WRITE,
         P.VIP_STORE_WRITE,
+        P.GAME_AGENT_CREDENTIAL_MANAGE,
       ])
         expect(ROLE_PERMISSIONS[role]).not.toContain(permission);
     }

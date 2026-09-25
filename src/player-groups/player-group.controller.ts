@@ -31,6 +31,7 @@ import {
 import type { AuthenticatedPlayer } from '../player-auth/player-auth.types.js';
 import { PlayerGroupService } from './player-group.service.js';
 import {
+  CharacterGroupDto,
   EmptyGroupBodyDto,
   GroupCharacterBodyDto,
   GroupDto,
@@ -167,5 +168,36 @@ export class PlayerGroupInviteController {
     @CurrentPlayer() auth: AuthenticatedPlayer,
   ) {
     return this.groups.decline(auth.actor, route.inviteId);
+  }
+}
+// Cold-start recovery (11.6): the current group of one of your characters,
+// for a client that knows no groupId. One active membership per character
+// link is a database invariant, so this is a single optional group.
+@ApiTags('player-groups')
+@ApiBearerAuth()
+@ApiBadRequestResponse({ type: HttpErrorDto })
+@ApiUnauthorizedResponse({ type: HttpErrorDto })
+@ApiNotFoundResponse({
+  type: HttpErrorDto,
+  description: 'Character link not VERIFIED for this player.',
+})
+@UseGuards(PlayerAuthGuard)
+@Controller({
+  path: 'player/me/characters/:characterLinkId/group',
+  version: '1',
+})
+export class CharacterGroupController {
+  constructor(private readonly groups: PlayerGroupService) {}
+  @Get()
+  @Header('Cache-Control', 'no-store')
+  @ApiOperation({
+    summary: 'Active group of your character, or { group: null }.',
+  })
+  @ApiOkResponse({ type: CharacterGroupDto })
+  get(
+    @Param() route: GroupCharacterBodyDto,
+    @CurrentPlayer() auth: AuthenticatedPlayer,
+  ) {
+    return this.groups.forCharacter(auth.actor, route.characterLinkId);
   }
 }

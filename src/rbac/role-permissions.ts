@@ -43,6 +43,7 @@ export const ROLE_PERMISSIONS: Readonly<
     Permission.ANNOUNCEMENT_SEND,
     Permission.STAFF_TELEPORT_TO_PLAYER,
     Permission.PLAYER_TELEPORT_TO_STAFF,
+    Permission.GAME_AGENT_CREDENTIAL_MANAGE,
   ],
   [RoleName.GENERAL_CHIEF]: [
     Permission.WORLD_READ,
@@ -112,5 +113,6 @@ export const ROLE_PERMISSIONS: Readonly<
     Permission.SERVER_START,
     Permission.SERVER_PAUSE,
     Permission.SERVER_RESTART,
+    Permission.GAME_AGENT_CREDENTIAL_MANAGE,
   ],
 };

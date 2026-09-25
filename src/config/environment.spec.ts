@@ -171,6 +171,8 @@ describe('Game Bridge environment validation', () => {
       ackTimeoutMs: 5000,
       executionTimeoutMs: 30000,
       maxDispatchAttempts: 3,
+      pendingTimeoutMs: 60000,
+      workerIntervalMs: 500,
     });
   });
   it.each([
@@ -178,6 +180,8 @@ describe('Game Bridge environment validation', () => {
     'GAME_COMMAND_ACK_TIMEOUT_MS',
     'GAME_COMMAND_EXECUTION_TIMEOUT_MS',
     'GAME_COMMAND_MAX_DISPATCH_ATTEMPTS',
+    'GAME_COMMAND_PENDING_TIMEOUT_MS',
+    'GAME_COMMAND_WORKER_INTERVAL_MS',
   ])('rejects invalid %s', (field) => {
     for (const value of ['0', '-1', '1.5', 'abc', 'Infinity', '999999999999'])
       expect(() => validateEnvironment({ ...example, [field]: value })).toThrow(
@@ -368,4 +372,71 @@ describe('Player chat environment validation', () => {
         }),
       ).toThrow('PLAYER_CHAT_RATE_LIMIT_WINDOW');
   });
+});
+
+describe('Host Agent environment validation', () => {
+  it('defaults to a 5s HELLO window, 10s heartbeat and 30s timeout', () => {
+    expect(validateEnvironment(example).agent).toEqual({
+      authTimeoutMs: 5000,
+      heartbeatIntervalMs: 10000,
+      heartbeatTimeoutMs: 30000,
+      maxInFlightCommands: 32,
+      messageRateLimitCount: 200,
+      messageRateLimitWindowMs: 10000,
+      workPushIntervalMs: 2000,
+    });
+    expect(validateEnvironment(example).vipDelivery).toEqual({
+      workerIntervalMs: 2000,
+    });
+    expect(
+      validateEnvironment({
+        ...example,
+        AGENT_HEARTBEAT_INTERVAL: '1s',
+        AGENT_HEARTBEAT_TIMEOUT: '3s',
+      }).agent,
+    ).toMatchObject({ heartbeatIntervalMs: 1000, heartbeatTimeoutMs: 3000 });
+  });
+  it.each([
+    { AGENT_HEARTBEAT_INTERVAL: '30s', AGENT_HEARTBEAT_TIMEOUT: '30s' },
+    { AGENT_HEARTBEAT_INTERVAL: '10s', AGENT_HEARTBEAT_TIMEOUT: '5s' },
+    // Never beyond the Game Bridge session timeout (30s by default).
+    { AGENT_HEARTBEAT_TIMEOUT: '31s' },
+    { AGENT_HEARTBEAT_INTERVAL: '10' },
+    { AGENT_AUTH_TIMEOUT_MS: '50' },
+    { AGENT_AUTH_TIMEOUT_MS: '60001' },
+    { AGENT_MAX_IN_FLIGHT_COMMANDS: '0' },
+    { AGENT_MESSAGE_RATE_LIMIT_COUNT: '9' },
+    { AGENT_MESSAGE_RATE_LIMIT_WINDOW_MS: '99' },
+    { AGENT_WORK_PUSH_INTERVAL_MS: '99' },
+  ])('rejects %o', (override) =>
+    expect(() => validateEnvironment({ ...example, ...override })).toThrow(
+      /AGENT_/,
+    ),
+  );
+});
+
+describe('Server Control environment validation', () => {
+  it('defaults to 30s pending, 10s delivery window, 5min result timeout', () => {
+    expect(validateEnvironment(example).serverControl).toEqual({
+      pendingTimeoutMs: 30000,
+      deliveryWindowMs: 10000,
+      resultTimeoutMs: 300000,
+      workerIntervalMs: 1000,
+    });
+  });
+  it.each([
+    { SERVER_CONTROL_PENDING_TIMEOUT_MS: '499' },
+    { SERVER_CONTROL_DELIVERY_WINDOW_MS: '99' },
+    { SERVER_CONTROL_RESULT_TIMEOUT_MS: '3600001' },
+    { SERVER_CONTROL_WORKER_INTERVAL_MS: '49' },
+    // The result deadline never precedes the end of the delivery window.
+    {
+      SERVER_CONTROL_DELIVERY_WINDOW_MS: '10000',
+      SERVER_CONTROL_RESULT_TIMEOUT_MS: '10000',
+    },
+  ])('rejects %o', (override) =>
+    expect(() => validateEnvironment({ ...example, ...override })).toThrow(
+      /SERVER_CONTROL_/,
+    ),
+  );
 });

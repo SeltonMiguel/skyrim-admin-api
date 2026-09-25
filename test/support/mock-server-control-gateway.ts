@@ -6,12 +6,17 @@ import type {
 
 export class MockServerControlGateway extends ServerControlGateway {
   sends: ServerControlRequest[] = [];
+  // Session offered as the claim target; null means no eligible Agent.
+  connectionId: string | null = null;
   responses: (ServerControlAcceptance | Error | 'HANG')[] = [];
   beforeSend?: (request: ServerControlRequest) => Promise<void>;
   reset(): void {
     this.sends = [];
     this.responses = [];
     this.beforeSend = undefined;
+  }
+  override target(): string | null {
+    return this.connectionId;
   }
   override async send(
     request: ServerControlRequest,
