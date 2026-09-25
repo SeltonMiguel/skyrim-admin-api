@@ -4,6 +4,8 @@ import type { TerminalStatus } from '../../game-bridge/command-state.js';
 import { COMMAND_TYPES } from '../../game-bridge/command-contract.js';
 import type { CommandType } from '../../game-bridge/command-contract.js';
 import { ServerHealth } from '../server-health.js';
+import { DISCONNECT_REASONS } from '../../game-bridge/entities/game-connection.entity.js';
+import type { DisconnectReason } from '../../game-bridge/entities/game-connection.entity.js';
 
 export class CurrentConnectionDto {
   @ApiProperty({ format: 'uuid' })
@@ -27,8 +29,8 @@ export class ConnectionDto extends CurrentConnectionDto {
   gameServerId: string;
   @ApiProperty({ type: String, format: 'date-time', nullable: true })
   disconnectedAt: Date | null;
-  @ApiProperty({ enum: ['SUPERSEDED', 'STALE', 'REQUESTED'], nullable: true })
-  disconnectReason: 'SUPERSEDED' | 'STALE' | 'REQUESTED' | null;
+  @ApiProperty({ enum: DISCONNECT_REASONS, nullable: true })
+  disconnectReason: DisconnectReason | null;
   @ApiProperty({ format: 'date-time' })
   createdAt: Date;
 }

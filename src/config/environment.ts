@@ -43,6 +43,13 @@ export interface ApplicationConfig {
     rateLimitWindow: number;
   };
   realtime: { authTimeoutMs: number };
+  // Host Agent transport (11.1). The heartbeat timeout never exceeds the Game
+  // Bridge connection timeout, so a live socket always has a healthy session.
+  agent: {
+    authTimeoutMs: number;
+    heartbeatIntervalMs: number;
+    heartbeatTimeoutMs: number;
+  };
   bootstrap: { username?: string; displayName?: string; password?: string };
   database: {
     host: string;
@@ -83,6 +90,9 @@ interface Environment {
   PLAYER_CHAT_RATE_LIMIT_COUNT: number;
   PLAYER_CHAT_RATE_LIMIT_WINDOW: string;
   REALTIME_AUTH_TIMEOUT_MS: number;
+  AGENT_AUTH_TIMEOUT_MS: number;
+  AGENT_HEARTBEAT_INTERVAL: string;
+  AGENT_HEARTBEAT_TIMEOUT: string;
   DISCORD_CLIENT_ID?: string;
   DISCORD_CLIENT_SECRET?: string;
   DISCORD_REDIRECT_URIS?: string;
@@ -205,6 +215,13 @@ const schema = Joi.object<Environment>({
     .min(100)
     .max(60000)
     .default(5000),
+  AGENT_AUTH_TIMEOUT_MS: Joi.number()
+    .integer()
+    .min(100)
+    .max(60000)
+    .default(5000),
+  AGENT_HEARTBEAT_INTERVAL: ttl('10s'),
+  AGENT_HEARTBEAT_TIMEOUT: ttl('30s'),
   DISCORD_CLIENT_ID: Joi.string().trim().allow('').max(128),
   DISCORD_CLIENT_SECRET: Joi.string().allow('').max(256),
   DISCORD_REDIRECT_URIS: Joi.string().allow('').max(4096),
@@ -261,7 +278,22 @@ export function validateEnvironment(
     throw new Error(
       'Invalid environment variables: PLAYER_CHAT_RATE_LIMIT_WINDOW',
     );
+  const agentInterval = ttlSeconds(value.AGENT_HEARTBEAT_INTERVAL) * 1000;
+  const agentTimeout = ttlSeconds(value.AGENT_HEARTBEAT_TIMEOUT) * 1000;
+  if (
+    agentInterval >= agentTimeout ||
+    agentTimeout > 3600000 ||
+    agentTimeout > value.GAME_BRIDGE_HEARTBEAT_TIMEOUT_MS
+  )
+    throw new Error(
+      'Invalid environment variables: AGENT_HEARTBEAT_INTERVAL, AGENT_HEARTBEAT_TIMEOUT',
+    );
   return {
+    agent: {
+      authTimeoutMs: value.AGENT_AUTH_TIMEOUT_MS,
+      heartbeatIntervalMs: agentInterval,
+      heartbeatTimeoutMs: agentTimeout,
+    },
     playerCharacters: { challengeTtl },
     playerGroups: { inviteTtl },
     playerGuilds: { inviteTtl: guildInviteTtl },

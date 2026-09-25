@@ -2,15 +2,16 @@ import {
   Injectable,
   OnApplicationBootstrap,
   OnModuleDestroy,
+  OnModuleInit,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { HttpAdapterHost } from '@nestjs/core';
-import type { IncomingMessage, Server } from 'node:http';
+import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { decodeJwt } from 'jose';
 import { WebSocket, WebSocketServer } from 'ws';
 import type { RawData } from 'ws';
 import type { ApplicationConfig } from '../config/environment.js';
+import { WebSocketUpgradeRouter } from '../websocket/websocket-upgrade.router.js';
 import { AuthService } from '../auth/auth.service.js';
 import { PlayerAuthService } from '../player-auth/player-auth.service.js';
 import { RealtimeEventBus } from '../realtime-events/realtime-event-bus.js';
@@ -42,14 +43,13 @@ export const RealtimeClose = {
 // closed when its access token expires; clients reconnect with a new one.
 @Injectable()
 export class RealtimeGateway
-  implements OnApplicationBootstrap, OnModuleDestroy
+  implements OnModuleInit, OnApplicationBootstrap, OnModuleDestroy
 {
   private readonly authTimeoutMs: number;
   private wss?: WebSocketServer;
-  private server?: Server;
   private unsubscribe?: () => void;
   constructor(
-    private readonly adapterHost: HttpAdapterHost,
+    private readonly upgrades: WebSocketUpgradeRouter,
     private readonly bus: RealtimeEventBus,
     private readonly registry: RealtimeConnectionRegistry,
     private readonly players: PlayerAuthService,
@@ -60,20 +60,21 @@ export class RealtimeGateway
       infer: true,
     }).realtime.authTimeoutMs;
   }
-  onApplicationBootstrap(): void {
-    this.server = this.adapterHost.httpAdapter.getHttpServer() as Server;
+  // The upgrade router owns path matching (exact path, no query string).
+  onModuleInit(): void {
     this.wss = new WebSocketServer({
       noServer: true,
       maxPayload: MAX_REALTIME_FRAME_BYTES,
     });
-    this.server.on('upgrade', this.upgrade);
+    this.upgrades.register(REALTIME_PATH, this.upgrade);
+  }
+  onApplicationBootstrap(): void {
     this.unsubscribe = this.bus.subscribe((envelope, recipients) =>
       this.deliver(envelope, recipients),
     );
   }
   onModuleDestroy(): void {
     this.unsubscribe?.();
-    this.server?.off('upgrade', this.upgrade);
     for (const socket of this.wss?.clients ?? [])
       socket.close(RealtimeClose.SHUTDOWN, 'SHUTDOWN');
     this.wss?.close();
@@ -89,13 +90,6 @@ export class RealtimeGateway
     socket: Duplex,
     head: Buffer,
   ) => {
-    const url = new URL(request.url ?? '/', 'http://localhost');
-    // Exact path and no query string: credentials must not travel in URLs.
-    if (url.pathname !== REALTIME_PATH || url.search) {
-      socket.write('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
-      socket.destroy();
-      return;
-    }
     this.wss!.handleUpgrade(request, socket, head, (ws) => this.connect(ws));
   };
   private connect(ws: WebSocket): void {

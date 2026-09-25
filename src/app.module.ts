@@ -1,5 +1,6 @@
 import { RealtimeEventsModule } from './realtime-events/realtime-events.module.js';
 import { RealtimeModule } from './realtime/realtime.module.js';
+import { GameAgentModule } from './game-agent/game-agent.module.js';
 import { PlayerGroupsModule } from './player-groups/player-groups.module.js';
 import { PlayerGuildsModule } from './player-guilds/player-guilds.module.js';
 import { EconomyModule } from './economy/economy.module.js';
@@ -60,6 +61,7 @@ import { HealthModule } from './health/health.module.js';
     PlayerSettingsModule,
     VipEntitlementsModule,
     RealtimeModule,
+    GameAgentModule,
   ],
 })
 export class AppModule {}
