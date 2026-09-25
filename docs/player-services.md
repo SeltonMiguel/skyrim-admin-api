@@ -80,7 +80,7 @@ domínio. A Player API nunca chama controllers administrativos. O prefixo
 | 10.12 Economy / Wallet | **Implementada.** Ledger de partidas dobradas imutável (GOLD inteiro) do character identity, balances como projeção, credit/debit SYSTEM e transfer internos, wallet read-only; migration `1789960000000-Economy` |
 | 10.13 Player Trade | **Implementada.** Trade entre character identities com ofertas versionadas, escrow de GOLD em TRADE_ESCROW, settlement só de GOLD imediato e GAME_ITEM aguardando o Agent (contrato interno); migration `1789970000000-PlayerTrades` |
 | 10.14 Marketplace | **Implementada.** Listing de um GAME_ITEM por GOLD que só fica ACTIVE com custódia confirmada pelo Agent, compra com GOLD reservado em MARKET_ESCROW, settlement/falha pelo Agent (contratos internos); migration `1789980000000-PlayerMarketplace` |
-| 10.15 Chat | Chat event-driven sobre a infraestrutura realtime da 10.8 |
+| 10.15 Chat | **Implementada.** Chat persistente de texto plano GLOBAL/GROUP/GUILD/DIRECT com retenção (7d), histórico HTTP, entrega por `CHAT_MESSAGE_CREATED` no realtime da 10.8, DIRECT privado por ownership link; migration `1789990000000-PlayerChat` |
 | 10.16 Player Settings | Preferências de conta com allowlist explícita |
 | 10.17 VIP Player Integration | Integração do catálogo existente na superfície do player |
 
@@ -1230,6 +1230,118 @@ transitório: reserva e resolução commitam junto com a listing e a purchase.
 - Arquitetura **event/realtime**, reutilizando a infraestrutura WebSocket da 10.8.
 - Retenção e configuração detalhadas podem evoluir.
 
+#### Implementação (10.15)
+
+Módulo `src/player-chat/`. Chat persistente de **texto plano** com retenção curta.
+**HTTP é a fonte de verdade do histórico**; o WebSocket só entrega mensagens
+novas. Fora de escopo: voz, anexos/imagens, markdown rico, presença/typing,
+chat do Skyrim/Agent e GameCommand.
+
+| Tabela | Colunas e garantias |
+| --- | --- |
+| `player_chat_messages` | `id`, `game_server_id` (FK), `channel_type` GLOBAL/GROUP/GUILD/DIRECT, `sender_character_id`, `sender_player_character_id` (link que enviou; interno), `group_id`, `guild_id`, `direct_thread_id`, `content`, `created_at`, `expires_at`; CHECK de shape por canal (só a referência do canal preenchida; DIRECT exige link do sender), `content` 1..500 code points, já sem espaços nas pontas e sem caracteres de controle, `expires_at > created_at`; trigger de insert amarra o link do sender ao character e ao servidor e o group/guild/thread ao servidor (sender DIRECT é participante da thread) |
+| `player_chat_direct_threads` | `id`, `game_server_id`, `participant_a_player_character_id`, `participant_b_player_character_id` (FKs para ownership links); par canônico `a < b` (CHECK) e `UNIQUE(a, b)`: uma thread por par de links; trigger exige os dois links no servidor da thread |
+| `player_chat_requests` | idempotência dos envios: `idempotency_scope` `PLAYER:<id>`, `idempotency_key` (`UNIQUE` por scope), `request_fingerprint`, `message_id` (FK deferred, `ON DELETE CASCADE`), `expires_at` igual ao da mensagem |
+
+**Canais:**
+
+| Canal | Enviar | Histórico | Quem |
+| --- | --- | --- | --- |
+| GLOBAL | `POST /api/v1/player/chat/global` `{ characterLinkId, message }` | `GET /api/v1/player/me/characters/:characterLinkId/chat/global?page&limit` | qualquer character próprio VERIFIED; só o servidor daquele character |
+| GROUP | `POST /api/v1/player/groups/:groupId/chat` | `GET /api/v1/player/groups/:groupId/chat?characterLinkId&page&limit` | membership ATIVA daquele ownership link num group ACTIVE; após leave/kick/disband ou revoke → 404 |
+| GUILD | `POST /api/v1/player/guilds/:guildId/chat` | `GET /api/v1/player/guilds/:guildId/chat?characterLinkId&page&limit` | character identity membro ativo da guild ACTIVE; um novo dono VERIFIED do mesmo character lê o histórico atual e envia enquanto for membro (esperado) |
+| DIRECT | `POST /api/v1/player/chat/direct/:targetCharacterId` | `GET /api/v1/player/me/characters/:characterLinkId/chat/direct/:targetCharacterId?page&limit` | thread entre os **ownership links atuais** do sender e do target |
+
+Todas as rotas exigem `PlayerAuthGuard` (player ACTIVE); não-membros, links
+alheios/PENDING/REVOKED e ids desconhecidos recebem o mesmo 404. Não há rotas de
+edição ou exclusão. `targetPlayerId`, `targetCharacterLinkId`, `gameServerId` e
+campos extras → 400.
+
+**DIRECT é privado por ownership (diferença deliberada de Guild, Profession e
+Wallet):** a thread liga os dois `player_characters` (links), não os
+characterExternalIds. O target é resolvido pelo dono VERIFIED atual no servidor
+do sender (conta ACTIVE para enviar); inexistente, só PENDING/REVOKED, de outro
+servidor ou indisponível → 404 genérico `Character not available`; o próprio
+character → 400. Se a ownership de **qualquer** lado muda, a thread anterior deixa
+de ser acessível: o novo dono começa uma thread nova com o próprio link e nunca lê
+as mensagens privadas do dono anterior (nem o outro lado as vê ao olhar para o
+character, já que só a thread dos links atuais é lida). Ids de link, thread e
+player nunca aparecem em respostas ou eventos.
+
+**Conteúdo:** texto plano, com `trim`, 1..500 code points, Unicode bem-formado
+(sem surrogates isolados), sem caracteres de controle C0/C1 (inclusive quebra de
+linha e tab: mensagens de uma linha), sem controles bidirecionais de
+embedding/override/isolate e sem BOM. HTML/Markdown não é interpretado nem
+renderizado: é armazenado e devolvido como texto literal, e o cliente deve
+escapar ao exibir.
+
+**DTO:** `{ messageId, channelType, gameServerId, senderCharacterId, message,
+groupId, guildId, targetCharacterId, createdAt }` (`groupId`/`guildId` no canal
+correspondente; `targetCharacterId` = o outro participante em DIRECT; demais
+`null`). Histórico: `createdAt DESC, id DESC`, `page` 1, `limit` 50 (máx. 100).
+
+**Retenção:** `PLAYER_CHAT_RETENTION` (padrão 7d, de 1d a 30d); `expires_at =
+created_at + retenção`, calculado pelo banco. O histórico só devolve mensagens
+não expiradas e nunca apaga nada durante o GET. Não há scheduler de purga nesta
+etapa: a **limpeza física é da Etapa 12**. O banco já a permite: mensagens (e seus
+registros de idempotência, por cascata) só podem ser deletadas depois de
+expiradas.
+
+**Imutabilidade:** trigger bloqueia qualquer UPDATE em mensagens, threads e
+requests e o TRUNCATE; DELETE de mensagem só passa quando `expires_at <= now()`.
+Assim a purga futura é legítima e remover uma mensagem viva é impossível;
+moderação/redação, se vier, terá caminho próprio auditado e uma migration.
+
+**Idempotência:** todo POST exige `Idempotency-Key`, persistida em
+`player_chat_requests` na transação da mensagem (scope `PLAYER:<id>`,
+independente de GameCommand). Mesma key + mesmo request (canal, destino, link e
+texto) → a mesma mensagem, sem duplicar nem publicar de novo; mesma key com outro
+canal, destino, link ou texto → 409. O replay só responde enquanto o player ainda
+é dono do link.
+
+**Rate limit (MVP):** `PLAYER_CHAT_RATE_LIMIT_COUNT` mensagens (padrão 5, de 1 a
+100) por `PLAYER_CHAT_RATE_LIMIT_WINDOW` (padrão 10s, até 1h), janela deslizante
+por player + character link, em memória. Excedido → 429 com `Retry-After`.
+Retries da mesma key (inclusive concorrentes) não consomem quota; envios que
+falham devolvem o slot. É de **instância única e não é segurança distribuída**; a
+Etapa 12 migra para um mecanismo compartilhado se necessário.
+
+**Realtime:** `CHAT_MESSAGE_CREATED` pelo `RealtimeEventBus`, depois do commit,
+com o mesmo payload do DTO, para todas as conexões de cada destinatário
+(deduplicado por player):
+
+| Canal | Destinatários |
+| --- | --- |
+| GLOBAL | players ACTIVE com character VERIFIED no servidor |
+| GROUP | donos VERIFIED atuais das memberships ativas |
+| GUILD | donos VERIFIED atuais dos characters membros ativos |
+| DIRECT | apenas os dois players dos links da thread |
+
+Staff não recebe; o cliente não escolhe room. O fan-out GLOBAL resolve os players
+no banco a cada mensagem: adequado ao MVP, **não escala indefinidamente**
+(otimização/broker na Etapa 12, junto da entrega multi-instância).
+
+**GameServer desabilitado:** impede novos envios em todos os canais (409 `Game
+server disabled`); o histórico continua legível pelos participantes autorizados.
+
+**Ownership:** o sender sempre precisa de ownership VERIFIED atual. Mensagens
+GLOBAL e GUILD continuam existindo quando a ownership muda (GUILD é lida por quem
+for dono e membro); GROUP depende da membership atual do link; DIRECT nunca é
+herdado.
+
+**Audit:** mensagens **não geram Audit**: o volume seria alto e a própria linha
+de chat é o registro. Não há mutation administrativa de chat nesta etapa; futura
+moderação/redação deve usar Audit.
+
+**Concorrência:** a autorização é decidida no banco no momento do insert. Ordem de
+locks: claim da key → group/guild `FOR SHARE` (as mutations de membership travam
+`FOR UPDATE`, então leave/kick/disband serializam com envios) → ownership links
+`FOR SHARE` em ordem crescente de id (o revoke trava `FOR UPDATE`). Envios não se
+bloqueiam entre si. Cobertos: 8 retries iguais concorrentes → uma mensagem, mesma
+key com outro conteúdo → 409, keys diferentes concorrentes → mensagens distintas,
+revoke × envio, leave × envio GROUP, kick × envio GUILD e primeiras mensagens
+DIRECT simultâneas dos dois lados (uma thread).
+
 ### Realtime
 
 - **WebSocket é o transporte realtime oficial do backend.**
@@ -1292,7 +1404,9 @@ Etapa 12.
 A 10.9 adiciona os eventos `GUILD_*` ao mesmo bus e gateway; fan-out e regras de
 privacidade seguem o mesmo modelo (donos VERIFIED atuais, sem Staff). A 10.13
 adiciona `TRADE_*` e a 10.14 `MARKETPLACE_*`, com o mesmo modelo; o Marketplace
-não faz broadcast de listings (a vitrine pública é só HTTP).
+não faz broadcast de listings (a vitrine pública é só HTTP). A 10.15 adiciona
+`CHAT_MESSAGE_CREATED` no mesmo gateway (sem segundo gateway nem rooms escolhidas
+pelo cliente).
 
 ### Properties / Houses / Holds e Horses / Mounts
 
@@ -1518,7 +1632,7 @@ Detalhes que não bloqueiam a fundação e podem ser fixados na subetapa do dom�
 | Tamanho definitivo de group (hoje 5, provisório) e limpeza de memberships de ownership revogada | pós-definição de produto |
 | Limite definitivo de guild (hoje 50, provisório), relação com VIP e representação no jogo | pós-definição de produto / Etapa 11 |
 | Taxas de marketplace, leilão, busca por item com metadata confiável | pós-definição de produto / Etapa 11 |
-| Retenção de chat | 10.15 |
+| Purga física de chat expirado, moderação/redação de mensagens (com Audit) | Etapa 12 / futura |
 | Moedas além de GOLD | pós-definição de produto |
 
 Pontos de implementação a fixar no início da subetapa correspondente, sem alterar

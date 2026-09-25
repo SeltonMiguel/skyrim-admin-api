@@ -160,3 +160,13 @@ deferred) e `player_marketplace_custody_events`/`player_marketplace_settlement_e
 (evento único por servidor e por listing/purchase, append-only). `down` recusa
 reverter com listings ou MARKET_ESCROW existentes. Detalhes em
 `docs/player-services.md`.
+
+A Subetapa 10.15 adiciona `1789990000000-PlayerChat`: `player_chat_messages`
+(CHECK de shape por canal, conteúdo 1..500 code points sem controles,
+`expires_at > created_at`, trigger de insert que amarra sender e canal ao
+servidor), `player_chat_direct_threads` (par canônico de ownership links,
+`UNIQUE`, mesmo servidor) e `player_chat_requests` (idempotência por scope de
+player, FK deferred com `ON DELETE CASCADE`). Triggers bloqueiam UPDATE e TRUNCATE
+e só permitem DELETE de linhas expiradas, deixando a purga de retenção futura
+possível. `down` recusa reverter com mensagens ou threads existentes. Detalhes em
+`docs/player-services.md`.

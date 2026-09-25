@@ -582,4 +582,15 @@ Agent confirma a custódia do item pelo contrato interno
 player lê as próprias listings e compras em
 `/api/v1/player/me/characters/:characterLinkId/marketplace/{listings,purchases}`.
 A migration `1789980000000-PlayerMarketplace` completa dezenove migrations.
+
+A Subetapa 10.15 adiciona o Chat de texto plano: GLOBAL
+(`/api/v1/player/chat/global`), GROUP (`/api/v1/player/groups/:groupId/chat`),
+GUILD (`/api/v1/player/guilds/:guildId/chat`) e DIRECT
+(`/api/v1/player/chat/direct/:targetCharacterId`), com históricos paginados por
+HTTP e entrega de mensagens novas por `CHAT_MESSAGE_CREATED` no realtime. DIRECT
+liga os ownership links atuais: um novo dono do character não herda as mensagens
+privadas. Mensagens expiram após `PLAYER_CHAT_RETENTION` (padrão 7d) e os envios
+exigem `Idempotency-Key` e respeitam `PLAYER_CHAT_RATE_LIMIT_COUNT`/`_WINDOW`
+(padrão 5 por 10s, em memória, instância única). A migration
+`1789990000000-PlayerChat` completa vinte migrations.
 Consulte [arquitetura, decisões e roadmap da Etapa 10](docs/player-services.md).
