@@ -108,7 +108,7 @@ posterior (Audit indisponível) pode contar um a mais.
 | `skyrim_admin_server_control_uncertain_total` | counter | `type` |
 | `skyrim_admin_server_control_duration_seconds` | histogram | `type`, `status` (resultados reportados pelo Agent) |
 | `skyrim_admin_server_control_result_rejections_total` | counter | `reason` |
-| `skyrim_admin_server_control_operations` | gauge (banco) | `status` = PENDING, DISPATCHED, UNCERTAIN (UNCERTAIN é cumulativo até existir acknowledge, 12.4) |
+| `skyrim_admin_server_control_operations` | gauge (banco) | `status` = PENDING, DISPATCHED, UNCERTAIN (UNCERTAIN conta só as operações **sem resolução** de operador, 12.4; o histórico está em `server_control_uncertain_total`) |
 
 **Domain events, work, VIP**
 
@@ -127,14 +127,28 @@ Estados reais usados em `work`:
 - trade `AWAITING_GAME_CONFIRMATION`, com a idade contada desde `locked_at`;
 - listing `PENDING_CUSTODY`;
 - purchase `AWAITING_GAME_CONFIRMATION`;
-- release `PENDING` e `FAILED`.
+- release `PENDING` e `FAILED` (desde a 12.4, `marketplace_release_failed`
+  conta só as releases FAILED **sem resolução** de operador).
+
+**Recuperação operacional** (12.4, `docs/operational-recovery.md`)
+
+| Métrica | Tipo | Labels |
+| --- | --- | --- |
+| `skyrim_admin_operator_actions_total` | counter | `domain` = server_control, player_trade, marketplace_custody, marketplace_settlement, marketplace_release, vip_delivery, player_account, player_economy, player_chat; `action` = retry_safe, requeue_same_work, acknowledge, resolve_succeeded, resolve_failed, set_status, adjust, hide; `outcome` = applied, replayed, rejected, rate_limited |
+| `skyrim_admin_recovery_unresolved` | gauge (banco) | `domain` = server_control (UNCERTAIN), vip_delivery (FAILED + UNCERTAIN), marketplace_release (FAILED); só itens sem resolução |
+| `skyrim_admin_recovery_resolved` | gauge (banco) | `domain` (itens com resolução ainda nas tabelas; cumulativo) |
+| `skyrim_admin_recovery_oldest_unresolved_age_seconds` | gauge (banco) | `domain` (desde o `completed_at` do item) |
+
+VIP FAILED recuperado aparece como
+`operator_actions_total{domain="vip_delivery",action="retry_safe",outcome="applied"}`;
+o gauge `vip_deliveries{status}` continua o estado bruto das linhas.
 
 **Realtime**
 
 | Métrica | Tipo | Labels |
 | --- | --- | --- |
 | `skyrim_admin_realtime_connections` | gauge | `surface` = player, staff |
-| `skyrim_admin_realtime_rejects_total` | counter | `reason` = origin, rate, capacity, auth_failed, auth_timeout, protocol, identity_limit, session_revoked |
+| `skyrim_admin_realtime_rejects_total` | counter | `reason` = origin, rate, capacity, auth_failed, auth_timeout, protocol, identity_limit, session_revoked, account_disabled (12.4) |
 | `skyrim_admin_realtime_slow_client_drops_total` | counter | — |
 | `skyrim_admin_realtime_events_published_total` | counter | `surface` |
 | `skyrim_admin_realtime_delivery_failures_total` | counter | — |
@@ -199,7 +213,9 @@ Os thresholds que dependem de carga ficam como `THRESHOLD_TO_BE_CALIBRATED_12_6`
 | Nenhum Agent conectado | `skyrim_admin_agent_sessions_active == 0` com servidor habilitado | > 5 min (decisão do operador) |
 | Backlog de GameCommand crescendo | `deriv(skyrim_admin_game_commands_backlog{status="PENDING"}[15m]) > 0` e `skyrim_admin_game_commands_oldest_age_seconds{status="PENDING"} >` X | X = THRESHOLD_TO_BE_CALIBRATED_12_6 |
 | Spike de timeout de GameCommand | `increase(skyrim_admin_game_command_terminal_total{status="TIMEOUT"}[15m])` | THRESHOLD_TO_BE_CALIBRATED_12_6 |
-| Server Control UNCERTAIN | `increase(skyrim_admin_server_control_uncertain_total[1h]) > 0` ou aumento de `skyrim_admin_server_control_operations{status="UNCERTAIN"}` | **qualquer ocorrência** |
+| Server Control UNCERTAIN | `increase(skyrim_admin_server_control_uncertain_total[1h]) > 0` ou `skyrim_admin_server_control_operations{status="UNCERTAIN"} > 0` (não resolvidas) | **qualquer ocorrência** |
+| Item sem resolução envelhecendo (12.4) | `skyrim_admin_recovery_oldest_unresolved_age_seconds >` X, por `domain` | X = THRESHOLD_TO_BE_CALIBRATED_12_6 |
+| Ações de operador recusadas ou limitadas (12.4) | `increase(skyrim_admin_operator_actions_total{outcome=~"rejected\|rate_limited"}[1h])` | THRESHOLD_TO_BE_CALIBRATED_12_6 |
 | Conflito de domain event | `increase(skyrim_admin_domain_events_total{outcome=~"conflict\|server_mismatch"}[1h]) > 0` | qualquer ocorrência |
 | Trade parado | `skyrim_admin_work_oldest_age_seconds{work="trade_settlement"} >` X | X = THRESHOLD_TO_BE_CALIBRATED_12_6 |
 | Release de Marketplace FAILED | `skyrim_admin_work_backlog{work="marketplace_release_failed"} > 0` | qualquer ocorrência |
@@ -221,6 +237,7 @@ Os thresholds que dependem de carga ficam como `THRESHOLD_TO_BE_CALIBRATED_12_6`
 | Server Control | `server_control_created_total`, `server_control_terminal_total`, `server_control_uncertain_total`, `server_control_operations`, `server_control_duration_seconds`, `server_control_result_rejections_total` |
 | Player Economy / Work | `work_backlog`, `work_oldest_age_seconds`, `domain_events_total`, `work_sync_requests_total` |
 | VIP Delivery | `vip_deliveries`, `vip_delivery_oldest_open_age_seconds`, `game_command_terminal_total{command_type=~"CHARACTER_.*_GIVE"}` |
+| Operations / Recovery (12.4) | `recovery_unresolved`, `recovery_resolved`, `recovery_oldest_unresolved_age_seconds`, `operator_actions_total` por `domain`/`action`/`outcome` |
 | Realtime | `realtime_connections`, `realtime_rejects_total`, `realtime_slow_client_drops_total`, `realtime_events_published_total`, `realtime_delivery_failures_total` |
 | Workers | `worker_ticks_total`, `worker_tick_duration_seconds`, `worker_last_success_timestamp_seconds`, `worker_running`, `worker_ticks_skipped_total`, `backlog_collection_timestamp_seconds` |
 

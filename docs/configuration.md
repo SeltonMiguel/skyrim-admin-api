@@ -1,6 +1,6 @@
 # Configuration reference
 
-Todas as 90 variáveis de ambiente do backend (`src/config/environment.ts`), na
+Todas as 92 variáveis de ambiente do backend (`src/config/environment.ts`), na
 Etapa 12.2. A validação é feita no boot, por Joi mais as relações entre valores
 (`abortEarly: false`). Uma variável inválida impede o start. A mensagem cita
 só o **nome** da variável, nunca o valor. O migration runner e o preflight usam
@@ -88,6 +88,8 @@ strings `N{s,m,h,d}` (ex.: `15m`).
 | `GAME_COMMAND_ACK_TIMEOUT_MS` / `_EXECUTION_TIMEOUT_MS` / `_MAX_DISPATCH_ATTEMPTS` / `_PENDING_TIMEOUT_MS` / `_WORKER_INTERVAL_MS` | OPTIONAL_SAFE_DEFAULT | `5000` / `30000` / `3` / `60000` / `500` | |
 | `SERVER_CONTROL_PENDING_TIMEOUT_MS` / `_DELIVERY_WINDOW_MS` / `_RESULT_TIMEOUT_MS` / `_WORKER_INTERVAL_MS` | OPTIONAL_SAFE_DEFAULT | `30000` / `10000` / `300000` / `1000` | result > window |
 | `VIP_DELIVERY_WORKER_INTERVAL_MS` | OPTIONAL_SAFE_DEFAULT | `2000` | |
+| `OPERATIONS_STALE_AFTER_MS` | OPTIONAL_SAFE_DEFAULT | `900000` | 12.4: idade (60 000–604 800 000 ms) a partir da qual um item de fila de operador é marcado `stale`. Só classificação: nada falha nem é reenviado por idade (`docs/operational-recovery.md`) |
+| `OPERATIONS_ACTION_RATE_LIMIT_PER_MINUTE` | OPTIONAL_SAFE_DEFAULT | `30` | 12.4: ações de operador (POST `/operations/…`) por usuário Staff por minuto (1–1000); 429 com `Retry-After` |
 
 ## Observabilidade (12.3, `docs/observability.md`)
 

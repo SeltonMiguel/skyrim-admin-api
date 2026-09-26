@@ -43,6 +43,7 @@ vale sempre (socket fechado, evento perdido, cold start).
 | Server Control | GET S/control/operations (11.6; filtros status, type), GET /server-control-operations/:operationId | POST S/control/{start, pause, restart} | SERVER_START / SERVER_PAUSE / SERVER_RESTART do tipo | STAFF_SERVER_CONTROL_UPDATED | GET S/control/operations?status=… | sim (at-most-once) |
 | Audit | GET /audit (filtros), GET /audit/:id | nenhuma | AUDIT_READ | nenhum | GET paginado sob demanda | não |
 | Staff/RBAC | GET /staff, GET /staff/:id | POST /staff, PATCH /staff/:id, PATCH /staff/:id/role, PATCH /staff/:id/status | STAFF_READ / STAFF_WRITE | nenhum | refetch após a mutation | não |
+| Operations / Recovery (12.4) | GET /operations/summary, filas e detalhes (ver "Operations / Recovery") | POST /operations/… (resolve, requeue, acknowledge, retry, status, adjustments, hide) | uma por domínio: OPERATIONS_READ, SERVER_CONTROL_RESOLVE, PLAYER_TRADE_RECOVER, PLAYER_MARKETPLACE_RECOVER, VIP_DELIVERY_RECOVER, PLAYER_ACCOUNT_MODERATE, PLAYER_ECONOMY_ADJUST, PLAYER_CHAT_MODERATE | STAFF_OPERATIONS_UPDATED | GET da fila / summary | requeue e retry VIP precisam do Agent para ter efeito |
 
 As rotas tipadas de operação (`/character-operations`, `/moderation-operations`,
 `/world-operations`) exigem a permissão do tipo gravado, não apenas
@@ -152,7 +153,9 @@ verificação em voo por socket. Consequências:
 - falha de banco na verificação só pula aquela entrega.
 
 Com o RBAC atual todos os roles têm GAME_BRIDGE_READ, então todo Staff recebe os
-dois primeiros tipos; Server Control chega só a COORDINATOR e DEV. Staff nunca
+dois primeiros tipos; Server Control chega só a COORDINATOR e DEV.
+`STAFF_OPERATIONS_UPDATED` (12.4) chega a quem tem a permissão do domínio da
+intervenção. Staff nunca
 recebe eventos Player (chat, settings, link, operações Player) e Player nunca
 recebe `STAFF_*`: o bus descarta qualquer publicação com surface trocada.
 
@@ -192,6 +195,50 @@ Duas leituras foram adicionadas na 11.6 por serem essenciais e inexistentes:
    (nem os conta), ordena `createdAt DESC, id DESC`, pagina como as demais
    (`page`, `limit ≤ 100`) e usa o índice existente
    `server_control_operations_server_idx`. Sem migration.
+
+## Operations / Recovery (12.4)
+
+Runbooks, matriz de segurança e regras completas em
+`docs/operational-recovery.md`. Resumo para o cliente:
+
+- **Rotas** sob `/operations`, cada uma com exatamente uma permissão do
+  domínio. Filas paginadas (`page`, `limit ≤ 100`), da mais antiga para a mais
+  nova, com `ageSeconds` e `stale` (só classificação, pelo
+  `OPERATIONS_STALE_AFTER_MS`; nada falha por idade).
+- **Toda mutação** é `POST` com `Idempotency-Key` e `reason` (1–500, uma
+  linha). Resposta 200 com o resultado explícito e `operatorActionId`,
+  `domain`, `action`, `resourceId`, `outcome`, `replayed`. Replay com a mesma
+  key e o mesmo corpo → mesmo resultado, `replayed: true`; mesma key com outro
+  corpo → 409. Estado que não aceita a ação (já resolvido, não está esperando o
+  Agent, retry não comprovadamente seguro) → 409. 429 com `Retry-After` por
+  usuário Staff. 503 = Audit indisponível, nada aplicado.
+- **Nunca há retry cego.** Server Control UNCERTAIN e releases FAILED são
+  resolvidos (registro separado; status original intacto); trade, custódia,
+  settlement e release PENDING só recebem `requeue` (mesmo `workId`); VIP só
+  aceita `retry` com `retryable: true` na fila (falha pré-entrega comprovada ou
+  `CONFIRMED_NOT_DELIVERED` registrado antes).
+- **Telas sugeridas:** summary como painel inicial; uma fila por domínio com a
+  ação permitida por item; detalhe VIP com as tentativas anteriores; conta
+  Player com status e sessões ativas; carteira com saldo antes do ajuste;
+  moderação de chat por servidor.
+- **Realtime:** `STAFF_OPERATIONS_UPDATED` `{operatorActionId, domain, action,
+  resourceId, outcome}` para quem tem a permissão do domínio, depois do commit.
+  É só wake-up: refazer o GET da fila. Não há replay; no cold start, GET
+  summary e as filas abertas.
+- **Server Control:** `GET /server-control-operations/:id` e a lista por
+  servidor mostram `resolution` e `resolvedAt` (null até a resolução); `status`
+  continua `UNCERTAIN`.
+
+| Domínio | Leituras | Ações |
+| --- | --- | --- |
+| Visão geral | GET /operations/summary, GET /operations/domain-event-receipts | — |
+| Server Control | GET /operations/server-control/uncertain | POST …/:operationId/resolve `{resolution: RESOLVED_SUCCEEDED\|RESOLVED_FAILED}` |
+| Trade | GET /operations/trades/awaiting | POST …/:tradeId/requeue |
+| Marketplace | GET /operations/marketplace/{custody, settlements, releases} | POST custody/:listingId/requeue, settlements/:purchaseId/requeue, releases/:releaseId/{requeue, acknowledge, resolve} |
+| VIP | GET /operations/vip-deliveries, GET …/:deliveryId | POST …/:deliveryId/retry, POST …/:deliveryId/resolve `{resolution: CONFIRMED_DELIVERED\|CONFIRMED_NOT_DELIVERED}` |
+| Conta Player | GET /operations/players/:playerId | POST …/:playerId/status `{status: ACTIVE\|SUSPENDED\|BANNED}` |
+| Economia | GET /operations/economy/:gameServerId/wallets/:characterExternalId | POST /operations/economy/adjustments `{gameServerId, characterExternalId, direction: CREDIT\|DEBIT, amount, externalReference}` |
+| Chat | GET /operations/chat/messages, GET …/:messageId | POST …/:messageId/hide |
 
 ## Dependência do Agent
 

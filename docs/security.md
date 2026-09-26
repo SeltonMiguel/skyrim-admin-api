@@ -112,13 +112,16 @@ A grace window, o Audit e a detecção de reuso não mudaram.
 Staff: sem mudança. Os grants são revalidados a cada entrega, e uma conta
 desativada fecha com 4001 na próxima entrega.
 
-**Gap operacional (12.4):** não existe mutation de backend que mude o status
-de uma conta Player (SUSPENDED/BANNED); hoje isso só se faz por SQL, e
-manual DB account-status changes do not proactively close existing Player
-realtime sockets. Esses sockets continuam até o access token expirar
-(`PLAYER_JWT_ACCESS_TTL`, 15 min por padrão). O HTTP já recusa na hora, porque
-o status é relido a cada request. Quando a API auditada de status existir
-(12.4), ela deve fechar as conexões da conta depois do commit.
+**Status de conta (12.4):** `POST /api/v1/operations/players/:playerId/status`
+(`PLAYER_ACCOUNT_MODERATE`, Idempotency-Key, reason, Audit
+`PLAYER_ACCOUNT_STATUS_CHANGED`) muda a conta para ACTIVE, SUSPENDED ou BANNED.
+Ao sair de ACTIVE, revoga na mesma transação todas as sessões ativas da conta
+e, depois do commit, `RealtimeSessionControl.playerAccountRevoked` faz o
+gateway lembrar essas sessões como revogadas (AUTH em voo recusado) e fechar
+**todos** os sockets da conta com **4001 `ACCOUNT_DISABLED`**
+(`realtime_account_disabled`). Voltar a ACTIVE não revive sessão: o Player faz
+login de novo. Mudança de status por SQL continua sem fechar sockets: use a
+API (`docs/operational-recovery.md` §5.11).
 
 Instância única: o fechamento é in-process. Com várias réplicas, um socket em
 outra instância só fecha com o close distribuído da 12.5.

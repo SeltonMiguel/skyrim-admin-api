@@ -265,6 +265,10 @@ ferramenta de operação (§9).
 
 Esta tabela define o escopo da subetapa de recuperação operacional.
 
+**12.4:** a tabela acima é o estado da 12.0. O estado atual, com a regra
+"pode duplicar efeito?" de cada ação, está em `docs/operational-recovery.md`
+§1; o status está na §25.4.
+
 ## 10. Segurança
 
 | Id | Sev. | Componente | Evidência | Risco | Recomendação |
@@ -637,6 +641,29 @@ proxy em `docs/reverse-proxy.md`, variáveis em `docs/configuration.md`.
 | P3-2 logs JSON | **resolvido** (tracing continua fora) | `AppLogger` JSON em produção, requestId e ids como campos, redaction central, request log por template, stack de 5xx no servidor |
 | Queries de backlog | **periódicas** | `BacklogCollector`, `METRICS_COLLECTION_INTERVAL_MS`; nenhuma query por scrape nem por request |
 | Duração de query do banco | não medida | exigiria interceptar o TypeORM de forma frágil; pool e erros cobrem saturação |
+
+## 25.4 Status após a 12.4
+
+Runbooks e matriz em `docs/operational-recovery.md`; migration
+`1790050000000-OperationalRecovery` (26); `test/operational-recovery.e2e-spec.ts`.
+
+| Finding / situação (§9) | Status | Como |
+| --- | --- | --- |
+| P1-9 recuperação operacional | **resolvido** para as situações da §9 com prova de segurança; o resto é decisão explícita | `/api/v1/operations/*` com uma permissão por domínio; modelo comum (Idempotency-Key + fingerprint, reason, Audit SUCCESS/FAILURE, `operator_actions`, transação única, resultado explícito, replay) |
+| Server Control UNCERTAIN | **resolvido** | lista e resolução `RESOLVED_SUCCEEDED`/`RESOLVED_FAILED` em colunas separadas (status/erro intactos); nunca retry; gauge não resolvido separado do counter histórico |
+| GameCommand TIMEOUT/FAILED | **decidido: só inspeção** | GET existentes; sem retry com novo commandId |
+| Trade AWAITING / purchase AWAITING / listing PENDING_CUSTODY / release PENDING | **resolvido (requeue)** | listas com escrow e última rejeição do Agent (`agent_work_rejections`); `REQUEUE_SAME_WORK` esquece a dica de push, mesmo `workId`, nada criado; cancel pelo Staff recusado por desenho |
+| Timeout operacional | **decidido: não há auto-fail** | `OPERATIONS_STALE_AFTER_MS` só marca `stale` nas filas e no summary |
+| Release FAILED | **resolvido** | ACKNOWLEDGE e resolução manual; retry impossível (journal do Agent + UNIQUE(listing_id)) |
+| VIP FAILED | **resolvido** | `RETRY_SAFE` só com prova pré-entrega pelo command (DISPATCH_*, GATEWAY_UNAVAILABLE, SERVER_DISABLED); nova tentativa arquivada (`vip_reward_delivery_attempts`), nova chave `vip-delivery:<id>:<n>`, nunca dois commands vivos |
+| VIP UNCERTAIN | **resolvido** | resolução `CONFIRMED_*`; retry só depois de `CONFIRMED_NOT_DELIVERED` |
+| Receipts REJECTED | **resolvido (leitura)** | `GET operations/domain-event-receipts`, sem payload nem hash; CONFLICT segue só em métrica |
+| Conta Player / S6 socket após ban/suspend | **resolvido** (instância única) | status por API auditada; revoga todas as sessões; fecha todos os sockets da conta (`4001 ACCOUNT_DISABLED`); ACTIVE não revive sessão |
+| Ajuste manual de saldo | **resolvido** | `STAFF_ADJUSTMENT` balanceado contra `SYSTEM:ADJUSTMENT` (CHECK de ator STAFF), sem "set balance"; só carteiras conhecidas |
+| Moderação de chat | **resolvido** | hide com `moderated_*`; trigger permite só esse update; histórico Player filtra |
+| Entitlement PLAYER sem alvo / anteriores à 11.4 | **adiado (12.7 / produto)** | exige contrato de claim pelo Player |
+| P2-8 testes de corrida (domínio) | **parcial** | novos: resolução concorrente (uma vence), retry VIP concorrente com a mesma key (um efeito); os listados em `docs/release-readiness.md` continuam abertos |
+| Flakes registrados (12.2) | inalterados | ver §25.2 |
 
 ## 26. Roadmap final da Stage 12
 

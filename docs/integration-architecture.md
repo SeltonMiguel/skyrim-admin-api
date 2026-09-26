@@ -1688,7 +1688,7 @@ Nunca aparecem segredo, hash, JWT nem payloads. O histórico por motivo continua
 | Contador/métrica exportada de UNCERTAIN (hoje log estruturado); a lista para o Admin Web existe desde a 11.6 (`GET game-servers/:serverId/control/operations?status=UNCERTAIN`) | Etapa 12 |
 | Expiração/resolução de trades e purchases AWAITING (e releases PENDING/FAILED) sem resposta do Agent: timeout operacional ou ação de operador | produto / Etapa 12 |
 | Fluxo explícito de claim/target para rewards in-game de entitlements PLAYER | produto |
-| Deliveries VIP para entitlements CHARACTER concedidos antes da 11.4 (sem snapshot); nova tentativa de delivery FAILED/UNCERTAIN por operador | produto |
+| Deliveries VIP para entitlements CHARACTER concedidos antes da 11.4 (sem snapshot) | produto (a nova tentativa de delivery FAILED/UNCERTAIN por operador foi feita na 12.4: `docs/operational-recovery.md` §5.7–5.8) |
 | Listagem Player de operações (desnecessária enquanto toda operação Player for query; Groups foi resolvido na 11.6 com `GET player/me/characters/:characterLinkId/group`) | quando existir operação Player que não seja query |
 | Backpressure avançado do realtime além do corte por `bufferedAmount` (256 KiB) e distribuição multi-instância do bus | Etapa 12 |
 | Quais ações de gameplay geram XP e quanto | produto |

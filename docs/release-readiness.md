@@ -97,6 +97,7 @@ Para escalar:
 ## Migrations
 
 - [x] 25 migrations aplicadas, `pending=0`, `synchronize=false`, diff de schema 0/0 (verificado pela suíte e2e na 12.0)
+- [x] 26ª migration (`OperationalRecovery`, 12.4) forward-only: banco novo e upgrade 25 → 26 verificados, `pending=0`, diff 0/0; `down` recusa apagar evidência de operador — `test/operational-recovery.e2e-spec.ts`, `test/deployment-readiness.e2e-spec.ts`
 - [x] Policy de migration publicada (forward-only, expand/contract, lock/statement timeout, sem `migration:revert` em produção) (P1-10) — 12.2, `docs/deployment.md`
 - [x] CLI de migration roda sem o `query_timeout` de 5 s do pool da aplicação (P1-10) — 12.2: `createMigrationOptions` (`DB_MIGRATION_*`), `src/database/database.options.spec.ts`; runner compilado `node dist/database/migrate.js`
 - [ ] Down de AgentDomainEvents protegido contra down seguido de up com releases já concluídas (P1-10) — sem guarda em código; a policy da 12.2 proíbe `migration:revert` em produção
@@ -138,7 +139,10 @@ Para escalar:
 
 ## Operations
 
-- [ ] Procedimento para cada situação de `docs/hardening-audit.md` §9 documentado (quem, como, riscos de duplicar efeito)
+- [x] Procedimento para cada situação de `docs/hardening-audit.md` §9 documentado (quem, como, riscos de duplicar efeito) — 12.4, `docs/operational-recovery.md` (matriz §1, runbooks §5)
+- [x] Recuperação operacional sem SQL manual: Server Control UNCERTAIN resolvido sem retry, requeue do mesmo work, release FAILED com acknowledge/resolução, VIP retry só com prova pré-entrega, status de conta Player, ajuste de GOLD pelo ledger e moderação de chat, todos idempotentes e auditados (P1-9) — 12.4, `test/operational-recovery.e2e-spec.ts`
+- [ ] Contrato de claim de alvo para entitlements PLAYER definido pelo produto (12.7)
+- [ ] Runbooks de `docs/operational-recovery.md` exercitados em staging com o Agent real
 - [ ] Rotação de credencial do Agent (criar B, trocar, revogar A) executada em staging
 - [ ] Rotação de segredos JWT documentada (efeito: invalida sessões)
 - [ ] Bootstrap do coordenador documentado e variáveis `BOOTSTRAP_*` removidas do ambiente após o uso
