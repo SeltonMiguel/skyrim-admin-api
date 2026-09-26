@@ -1,0 +1,18 @@
+# Only package manifests, build config and src/ reach the build stage.
+node_modules
+dist
+coverage
+test
+docs
+backups
+*.dump
+*.tsbuildinfo
+*.log
+.env
+.env.*
+.git
+.github
+.vscode
+.idea
+Dockerfile
+docker-compose.yml

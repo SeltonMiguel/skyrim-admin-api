@@ -4,6 +4,7 @@ import {
   OnApplicationBootstrap,
   OnModuleDestroy,
 } from '@nestjs/common';
+import { TickDrain } from '../lifecycle/tick-drain.js';
 import { ConfigService } from '@nestjs/config';
 import type { ApplicationConfig } from '../config/environment.js';
 import { ServerControlDispatcher } from './server-control-dispatcher.js';
@@ -29,6 +30,7 @@ export class ServerControlWorker
   private readonly intervalMs: number;
   private timer?: ReturnType<typeof setInterval>;
   private running = false;
+  private readonly drain = new TickDrain();
   private stopped = false;
   // Log each held operation once.
   private readonly held = new Set<string>();
@@ -47,14 +49,17 @@ export class ServerControlWorker
     this.timer = setInterval(() => void this.tick(), this.intervalMs);
     this.timer.unref();
   }
-  onModuleDestroy(): void {
+  // Graceful shutdown: stop scheduling, then await the running tick.
+  async onModuleDestroy(): Promise<void> {
     this.stopped = true;
     if (this.timer) clearInterval(this.timer);
+    await this.drain.wait();
   }
   // Returns how many operations crossed the delivery boundary.
   async tick(): Promise<number> {
     if (this.running || this.stopped) return 0;
     this.running = true;
+    this.drain.begin();
     try {
       for (const op of await this.dispatcher.expirePending()) {
         this.held.delete(op.operationId);
@@ -88,6 +93,7 @@ export class ServerControlWorker
       return 0;
     } finally {
       this.running = false;
+      this.drain.end();
     }
   }
   // UNCERTAIN outcomes materialized by this instance since boot.

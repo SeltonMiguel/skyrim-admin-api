@@ -4,6 +4,7 @@ import {
   OnApplicationBootstrap,
   OnModuleDestroy,
 } from '@nestjs/common';
+import { TickDrain } from '../lifecycle/tick-drain.js';
 import { ConfigService } from '@nestjs/config';
 import type { ApplicationConfig } from '../config/environment.js';
 import { BridgeClock } from '../game-bridge/bridge-clock.js';
@@ -29,6 +30,7 @@ export class AgentWorkNotifier
   private readonly intervalMs: number;
   private timer?: ReturnType<typeof setInterval>;
   private running = false;
+  private readonly drain = new TickDrain();
   private stopped = false;
   private readonly told = new Map<string, Set<string>>();
   constructor(
@@ -45,13 +47,16 @@ export class AgentWorkNotifier
     this.timer = setInterval(() => void this.tick(), this.intervalMs);
     this.timer.unref();
   }
-  onModuleDestroy(): void {
+  // Graceful shutdown: stop scheduling, then await the running tick.
+  async onModuleDestroy(): Promise<void> {
     this.stopped = true;
     if (this.timer) clearInterval(this.timer);
+    await this.drain.wait();
   }
   async tick(): Promise<number> {
     if (this.running || this.stopped) return 0;
     this.running = true;
+    this.drain.begin();
     let pushed = 0;
     try {
       const active = this.sessions.activeSessions();
@@ -90,6 +95,7 @@ export class AgentWorkNotifier
       this.logger.error('Agent work push failed');
     } finally {
       this.running = false;
+      this.drain.end();
     }
     return pushed;
   }

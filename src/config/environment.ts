@@ -112,6 +112,15 @@ export interface ApplicationConfig {
     playerLimits: { characterQueries: number; marketMutations: number };
   };
   bootstrap: { username?: string; displayName?: string; password?: string };
+  // Deployment and lifecycle (12.2). Only SINGLE is supported until 12.5.
+  deployment: {
+    topology: 'SINGLE';
+    // PostgreSQL advisory lock held for the whole process life; always on
+    // in production.
+    singleInstanceLock: boolean;
+    // Upper bound for the graceful shutdown before the process exits.
+    shutdownTimeoutMs: number;
+  };
   database: {
     host: string;
     port: number;
@@ -119,6 +128,17 @@ export interface ApplicationConfig {
     password: string;
     database: string;
     logging: boolean;
+    // disable: no TLS; require: TLS without certificate verification;
+    // verify-full: TLS with CA and hostname verification.
+    ssl: { mode: 'disable' | 'require' | 'verify-full'; ca?: string };
+    poolMax: number;
+    poolIdleTimeoutMs: number;
+    connectTimeoutMs: number;
+    // Application queries: client-side timeout and server statement_timeout.
+    queryTimeoutMs: number;
+    statementTimeoutMs: number;
+    // Migration runner only; never inherits the short application timeout.
+    migration: { statementTimeoutMs: number; lockTimeoutMs: number };
   };
 }
 
@@ -172,6 +192,18 @@ interface Environment {
   BOOTSTRAP_COORDINATOR_DISPLAY_NAME?: string;
   BOOTSTRAP_COORDINATOR_PASSWORD?: string;
   TRUST_PROXY: string;
+  BACKEND_TOPOLOGY: string;
+  SINGLE_INSTANCE_LOCK_ENABLED?: boolean;
+  SHUTDOWN_TIMEOUT_MS: number;
+  DB_SSL_MODE?: 'disable' | 'require' | 'verify-full';
+  DB_SSL_CA_FILE?: string;
+  DB_POOL_MAX: number;
+  DB_POOL_IDLE_TIMEOUT_MS: number;
+  DB_CONNECT_TIMEOUT_MS: number;
+  DB_QUERY_TIMEOUT_MS: number;
+  DB_STATEMENT_TIMEOUT_MS: number;
+  DB_MIGRATION_STATEMENT_TIMEOUT_MS: number;
+  DB_MIGRATION_LOCK_TIMEOUT_MS: number;
   CORS_ORIGINS?: string;
   REALTIME_ALLOWED_ORIGINS?: string;
   SWAGGER_ENABLED?: boolean;
@@ -403,6 +435,18 @@ const schema = Joi.object<Environment>({
   // Proxy trust is explicit: false (default), a hop count, or a
   // comma-separated list of loopback/linklocal/uniquelocal, IPs and CIDRs.
   TRUST_PROXY: Joi.string().trim().max(1024).default('false'),
+  BACKEND_TOPOLOGY: Joi.string().trim().uppercase().default('SINGLE'),
+  SINGLE_INSTANCE_LOCK_ENABLED: Joi.boolean(),
+  SHUTDOWN_TIMEOUT_MS: count(1000, 600000, 8000),
+  DB_SSL_MODE: Joi.string().valid('disable', 'require', 'verify-full'),
+  DB_SSL_CA_FILE: Joi.string().allow('').max(4096),
+  DB_POOL_MAX: count(1, 200, 10),
+  DB_POOL_IDLE_TIMEOUT_MS: count(1000, 3600000, 30000),
+  DB_CONNECT_TIMEOUT_MS: count(100, 60000, 5000),
+  DB_QUERY_TIMEOUT_MS: count(100, 600000, 5000),
+  DB_STATEMENT_TIMEOUT_MS: count(100, 600000, 10000),
+  DB_MIGRATION_STATEMENT_TIMEOUT_MS: count(1000, 86400000, 600000),
+  DB_MIGRATION_LOCK_TIMEOUT_MS: count(100, 600000, 10000),
   CORS_ORIGINS: Joi.string().allow('').max(4096),
   REALTIME_ALLOWED_ORIGINS: Joi.string().allow('').max(4096),
   SWAGGER_ENABLED: Joi.boolean(),
@@ -497,6 +541,36 @@ export function validateEnvironment(
   } catch {
     throw new Error('Invalid environment variables: TRUST_PROXY');
   }
+  const production = value.NODE_ENV === 'production';
+  // Multi-instance coordination is Stage 12.5: refuse it explicitly.
+  if (value.BACKEND_TOPOLOGY !== 'SINGLE')
+    throw new Error(
+      'Invalid environment variables: BACKEND_TOPOLOGY (only SINGLE is supported before Stage 12.5)',
+    );
+  // Production always holds the single-instance lock.
+  if (production && value.SINGLE_INSTANCE_LOCK_ENABLED === false)
+    throw new Error(
+      'Invalid environment variables: SINGLE_INSTANCE_LOCK_ENABLED (required in production)',
+    );
+  // Production must choose its database TLS mode explicitly.
+  if (production && value.DB_SSL_MODE === undefined)
+    throw new Error('Invalid environment variables: DB_SSL_MODE');
+  const sslMode = value.DB_SSL_MODE ?? 'disable';
+  let ca: string | undefined;
+  if (value.DB_SSL_CA_FILE) {
+    if (sslMode !== 'verify-full')
+      throw new Error('Invalid environment variables: DB_SSL_CA_FILE');
+    try {
+      ca = readFileSync(value.DB_SSL_CA_FILE, 'utf8');
+    } catch {
+      // The path, never the file content, is reported.
+      throw new Error('Invalid environment variables: DB_SSL_CA_FILE');
+    }
+  }
+  if (value.DB_QUERY_TIMEOUT_MS > value.DB_STATEMENT_TIMEOUT_MS)
+    throw new Error(
+      'Invalid environment variables: DB_QUERY_TIMEOUT_MS, DB_STATEMENT_TIMEOUT_MS',
+    );
   const corsOrigins = origins(value.CORS_ORIGINS, 'CORS_ORIGINS');
   const staffLoginWindow = ttlSeconds(value.STAFF_LOGIN_RATE_LIMIT_WINDOW);
   const staffRefreshWindow = ttlSeconds(value.STAFF_REFRESH_RATE_LIMIT_WINDOW);
@@ -597,6 +671,11 @@ export function validateEnvironment(
     },
     nodeEnv: value.NODE_ENV,
     port: value.PORT,
+    deployment: {
+      topology: 'SINGLE',
+      singleInstanceLock: value.SINGLE_INSTANCE_LOCK_ENABLED ?? production,
+      shutdownTimeoutMs: value.SHUTDOWN_TIMEOUT_MS,
+    },
     database: {
       host: value.DB_HOST,
       port: value.DB_PORT,
@@ -604,6 +683,16 @@ export function validateEnvironment(
       password: value.DB_PASSWORD,
       database: value.DB_DATABASE,
       logging: value.DB_LOGGING ?? value.NODE_ENV === 'development',
+      ssl: { mode: sslMode, ...(ca ? { ca } : {}) },
+      poolMax: value.DB_POOL_MAX,
+      poolIdleTimeoutMs: value.DB_POOL_IDLE_TIMEOUT_MS,
+      connectTimeoutMs: value.DB_CONNECT_TIMEOUT_MS,
+      queryTimeoutMs: value.DB_QUERY_TIMEOUT_MS,
+      statementTimeoutMs: value.DB_STATEMENT_TIMEOUT_MS,
+      migration: {
+        statementTimeoutMs: value.DB_MIGRATION_STATEMENT_TIMEOUT_MS,
+        lockTimeoutMs: value.DB_MIGRATION_LOCK_TIMEOUT_MS,
+      },
     },
   };
 }

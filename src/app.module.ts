@@ -31,9 +31,11 @@ import { CommonModule } from './common/common.module.js';
 import { AppConfigModule } from './config/app-config.module.js';
 import { DatabaseModule } from './database/database.module.js';
 import { HealthModule } from './health/health.module.js';
+import { LifecycleModule } from './lifecycle/lifecycle.module.js';
 
 @Module({
   imports: [
+    LifecycleModule,
     AppConfigModule,
     CommonModule,
     DatabaseModule,

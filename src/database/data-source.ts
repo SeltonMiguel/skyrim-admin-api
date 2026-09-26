@@ -1,6 +1,7 @@
 import 'reflect-metadata';
 import { DataSource } from 'typeorm';
 import { loadEnvironment } from '../config/environment.js';
-import { createDatabaseOptions } from './database.options.js';
+import { createMigrationOptions } from './database.options.js';
 
-export default new DataSource(createDatabaseOptions(loadEnvironment()));
+// TypeORM CLI (development): the migration timeouts, never the API's.
+export default new DataSource(createMigrationOptions(loadEnvironment()));

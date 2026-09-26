@@ -4,6 +4,7 @@ import {
   OnApplicationBootstrap,
   OnModuleDestroy,
 } from '@nestjs/common';
+import { TickDrain } from '../lifecycle/tick-drain.js';
 import { ConfigService } from '@nestjs/config';
 import { DataSource } from 'typeorm';
 import type { EntityManager } from 'typeorm';
@@ -51,6 +52,7 @@ export class VipDeliveryService
   private readonly intervalMs: number;
   private timer?: ReturnType<typeof setInterval>;
   private running = false;
+  private readonly drain = new TickDrain();
   private stopped = false;
   private readonly held = new Set<string>();
   constructor(
@@ -67,13 +69,16 @@ export class VipDeliveryService
     this.timer = setInterval(() => void this.tick(), this.intervalMs);
     this.timer.unref();
   }
-  onModuleDestroy(): void {
+  // Graceful shutdown: stop scheduling, then await the running tick.
+  async onModuleDestroy(): Promise<void> {
     this.stopped = true;
     if (this.timer) clearInterval(this.timer);
+    await this.drain.wait();
   }
   async tick(): Promise<void> {
     if (this.running || this.stopped) return;
     this.running = true;
+    this.drain.begin();
     try {
       await this.reconcile();
       const pending = await this.deliveries(this.database.manager)
@@ -89,6 +94,7 @@ export class VipDeliveryService
       this.logger.error('VIP delivery tick failed');
     } finally {
       this.running = false;
+      this.drain.end();
     }
   }
   private deliveries(manager: EntityManager) {

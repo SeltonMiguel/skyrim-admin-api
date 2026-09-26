@@ -54,7 +54,8 @@ export function setupApp(app: INestApplication): void {
       transform: true,
     }),
   );
-  app.enableShutdownHooks();
+  // Signals are handled by the production entrypoint (src/main.ts), which
+  // turns readiness off before closing the application (12.2).
 
   // Off by default in production (SWAGGER_ENABLED); the document maps every
   // route, so enabling it there should sit behind a private network or proxy.

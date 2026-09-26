@@ -4,6 +4,7 @@ import {
   OnApplicationBootstrap,
   OnModuleDestroy,
 } from '@nestjs/common';
+import { TickDrain } from '../lifecycle/tick-drain.js';
 import { ConfigService } from '@nestjs/config';
 import type { ApplicationConfig } from '../config/environment.js';
 import { GameCommandDispatcher } from '../game-bridge/game-command-dispatcher.js';
@@ -33,6 +34,7 @@ export class GameCommandWorker
   private readonly maxInFlight: number;
   private timer?: ReturnType<typeof setInterval>;
   private running = false;
+  private readonly drain = new TickDrain();
   private stopped = false;
   // Log each blocked command and each not-ready state once.
   private readonly blocked = new Set<string>();
@@ -51,14 +53,17 @@ export class GameCommandWorker
     this.timer = setInterval(() => void this.tick(), this.intervalMs);
     this.timer.unref();
   }
-  onModuleDestroy(): void {
+  // Graceful shutdown: stop scheduling, then await the running tick.
+  async onModuleDestroy(): Promise<void> {
     this.stopped = true;
     if (this.timer) clearInterval(this.timer);
+    await this.drain.wait();
   }
   // Returns how many commands were handed to the dispatcher.
   async tick(): Promise<number> {
     if (this.running || this.stopped) return 0;
     this.running = true;
+    this.drain.begin();
     try {
       await this.receiver.expireCommands();
       const expired = await this.receiver.expirePending();
@@ -75,6 +80,7 @@ export class GameCommandWorker
       return 0;
     } finally {
       this.running = false;
+      this.drain.end();
     }
   }
   private async serve(gameServerId: string): Promise<number> {

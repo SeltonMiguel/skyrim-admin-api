@@ -23,6 +23,8 @@
     "migration:create": "typeorm migration:create",
     "migration:run": "npm run build && typeorm migration:run -d dist/database/data-source.js",
     "migration:revert": "npm run build && typeorm migration:revert -d dist/database/data-source.js",
+    "migration:run:prod": "node dist/database/migrate.js",
+    "preflight": "node dist/database/preflight.js",
     "staff:bootstrap": "npm run build && node dist/staff/bootstrap.js",
     "pretest:e2e": "npm run build"
   },
@@ -53,6 +55,7 @@
     "@types/express": "^5.0.0",
     "@types/jest": "^30.0.0",
     "@types/node": "^24.0.0",
+    "@types/pg": "^8.23.1",
     "@types/supertest": "^7.0.0",
     "@types/ws": "^8.18.1",
     "jest": "^30.2.0",

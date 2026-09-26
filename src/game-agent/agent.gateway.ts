@@ -1,6 +1,7 @@
 import {
   Injectable,
   Logger,
+  BeforeApplicationShutdown,
   OnApplicationBootstrap,
   OnModuleDestroy,
   OnModuleInit,
@@ -24,6 +25,7 @@ import { ClientAddress } from '../common/net/client-address.service.js';
 import { ConcurrencyLimiter } from '../common/rate-limit/concurrency-limiter.js';
 import { RateLimiter } from '../common/rate-limit/rate-limiter.js';
 import { SecurityLog } from '../common/security/security-log.js';
+import { TickDrain } from '../lifecycle/tick-drain.js';
 import { AgentAuthError, AgentAuthService } from './agent-auth.service.js';
 import { AgentMessageRouter } from './agent-message.router.js';
 import {
@@ -53,7 +55,11 @@ type SocketState = 'AWAITING_HELLO' | 'AUTHENTICATING' | 'AUTHENTICATED';
 // matching reason (history is kept).
 @Injectable()
 export class AgentGateway
-  implements OnModuleInit, OnApplicationBootstrap, OnModuleDestroy
+  implements
+    OnModuleInit,
+    OnApplicationBootstrap,
+    OnModuleDestroy,
+    BeforeApplicationShutdown
 {
   private readonly logger = new Logger(AgentGateway.name);
   private readonly config: ApplicationConfig['agent'];
@@ -62,6 +68,7 @@ export class AgentGateway
   private pending = 0;
   private wss?: WebSocketServer;
   private sweep?: ReturnType<typeof setInterval>;
+  private readonly sweeping = new TickDrain();
   private stopping = false;
   // Per-server promotion chains (in memory; single instance, Etapa 12).
   private readonly promotions = new Map<string, Promise<void>>();
@@ -106,14 +113,34 @@ export class AgentGateway
     }
     // One periodic sweep instead of a timer per connection.
     this.sweep = setInterval(
-      () => void this.expire(),
+      () => void this.sweepOnce(),
       Math.max(100, Math.min(this.config.heartbeatIntervalMs, 1000)),
     );
     this.sweep.unref();
   }
+  // Graceful shutdown, phase 1 (with the workers): stop the heartbeat sweep
+  // and await a sweep in progress.
   async onModuleDestroy(): Promise<void> {
     this.stopping = true;
     if (this.sweep) clearInterval(this.sweep);
+    await this.sweeping.wait();
+  }
+  private async sweepOnce(): Promise<void> {
+    if (this.sweeping.active || this.stopping) return;
+    this.sweeping.begin();
+    try {
+      await this.expire();
+    } catch {
+      this.logger.error('Agent heartbeat sweep failed');
+    } finally {
+      this.sweeping.end();
+    }
+  }
+  // Phase 2, after every worker stopped: planned SHUTDOWN (never STALE) is
+  // persisted for each session, then the sockets close with 1001 SHUTDOWN.
+  // The Agent reconnects to the next instance (recreate deployment).
+  async beforeApplicationShutdown(): Promise<void> {
+    this.stopping = true;
     for (const session of this.sessions.all()) {
       await this.end(session, 'SHUTDOWN');
       this.sessions.terminate(

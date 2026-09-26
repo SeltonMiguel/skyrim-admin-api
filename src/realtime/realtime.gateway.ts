@@ -1,7 +1,7 @@
 import {
   Injectable,
+  BeforeApplicationShutdown,
   OnApplicationBootstrap,
-  OnModuleDestroy,
   OnModuleInit,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -60,7 +60,7 @@ export const RealtimeClose = {
 // closed when its access token expires; clients reconnect with a new one.
 @Injectable()
 export class RealtimeGateway
-  implements OnModuleInit, OnApplicationBootstrap, OnModuleDestroy
+  implements OnModuleInit, OnApplicationBootstrap, BeforeApplicationShutdown
 {
   private readonly authTimeoutMs: number;
   private readonly limits: ApplicationConfig['security']['realtime'];
@@ -136,7 +136,9 @@ export class RealtimeGateway
     const at = this.revoked.get(sessionId);
     return at !== undefined && Date.now() - at <= REVOKED_TRACK_MS;
   }
-  onModuleDestroy(): void {
+  // Graceful shutdown (12.2): after the workers stopped, before the
+  // database closes. Clients reconnect to the next instance and refetch.
+  beforeApplicationShutdown(): void {
     this.unsubscribe?.();
     this.unsubscribeSessions?.();
     for (const socket of this.wss?.clients ?? [])
