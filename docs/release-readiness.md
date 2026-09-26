@@ -48,8 +48,8 @@ Controles descritos em `docs/security.md` (12.1).
 
 ## Reliability
 
-- [ ] Graceful shutdown aguarda o tick em andamento dos workers; teste de SIGTERM durante o dispatch mantém at-least-once/at-most-once sem erro de pool no log (P1-7)
-- [ ] Readiness vira 503 ao iniciar o shutdown, antes de fechar HTTP e WebSocket (P1-6, P1-7)
+- [x] Graceful shutdown aguarda o tick em andamento dos workers; teste de SIGTERM durante o dispatch mantém at-least-once/at-most-once sem erro de pool no log (P1-7) — 12.2: dreno dos 5 loops em `src/lifecycle/lifecycle.spec.ts` e `src/game-agent/game-agent.spec.ts`; shutdown com Agent, Server Control claimed e GameCommand PENDING em `test/deployment-lifecycle.e2e-spec.ts`; SIGTERM no container (exit 0)
+- [x] Readiness vira 503 ao iniciar o shutdown, antes de fechar HTTP e WebSocket (P1-6, P1-7) — 12.2, `test/deployment-readiness.e2e-spec.ts`, `test/deployment-lifecycle.e2e-spec.ts`
 - [ ] Staff API para listar e inspecionar trades e purchases AWAITING_GAME_CONFIRMATION, releases PENDING/FAILED, VIP deliveries FAILED/UNCERTAIN/PENDING e receipts REJECTED (P1-9)
 - [ ] Toda ação de operador é auditada e declara se pode duplicar efeito físico; ações que podem duplicar exigem confirmação explícita (P1-9)
 - [ ] Política de timeout operacional para work sem resposta do Agent decidida e implementada ou documentada como manual (P1-9)
@@ -60,7 +60,8 @@ Controles descritos em `docs/security.md` (12.1).
 
 Exigida somente para mais de uma réplica. Até lá:
 
-- [ ] Réplica única garantida na configuração de deploy (réplicas = 1, estratégia recreate) e documentada no runbook (P0-5)
+- [x] Réplica única garantida na configuração de deploy (réplicas = 1, estratégia recreate) e documentada no runbook (P0-5) — 12.2: imposta pelo advisory lock de instância única (segunda instância e migration concorrente recusadas; `test/deployment-lifecycle.e2e-spec.ts` e smoke de container); `docs/deployment.md`
+- [ ] Orquestrador de produção configurado com réplicas = 1, estratégia recreate e restart automático (LOCK_LOST sai com exit 1)
 
 Para escalar:
 
@@ -90,29 +91,36 @@ Para escalar:
 ## Migrations
 
 - [x] 25 migrations aplicadas, `pending=0`, `synchronize=false`, diff de schema 0/0 (verificado pela suíte e2e na 12.0)
-- [ ] Policy de migration publicada (forward-only, expand/contract, lock/statement timeout, sem `migration:revert` em produção) (P1-10)
-- [ ] CLI de migration roda sem o `query_timeout` de 5 s do pool da aplicação (P1-10)
-- [ ] Down de AgentDomainEvents protegido contra down seguido de up com releases já concluídas (P1-10)
-- [ ] Pré-requisito `uuid-ossp` documentado e verificado no DB de produção antes da primeira migration (P1-10)
-- [ ] Smoke pós-migration executado em staging: `migration:show` vazio, contagem de permissions/grants, triggers ALWAYS ativos, readiness 200, login Staff, HELLO de Agent (P1-10)
+- [x] Policy de migration publicada (forward-only, expand/contract, lock/statement timeout, sem `migration:revert` em produção) (P1-10) — 12.2, `docs/deployment.md`
+- [x] CLI de migration roda sem o `query_timeout` de 5 s do pool da aplicação (P1-10) — 12.2: `createMigrationOptions` (`DB_MIGRATION_*`), `src/database/database.options.spec.ts`; runner compilado `node dist/database/migrate.js`
+- [ ] Down de AgentDomainEvents protegido contra down seguido de up com releases já concluídas (P1-10) — sem guarda em código; a policy da 12.2 proíbe `migration:revert` em produção
+- [x] Pré-requisito `uuid-ossp`: criado explicitamente só pelo migration runner, nunca pelo runtime (`installExtensions: false`); verificado por `/ready` e pelo preflight (P1-10) — 12.2, sem migration nova, `test/deployment-extensions.e2e-spec.ts`
+- [ ] Role de migration de produção com `CREATE` no banco, ou extensão criada por um administrador antes da primeira migration
+- [ ] Preflight executado contra o DB de produção antes da primeira migration
+- [ ] Smoke pós-migration executado em staging: `migration:show` vazio, contagem de permissions/grants, triggers ALWAYS ativos, readiness 200, login Staff, HELLO de Agent (P1-10) — executado localmente na 12.2 em container descartável (preflight 0 pending, readiness 200, login); staging pendente
 
 ## Backups
 
-- [ ] Backup do PostgreSQL de produção configurado (PITR ou dump) com RPO aprovado pelo operador (P0-4)
-- [ ] Política de retenção aprovada (P0-4)
-- [ ] Restore test executado com sucesso em ambiente isolado, com smoke pós-restore e RTO medido registrado (P0-4)
+- [ ] Backup do PostgreSQL de produção configurado (PITR ou dump) com RPO aprovado pelo operador (P0-4) — RPO: TO BE DECIDED (`docs/backup-restore.md`); ferramenta: `scripts/db-backup.sh`
+- [ ] Política de retenção aprovada (P0-4) — TO BE DECIDED
+- [x] Restore test executado com sucesso em ambiente isolado, com smoke pós-restore (12.2, local: 26 tabelas críticas iguais à origem, triggers, preflight 0 pending, `/ready` 200 e login no banco restaurado; `docs/backup-restore.md`)
+- [ ] Restore test repetido com volume de produção e RTO medido registrado (P0-4) — RTO: TO BE DECIDED
 - [ ] Backup verificado imediatamente antes de cada `migration:run` em produção (P0-4, P1-10)
-- [ ] Procedimento pós-restore para reconciliar efeitos físicos do Agent posteriores ao ponto de restore documentado
+- [x] Procedimento pós-restore para reconciliar efeitos físicos do Agent posteriores ao ponto de restore documentado — `docs/backup-restore.md`
 
 ## Deployment
 
-- [ ] Imagem de produção reproduzível construída no CI (multi-stage, usuário não-root, sem devDependencies, versão de Node fixada) (P0-3)
-- [ ] Migration como passo de deploy separado do start, sem rebuild (P0-3)
-- [ ] `NODE_ENV=production` obrigatório; boot recusa `test` ou ausência em produção (P1-5)
-- [ ] SSL para o DB configurável e ativo quando o DB não é local; pool e timeouts configurados (P1-4)
-- [ ] Probes `/health/live` e `/health/ready` implementados e ligados no orquestrador; readiness não depende do Agent (P1-6)
-- [ ] Reverse proxy com TLS, upgrade WebSocket em `/api/v1/realtime` e `/api/v1/agent`, timeout de inatividade acima do heartbeat do Agent (P1-11)
-- [ ] Runbook de deploy, rollback (restore ou migration corretiva) e restore escrito e executado em staging (P0-3)
+- [x] Imagem de produção reproduzível (multi-stage, `npm ci`, usuário não-root, sem devDependencies, Node 24.18.0 fixado) construída e testada localmente (P0-3) — 12.2, `Dockerfile`, smoke de container
+- [ ] Imagem construída no CI e publicada com tag imutável
+- [x] Migration como passo de deploy separado do start, sem rebuild (P0-3) — 12.2: `node dist/database/migrate.js` com o lock de instância única; a app nunca migra no start
+- [x] `NODE_ENV=production` definido pela imagem e pelo runbook; o servidor recusa `test`; o preflight dá ERROR fora de `production`; produção exige `DB_SSL_MODE` explícito e o lock (P1-5) — 12.2
+- [x] SSL para o DB configurável (`DB_SSL_MODE` disable/require/verify-full, CA opcional); pool e timeouts da API e da migration configuráveis (P1-4) — 12.2, `docs/configuration.md`
+- [ ] TLS `verify-full` ativo no DB de produção quando ele não é local
+- [x] Probes `/api/v1/live` e `/api/v1/ready` implementados; readiness não depende do Agent (P1-6) — 12.2, `test/deployment-readiness.e2e-spec.ts`, smoke de container
+- [ ] Probes ligados no orquestrador/proxy de produção
+- [ ] Reverse proxy com TLS, upgrade WebSocket em `/api/v1/realtime` e `/api/v1/agent`, timeout de inatividade acima do heartbeat do Agent (P1-11) — contrato em `docs/reverse-proxy.md`; configuração real pendente
+- [x] Runbook de deploy, rollback/roll-forward e restore escrito (P0-3) — `docs/deployment.md`, `docs/backup-restore.md`
+- [ ] Runbook executado de ponta a ponta em staging
 
 ## External integrations
 

@@ -610,6 +610,25 @@ testes unitários citados lá.
 | P2-7 / S15 multer | aberto (não alcançável) | proposta: `@nestjs/*` 12.1.x (platform-express 12.1.0 → multer 2.4.0), num commit isolado |
 | P2-5 rate limits distribuídos | aberto | a interface `RateLimiter` já isola o store; implementação compartilhada na 12.5 |
 
+## 25.2 Status após a 12.2
+
+Runbook em `docs/deployment.md`, backup/restore em `docs/backup-restore.md`,
+proxy em `docs/reverse-proxy.md`, variáveis em `docs/configuration.md`.
+
+| Finding | Status | Como |
+| --- | --- | --- |
+| P0-3 deploy | **resolvido** (falta CI) | `Dockerfile` multi-stage não-root, construído e testado localmente; `migrate` e `preflight` compilados, sem rebuild; runbook recreate |
+| P0-4 backup | **ferramenta pronta e testada**; decisões abertas | `scripts/db-backup.sh` e `scripts/db-restore-verify.sh`; restore test local executado com sucesso; RPO, RTO e retenção TO BE DECIDED |
+| P0-5 instância única / F-MI1 | **imposto** | advisory lock `pg_advisory_lock(1397446994, 1)` numa conexão dedicada durante toda a vida do processo; segunda instância e migration concorrente recusadas; lock perdido encerra a instância. O `endAllActive` global continua, mas não há outra instância para afetar |
+| P1-4 / S5 / C2 / C3 DB | **resolvido** | `DB_SSL_MODE` (explícito em produção), CA, pool, `statement_timeout` da API, timeouts próprios da migration |
+| P1-5 / C1 / S14 NODE_ENV | **resolvido** | imagem com `NODE_ENV=production`; servidor recusa `test`; preflight com ERROR fora de produção |
+| P1-6 health | **resolvido** | `/api/v1/live` sem I/O; `/api/v1/ready` (bootstrap, shutdown, lock, DB, migrations; nunca o Agent); `/health` legado mantido |
+| P1-7 / G1–G4 shutdown | **resolvido** | coordenador: readiness 503 → workers drenados → sockets com `SHUTDOWN` → lock → DB → HTTP; limite `SHUTDOWN_TIMEOUT_MS` |
+| P1-10 migrations | **parcial** | policy forward-only e timeouts próprios; `uuid-ossp` no preflight (sem migration 26); falta a guarda no down de AgentDomainEvents (mitigado pela proibição de revert) |
+| M6 `uuid-ossp` | **resolvido** | runtime com `installExtensions: false` (nenhum `CREATE EXTENSION` implícito); o migration runner garante `uuid-ossp` explicitamente antes das migrations (idempotente, `MigrationPrerequisiteError` sem permissão); `/ready` e o preflight só verificam. Sem migration 26. `test/deployment-extensions.e2e-spec.ts` |
+| Flake `server-control-agent` "keeps one non-terminal operation…" | **registrado, não alterado** | 1 falha em 19 execuções na 12.2, sob forte contenção local (e2e completo mais `docker build` em paralelo); o teste pressupõe menos de 1 s entre o claim e a execução (janela de entrega de 1 s na suíte, pausa fixa de 400 ms); o HEAD original passou em todas as repetições feitas (4/4). Investigar e calibrar na 12.6 com carga controlada; não aumentar timeout sem medição |
+| Flake `game-command-agent` "retries with the same identity…" | **registrado, não alterado** | 1 falha num e2e completo da delta final da 12.2 (tentativa 3 em vez de 2: o ACK timeout de 600 ms da suíte venceu antes da asserção após `pause(200)`); 6/6 isolada logo depois. Mesma classe do anterior (premissa de tempo sob contenção); calibrar na 12.6 |
+
 ## 26. Roadmap final da Stage 12
 
 A ordem sugerida na abertura (multi-instância primeiro) foi **alterada**. Os P0

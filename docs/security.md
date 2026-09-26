@@ -242,3 +242,18 @@ Só o reuso de refresh (revogação de sessão) é auditado.
 alcançáveis. Não foi aplicado `npm audit fix`. Proposta: subir `@nestjs/*` para
 12.1.x (platform-express 12.1.0 usa multer 2.4.0), num commit isolado com a
 suíte completa.
+
+## Produção (12.2)
+
+`node dist/database/preflight.js` lista como WARN as decisões de segurança que
+o ambiente real precisa tomar explicitamente:
+- `TRUST_PROXY=false` atrás de proxy;
+- `CORS_ORIGINS` e `REALTIME_ALLOWED_ORIGINS` vazios;
+- HSTS 0;
+- Swagger ligado;
+- TLS do banco desligado para host remoto, ou `require` sem verificação.
+
+Não força CORS: um deploy sem browser em outra origem pode deixar vazio,
+desde que como decisão consciente. Produção exige `DB_SSL_MODE` explícito e o
+lock de instância única. O servidor recusa `NODE_ENV=test`, que aceita
+segredos efêmeros.

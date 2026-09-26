@@ -719,3 +719,17 @@ A Subetapa 12.1 fecha os riscos concretos de autenticação e abuso da réplica
 
 Todos os limites são por processo até a 12.5. Variáveis e semântica em
 [Security](docs/security.md).
+
+A Subetapa 12.2 torna o backend implantável e recuperável como **uma única
+instância**. Do not run more than one backend replica before Stage 12.5:
+
+- um advisory lock do PostgreSQL impõe isso e recusa uma segunda instância;
+- `Dockerfile` multi-stage não-root;
+- deploy recreate com migration e preflight como passos separados (`node dist/database/migrate.js`, `node dist/database/preflight.js`);
+- probes `/api/v1/live` e `/api/v1/ready`;
+- shutdown gracioso que drena os workers;
+- TLS, pool e timeouts do banco configuráveis;
+- scripts de backup e de restore verificado.
+
+Veja [Deployment](docs/deployment.md), [Backup and restore](docs/backup-restore.md),
+[Reverse proxy](docs/reverse-proxy.md) e [Configuration](docs/configuration.md).
