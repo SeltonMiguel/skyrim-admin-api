@@ -108,7 +108,7 @@ describeDatabase('World with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(26);
+    expect(await database.runMigrations()).toHaveLength(27);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -184,6 +184,7 @@ describeDatabase('World with real PostgreSQL', () => {
       'agent_work_rejections',
       'audit_logs',
       'character_professions',
+      'distributed_bus_events',
       'economy_accounts',
       'economy_entries',
       'economy_transactions',
@@ -225,6 +226,9 @@ describeDatabase('World with real PostgreSQL', () => {
       'player_vip_entitlements',
       'players',
       'profession_experience_events',
+      'rate_limit_buckets',
+      'rate_limit_slots',
+      'realtime_connection_leases',
       'role_permissions',
       'roles',
       'server_control_operations',
@@ -509,6 +513,7 @@ describeDatabase('World with real PostgreSQL', () => {
         .expect(404);
   });
   it('reverses only the four permissions and nine grants and reapplies cleanly', async () => {
+    await database.undoLastMigration(); // Etapa 12.5 Multi-instance
     await database.undoLastMigration(); // Etapa 12.4 Operational Recovery
     await database.undoLastMigration(); // Etapa 11.4 Agent Domain Events
     await database.undoLastMigration(); // Etapa 11.3 Server Control Transport
@@ -538,7 +543,7 @@ describeDatabase('World with real PostgreSQL', () => {
         "SELECT * FROM permissions WHERE name LIKE 'WORLD_%'",
       ),
     ).toEqual([]);
-    expect(await database.runMigrations()).toHaveLength(20);
+    expect(await database.runMigrations()).toHaveLength(21);
     expect(await database.runMigrations()).toHaveLength(0);
     expect(
       await database.query(

@@ -180,7 +180,7 @@ describeDatabase(
         extra: { ...options.extra, options: `-c search_path=${schema},public` },
       });
       await database.initialize();
-      expect(await database.runMigrations()).toHaveLength(26);
+      expect(await database.runMigrations()).toHaveLength(27);
       const { AppModule } = await import('../src/app.module.js');
       const module = await Test.createTestingModule({ imports: [AppModule] })
         .overrideProvider(DataSource)
@@ -733,7 +733,7 @@ describeDatabase(
     });
 
     it('keeps all 25 migrations applied and schema aligned without synchronization', async () => {
-      expect(await database.query('SELECT * FROM migrations')).toHaveLength(26);
+      expect(await database.query('SELECT * FROM migrations')).toHaveLength(27);
       expect(await database.showMigrations()).toBe(false);
       expect(database.options.synchronize).toBe(false);
       const diff = await database.driver.createSchemaBuilder().log();

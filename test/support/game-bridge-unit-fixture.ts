@@ -14,6 +14,7 @@ import { GameCommandStore } from '../../src/game-bridge/game-command-store.js';
 import { GameCommandDispatcher } from '../../src/game-bridge/game-command-dispatcher.js';
 import { GameCommandReceiver } from '../../src/game-bridge/game-command-receiver.js';
 import { GameConnectionService } from '../../src/game-bridge/game-connection.service.js';
+import { STANDALONE_INSTANCE } from '../../src/cluster/instance-identity.js';
 import { GameServerService } from '../../src/game-bridge/game-server.service.js';
 import { CommandStatus as S } from '../../src/game-bridge/command-state.js';
 import { MockGameGateway, TestBridgeClock } from './mock-game-gateway.js';
@@ -33,6 +34,8 @@ export function gameFixture() {
     status: 'CONNECTED',
     lastHeartbeatAt: clock.now(),
     disconnectedAt: null,
+    // 12.5: owned by this (standalone) process, like a session it accepted.
+    ownerInstanceId: STANDALONE_INSTANCE.id,
   });
   const command: GameCommand = Object.assign(new GameCommand(), {
     id: randomUUID(),
@@ -117,6 +120,8 @@ export function gameFixture() {
           addOrderBy: () => builder,
           take: () => builder,
           getMany: async () => rows[name],
+          // In-flight budget: one command per fixture, never saturated.
+          getCount: async () => 0,
         };
         return builder;
       },

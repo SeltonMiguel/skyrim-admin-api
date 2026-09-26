@@ -243,7 +243,8 @@ describeDatabase('VIP entitlements with real PostgreSQL', () => {
     });
     await database.initialize();
     // Apply 10.16, then 10.17 over a pre-existing offer; revert and reapply.
-    expect(await database.runMigrations()).toHaveLength(26);
+    expect(await database.runMigrations()).toHaveLength(27);
+    await database.undoLastMigration(); // Etapa 12.5 Multi-instance
     await database.undoLastMigration(); // Etapa 12.4 Operational Recovery
     await database.undoLastMigration(); // Etapa 11.4 Agent Domain Events
     await database.undoLastMigration(); // Etapa 11.3 Server Control Transport
@@ -259,7 +260,7 @@ describeDatabase('VIP entitlements with real PostgreSQL', () => {
         [schema],
       ),
     ).toEqual([]);
-    expect(await database.runMigrations()).toHaveLength(5);
+    expect(await database.runMigrations()).toHaveLength(6);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -318,7 +319,7 @@ describeDatabase('VIP entitlements with real PostgreSQL', () => {
   it('adds entitlements over the existing catalog with database-enforced shape and history', async () => {
     expect(database.options.synchronize).toBe(false);
     expect(await database.showMigrations()).toBe(false);
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(26);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(27);
     const diff = await database.driver.createSchemaBuilder().log();
     expect([diff.upQueries, diff.downQueries]).toEqual([[], []]);
     // Offers from before 10.17 got the conservative CHARACTER scope.
@@ -1195,6 +1196,7 @@ describeDatabase('VIP entitlements with real PostgreSQL', () => {
     }
   });
   it('refuses to revert while entitlements exist', async () => {
+    await database.undoLastMigration(); // Etapa 12.5 Multi-instance
     await database.undoLastMigration(); // Etapa 12.4 Operational Recovery
     // CHARACTER grants left rewards to deliver: 11.4 refuses to forget them.
     await expect(database.undoLastMigration()).rejects.toThrow(
@@ -1211,8 +1213,8 @@ describeDatabase('VIP entitlements with real PostgreSQL', () => {
     await expect(database.undoLastMigration()).rejects.toThrow(
       'VIP entitlements exist',
     );
-    expect(await database.runMigrations()).toHaveLength(4);
+    expect(await database.runMigrations()).toHaveLength(5);
     expect(await database.showMigrations()).toBe(false);
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(26);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(27);
   });
 });

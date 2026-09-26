@@ -49,7 +49,7 @@ describeDatabase('Player accounts with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(26);
+    expect(await database.runMigrations()).toHaveLength(27);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -76,7 +76,7 @@ describeDatabase('Player accounts with real PostgreSQL', () => {
     const diff = await database.driver.createSchemaBuilder().log();
     expect(diff.upQueries).toEqual([]);
     expect(diff.downQueries).toEqual([]);
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(26);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(27);
     expect(await database.query('SELECT * FROM permissions')).toHaveLength(45);
     expect(await database.query('SELECT * FROM role_permissions')).toHaveLength(
       116,
@@ -370,6 +370,7 @@ describeDatabase('Player accounts with real PostgreSQL', () => {
     ).toEqual([]);
   });
   it('reverts only the player tables and reapplies cleanly', async () => {
+    await database.undoLastMigration(); // Etapa 12.5 Multi-instance
     await database.undoLastMigration(); // Etapa 12.4 Operational Recovery
     await database.undoLastMigration(); // Etapa 11.4 Agent Domain Events
     await database.undoLastMigration(); // Etapa 11.3 Server Control Transport
@@ -402,7 +403,7 @@ describeDatabase('Player accounts with real PostgreSQL', () => {
       { tablename: 'server_control_operations' },
       { tablename: 'staff_users' },
     ]);
-    expect(await database.runMigrations()).toHaveLength(17);
+    expect(await database.runMigrations()).toHaveLength(18);
     expect(await database.runMigrations()).toHaveLength(0);
     expect(
       (await database.driver.createSchemaBuilder().log()).upQueries,

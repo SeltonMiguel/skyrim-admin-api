@@ -172,19 +172,20 @@ describe('Discord identity provider', () => {
 });
 
 describe('Player auth rate limiter', () => {
-  it('limits per key within a fixed window and resets afterwards', () => {
+  it('limits per key within a fixed window and resets afterwards', async () => {
     const limiter = new PlayerAuthRateLimiter(
       new MemoryRateLimiter(),
       config({}),
     );
     expect(limiter.limit).toBe(3);
-    for (let i = 0; i < 3; i++) expect(limiter.consume('a', 1000)).toBeNull();
-    expect(limiter.consume('a', 1000)).toBe(60);
-    expect(limiter.consume('a', 31000)).toBe(30);
-    expect(limiter.consume('b', 1000)).toBeNull();
-    expect(limiter.consume('a', 61000)).toBeNull();
-    limiter.reset();
-    expect(limiter.consume('a', 61001)).toBeNull();
+    for (let i = 0; i < 3; i++)
+      expect(await limiter.consume('a', 1000)).toBeNull();
+    expect(await limiter.consume('a', 1000)).toBe(60);
+    expect(await limiter.consume('a', 31000)).toBe(30);
+    expect(await limiter.consume('b', 1000)).toBeNull();
+    expect(await limiter.consume('a', 61000)).toBeNull();
+    await limiter.reset();
+    expect(await limiter.consume('a', 61001)).toBeNull();
   });
 });
 

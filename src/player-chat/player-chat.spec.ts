@@ -71,27 +71,29 @@ describe('Chat contracts', () => {
 });
 
 describe('Chat rate limiter', () => {
-  it('allows the configured count per sliding window and reports Retry-After', () => {
+  it('allows the configured count per sliding window and reports Retry-After', async () => {
     const rl = limiter(5, 10);
     for (let i = 0; i < 5; i++)
-      expect(rl.acquire('p:c', `k${i}`, 1000 + i)).toEqual({ owner: true });
-    expect(rl.acquire('p:c', 'k5', 2000)).toEqual({ retryAfter: 9 });
+      expect(await rl.acquire('p:c', `k${i}`, 1000 + i)).toEqual({
+        owner: true,
+      });
+    expect(await rl.acquire('p:c', 'k5', 2000)).toEqual({ retryAfter: 9 });
     // Other characters or players have their own budget.
-    expect(rl.acquire('p:other', 'k5', 2000)).toEqual({ owner: true });
+    expect(await rl.acquire('p:other', 'k5', 2000)).toEqual({ owner: true });
     // The oldest slot frees after the window.
-    expect(rl.acquire('p:c', 'k5', 11_000)).toEqual({ owner: true });
+    expect(await rl.acquire('p:c', 'k5', 11_000)).toEqual({ owner: true });
   });
-  it('shares a slot between retries of one key and frees failed sends', () => {
+  it('shares a slot between retries of one key and frees failed sends', async () => {
     const rl = limiter(2, 10);
-    expect(rl.acquire('b', 'same', 0)).toEqual({ owner: true });
+    expect(await rl.acquire('b', 'same', 0)).toEqual({ owner: true });
     for (let i = 0; i < 7; i++)
-      expect(rl.acquire('b', 'same', i)).toEqual({ owner: false });
-    expect(rl.acquire('b', 'other', 1)).toEqual({ owner: true });
-    expect(rl.acquire('b', 'third', 2)).toEqual({ retryAfter: 10 });
-    rl.release('b', 'other');
-    expect(rl.acquire('b', 'third', 3)).toEqual({ owner: true });
+      expect(await rl.acquire('b', 'same', i)).toEqual({ owner: false });
+    expect(await rl.acquire('b', 'other', 1)).toEqual({ owner: true });
+    expect(await rl.acquire('b', 'third', 2)).toEqual({ retryAfter: 10 });
+    await rl.release('b', 'other');
+    expect(await rl.acquire('b', 'third', 3)).toEqual({ owner: true });
     rl.reset();
-    expect(rl.acquire('b', 'fourth', 4)).toEqual({ owner: true });
+    expect(await rl.acquire('b', 'fourth', 4)).toEqual({ owner: true });
   });
 });
 

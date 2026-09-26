@@ -43,7 +43,7 @@ describeDatabase('Deployment probes and migration readiness (12.2)', () => {
     } as DataSourceOptions);
     await database.initialize();
     // A schema one migration behind this build.
-    expect(await database.runMigrations()).toHaveLength(26);
+    expect(await database.runMigrations()).toHaveLength(27);
     await database.undoLastMigration();
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -102,13 +102,13 @@ describeDatabase('Deployment probes and migration readiness (12.2)', () => {
     expect(
       (
         await database.query(
-          "SELECT count(*)::int AS n FROM migrations WHERE name = 'OperationalRecovery1790050000000'",
+          "SELECT count(*)::int AS n FROM migrations WHERE name = 'MultiInstance1790060000000'",
         )
       )[0].n,
     ).toBe(0);
     // The runner (with its own timeouts and the instance lock) applies it.
     expect(await runMigrations(config, overrides)).toEqual([
-      'OperationalRecovery1790050000000',
+      'MultiInstance1790060000000',
     ]);
     expect(await http().get('/api/v1/ready').expect(200)).toMatchObject({
       body: { status: 'ready' },

@@ -94,7 +94,7 @@ describeDatabase('Server Control with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(26);
+    expect(await database.runMigrations()).toHaveLength(27);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -161,7 +161,7 @@ describeDatabase('Server Control with real PostgreSQL', () => {
     expect(
       (await database.driver.createSchemaBuilder().log()).upQueries,
     ).toEqual([]);
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(26);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(27);
     expect(await database.query('SELECT * FROM permissions')).toHaveLength(45);
     expect(await database.query('SELECT * FROM role_permissions')).toHaveLength(
       116,
@@ -190,6 +190,7 @@ describeDatabase('Server Control with real PostgreSQL', () => {
       'agent_work_rejections',
       'audit_logs',
       'character_professions',
+      'distributed_bus_events',
       'economy_accounts',
       'economy_entries',
       'economy_transactions',
@@ -231,6 +232,9 @@ describeDatabase('Server Control with real PostgreSQL', () => {
       'player_vip_entitlements',
       'players',
       'profession_experience_events',
+      'rate_limit_buckets',
+      'rate_limit_slots',
+      'realtime_connection_leases',
       'role_permissions',
       'roles',
       'server_control_operations',
@@ -383,9 +387,19 @@ describeDatabase('Server Control with real PostgreSQL', () => {
     await post('SERVER_PAUSE', key, R.DEV).expect(409);
     expect(await count()).toBe(1);
     const other = await servers.register({ code: randomUUID(), name: 'Other' });
+    // 12.5: the claim proves its target is the CONNECTED session of the
+    // operation's own server (owned here), so the other server gets its own.
+    const home = gateway.connectionId;
+    gateway.connectionId = (
+      await app.get(GameConnectionService).connect({
+        gameServerId: other.id,
+        externalConnectionId: randomUUID(),
+      })
+    ).id;
     const scoped = (
       await post('SERVER_RESTART', key, R.COORDINATOR, other.id).expect(202)
     ).body;
+    gateway.connectionId = home;
     expect(scoped.operationId).not.toBe(first.operationId);
     await settle();
     const raced = randomUUID();
@@ -856,6 +870,7 @@ describeDatabase('Server Control with real PostgreSQL', () => {
     expect(await count()).toBe(0);
   });
   it('reconciles Etapa 09 work in the 11.3 migration, reverts to the old schema and reapplies', async () => {
+    await database.undoLastMigration(); // Etapa 12.5 Multi-instance
     await database.undoLastMigration(); // Etapa 12.4 Operational Recovery
     await database.undoLastMigration(); // Etapa 11.4 Agent Domain Events
     await database.undoLastMigration(); // Etapa 11.3 Server Control Transport
@@ -896,7 +911,7 @@ describeDatabase('Server Control with real PostgreSQL', () => {
           [id],
         )
       )[0];
-    expect(await database.runMigrations()).toHaveLength(3);
+    expect(await database.runMigrations()).toHaveLength(4);
     // Possibly delivered before any result receiver existed: unknown.
     for (const id of [claimed, dispatched]) {
       expect(await state(id)).toEqual({
@@ -914,6 +929,7 @@ describeDatabase('Server Control with real PostgreSQL', () => {
         status: 'FAILED',
         error_code: 'DISPATCH_EXPIRED',
       });
+    await database.undoLastMigration(); // Etapa 12.5 Multi-instance
     await database.undoLastMigration(); // Etapa 12.4 Operational Recovery
     await database.undoLastMigration(); // Etapa 11.4 Agent Domain Events
     await database.undoLastMigration();
@@ -931,13 +947,14 @@ describeDatabase('Server Control with real PostgreSQL', () => {
         [schema],
       ),
     ).toEqual([]);
-    expect(await database.runMigrations()).toHaveLength(3);
+    expect(await database.runMigrations()).toHaveLength(4);
     expect(await database.runMigrations()).toHaveLength(0);
     expect(
       (await database.driver.createSchemaBuilder().log()).upQueries,
     ).toEqual([]);
   });
   it('reverts only the operation table and reapplies cleanly', async () => {
+    await database.undoLastMigration(); // Etapa 12.5 Multi-instance
     await database.undoLastMigration(); // Etapa 12.4 Operational Recovery
     await database.undoLastMigration(); // Etapa 11.4 Agent Domain Events
     await database.undoLastMigration(); // Etapa 11.3 Server Control Transport
@@ -966,7 +983,7 @@ describeDatabase('Server Control with real PostgreSQL', () => {
     expect(await database.query('SELECT * FROM role_permissions')).toHaveLength(
       93,
     );
-    expect(await database.runMigrations()).toHaveLength(18);
+    expect(await database.runMigrations()).toHaveLength(19);
     expect(await database.runMigrations()).toHaveLength(0);
     expect(
       (await database.driver.createSchemaBuilder().log()).upQueries,

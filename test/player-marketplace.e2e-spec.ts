@@ -314,7 +314,8 @@ describeDatabase('Player marketplace with real PostgreSQL', () => {
     });
     await database.initialize();
     // Apply, revert (empty marketplace) and reapply the 10.14 migration.
-    expect(await database.runMigrations()).toHaveLength(26);
+    expect(await database.runMigrations()).toHaveLength(27);
+    await database.undoLastMigration(); // Etapa 12.5 Multi-instance
     await database.undoLastMigration(); // Etapa 12.4 Operational Recovery
     await database.undoLastMigration(); // Etapa 11.4 Agent Domain Events
     await database.undoLastMigration(); // Etapa 11.3 Server Control Transport
@@ -329,7 +330,7 @@ describeDatabase('Player marketplace with real PostgreSQL', () => {
         [schema],
       ),
     ).toEqual([]);
-    expect(await database.runMigrations()).toHaveLength(8);
+    expect(await database.runMigrations()).toHaveLength(9);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -387,7 +388,7 @@ describeDatabase('Player marketplace with real PostgreSQL', () => {
   it('adds the marketplace tables and MARKET_ESCROW with a database-enforced lifecycle', async () => {
     expect(database.options.synchronize).toBe(false);
     expect(await database.showMigrations()).toBe(false);
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(26);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(27);
     const diff = await database.driver.createSchemaBuilder().log();
     expect([diff.upQueries, diff.downQueries]).toEqual([[], []]);
     const insert = (quantity: number, price: number) =>
@@ -1849,6 +1850,7 @@ describeDatabase('Player marketplace with real PostgreSQL', () => {
   });
   it('refuses to revert while marketplace listings exist', async () => {
     await reconciled();
+    await database.undoLastMigration(); // Etapa 12.5 Multi-instance
     await database.undoLastMigration(); // Etapa 12.4 Operational Recovery
     // Cancelled ACTIVE listings left items to return: 11.4 refuses to
     // forget them until the Agent reports the releases.
@@ -1869,8 +1871,8 @@ describeDatabase('Player marketplace with real PostgreSQL', () => {
     await expect(database.undoLastMigration()).rejects.toThrow(
       'marketplace listings exist',
     );
-    expect(await database.runMigrations()).toHaveLength(7);
+    expect(await database.runMigrations()).toHaveLength(8);
     expect(await database.showMigrations()).toBe(false);
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(26);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(27);
   });
 });

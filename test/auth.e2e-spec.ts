@@ -73,7 +73,8 @@ describeDatabase('Auth + RBAC with real PostgreSQL', () => {
     });
     await database.initialize();
     // Exercise migration, rollback, reproducibility and no-op rerun in an isolated schema.
-    expect(await database.runMigrations()).toHaveLength(26);
+    expect(await database.runMigrations()).toHaveLength(27);
+    await database.undoLastMigration(); // Etapa 12.5 Multi-instance
     await database.undoLastMigration(); // Etapa 12.4 Operational Recovery
     await database.undoLastMigration(); // Etapa 11.4 Agent Domain Events
     await database.undoLastMigration(); // Etapa 11.3 Server Control Transport
@@ -106,7 +107,7 @@ describeDatabase('Auth + RBAC with real PostgreSQL', () => {
         [schema],
       ),
     ).toHaveLength(0);
-    expect(await database.runMigrations()).toHaveLength(26);
+    expect(await database.runMigrations()).toHaveLength(27);
     expect(await database.runMigrations()).toHaveLength(0);
     const bootstrap = new BootstrapCoordinatorService(
       database,
@@ -153,7 +154,7 @@ describeDatabase('Auth + RBAC with real PostgreSQL', () => {
         `SELECT tablename FROM pg_tables WHERE schemaname = $1`,
         [schema],
       ),
-    ).toHaveLength(54);
+    ).toHaveLength(58);
   });
   it('seeds the six roles and complete permission catalog', async () => {
     const roles: { name: string }[] = await database.query(

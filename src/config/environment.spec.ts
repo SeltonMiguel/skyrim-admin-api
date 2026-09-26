@@ -548,10 +548,54 @@ describe('Deployment and database environment (12.2)', () => {
     });
     expect(production.deployment.singleInstanceLock).toBe(true);
   });
-  it('refuses MULTI topology, a disabled lock or an implicit TLS mode in production', () => {
+  it('accepts MULTI without the global lock, never as a silent SINGLE', () => {
+    const multi = validateEnvironment({
+      ...example,
+      NODE_ENV: 'production',
+      BACKEND_TOPOLOGY: 'multi',
+    });
+    expect(multi.deployment).toMatchObject({
+      topology: 'MULTI',
+      singleInstanceLock: false,
+    });
+    expect(multi.cluster).toEqual({
+      busChannel: 'skyrim_admin_bus',
+      busEventTtlMs: 60000,
+      busReconnectMaxMs: 30000,
+      cleanupIntervalMs: 60000,
+      realtimeLeaseTtlMs: 60000,
+      realtimeLeaseRenewMs: 20000,
+    });
     expect(() =>
-      validateEnvironment({ ...example, BACKEND_TOPOLOGY: 'MULTI' }),
-    ).toThrow('only SINGLE is supported before Stage 12.5');
+      validateEnvironment({
+        ...example,
+        BACKEND_TOPOLOGY: 'MULTI',
+        SINGLE_INSTANCE_LOCK_ENABLED: 'true',
+      }),
+    ).toThrow('not allowed with BACKEND_TOPOLOGY=MULTI');
+    for (const topology of ['CLUSTER', 'DUAL', ''])
+      expect(() =>
+        validateEnvironment({ ...example, BACKEND_TOPOLOGY: topology }),
+      ).toThrow('BACKEND_TOPOLOGY');
+    // Renewal must fit twice in the lease; no zero or absurd lease.
+    expect(() =>
+      validateEnvironment({
+        ...example,
+        REALTIME_LEASE_TTL_MS: '30000',
+        REALTIME_LEASE_RENEW_INTERVAL_MS: '20000',
+      }),
+    ).toThrow('REALTIME_LEASE_RENEW_INTERVAL_MS');
+    for (const [name, value] of [
+      ['REALTIME_LEASE_TTL_MS', '0'],
+      ['REALTIME_LEASE_TTL_MS', '999999999'],
+      ['CLUSTER_BUS_EVENT_TTL_MS', '0'],
+      ['CLUSTER_BUS_CHANNEL', 'Bad-Channel;'],
+    ])
+      expect(() => validateEnvironment({ ...example, [name]: value })).toThrow(
+        name,
+      );
+  });
+  it('refuses a disabled SINGLE lock or an implicit TLS mode in production', () => {
     expect(() =>
       validateEnvironment({
         ...example,

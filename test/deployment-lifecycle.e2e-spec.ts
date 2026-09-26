@@ -126,7 +126,7 @@ describeDatabase('Single-instance lock and graceful shutdown (12.2)', () => {
       ...(await compiledDatabaseArtifacts()),
       extra: { options: `-c search_path=${schema},public` },
     } as Partial<DataSourceOptions>;
-    expect(await runMigrations(loadEnvironment(), overrides)).toHaveLength(26);
+    expect(await runMigrations(loadEnvironment(), overrides)).toHaveLength(27);
     await admin.query(
       `INSERT INTO "${schema}".staff_users(username, display_name, password_hash, role_name) VALUES ('coordinator', 'C', $1, 'COORDINATOR')`,
       [await new PasswordService().hash(password)],

@@ -207,7 +207,8 @@ describeDatabase('Player settings with real PostgreSQL', () => {
     });
     await database.initialize();
     // Apply, revert (no settings) and reapply the 10.16 migration.
-    expect(await database.runMigrations()).toHaveLength(26);
+    expect(await database.runMigrations()).toHaveLength(27);
+    await database.undoLastMigration(); // Etapa 12.5 Multi-instance
     await database.undoLastMigration(); // Etapa 12.4 Operational Recovery
     await database.undoLastMigration(); // Etapa 11.4 Agent Domain Events
     await database.undoLastMigration(); // Etapa 11.3 Server Control Transport
@@ -220,7 +221,7 @@ describeDatabase('Player settings with real PostgreSQL', () => {
         [schema],
       ),
     ).toEqual([]);
-    expect(await database.runMigrations()).toHaveLength(6);
+    expect(await database.runMigrations()).toHaveLength(7);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -276,7 +277,7 @@ describeDatabase('Player settings with real PostgreSQL', () => {
   it('adds player_settings keyed by the player with database-enforced shape', async () => {
     expect(database.options.synchronize).toBe(false);
     expect(await database.showMigrations()).toBe(false);
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(26);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(27);
     const diff = await database.driver.createSchemaBuilder().log();
     expect([diff.upQueries, diff.downQueries]).toEqual([[], []]);
     const session = await login();
@@ -708,6 +709,7 @@ describeDatabase('Player settings with real PostgreSQL', () => {
   it('refuses to revert while settings exist', async () => {
     // No credentials or entitlements here: 11.3, 11.1 and 10.17 revert, then 10.16
     // refuses and is kept.
+    await database.undoLastMigration(); // Etapa 12.5 Multi-instance
     await database.undoLastMigration(); // Etapa 12.4 Operational Recovery
     await database.undoLastMigration(); // Etapa 11.4 Agent Domain Events
     await database.undoLastMigration(); // Etapa 11.3 Server Control Transport
@@ -716,8 +718,8 @@ describeDatabase('Player settings with real PostgreSQL', () => {
     await expect(database.undoLastMigration()).rejects.toThrow(
       'player settings exist',
     );
-    expect(await database.runMigrations()).toHaveLength(5);
+    expect(await database.runMigrations()).toHaveLength(6);
     expect(await database.showMigrations()).toBe(false);
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(26);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(27);
   });
 });

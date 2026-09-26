@@ -238,7 +238,7 @@ describeDatabase('Operational recovery (12.4) with real PostgreSQL', () => {
     });
     await database.initialize();
     // Upgrade path: 25 migrations, then 12.4 alone.
-    expect(await database.runMigrations()).toHaveLength(26);
+    expect(await database.runMigrations()).toHaveLength(27);
     await database.undoLastMigration();
     expect(await database.runMigrations()).toHaveLength(1);
     const { AppModule } = await import('../src/app.module.js');
