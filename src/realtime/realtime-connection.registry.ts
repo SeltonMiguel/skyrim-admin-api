@@ -96,6 +96,20 @@ export class RealtimeConnectionRegistry {
     }
     return sockets.length;
   }
+  // Unregisters, then closes, every socket of one identity key (12.4:
+  // account suspended or banned). Returns how many were closed.
+  closeKey(key: string, code: number, reason: string): number {
+    const sockets = [...(this.sockets.get(key) ?? [])];
+    for (const socket of sockets) {
+      this.remove(key, socket);
+      try {
+        if (socket.readyState === socket.OPEN) socket.close(code, reason);
+      } catch {
+        socket.terminate();
+      }
+    }
+    return sockets.length;
+  }
   sessionCount(session: string): number {
     return this.sessions.get(session)?.size ?? 0;
   }

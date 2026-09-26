@@ -172,7 +172,7 @@ export class VipDeliveryService
           gameServerId: delivery.gameServerId,
           type: command.type,
           payload: command.payload,
-          idempotencyKey: deliveryIdempotencyKey(id),
+          idempotencyKey: deliveryIdempotencyKey(id, delivery.attempt),
           actor: systemActor(SystemSource.VIP_DELIVERY),
         } as SubmitCommand,
         manager,

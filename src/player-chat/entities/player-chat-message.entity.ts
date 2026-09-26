@@ -13,12 +13,15 @@ import { GameServer } from '../../game-bridge/entities/game-server.entity.js';
 import { PlayerCharacter } from '../../player-characters/entities/player-character.entity.js';
 import { PlayerGroup } from '../../player-groups/entities/player-group.entity.js';
 import { PlayerGuild } from '../../player-guilds/entities/player-guild.entity.js';
+import { StaffUser } from '../../staff/entities/staff-user.entity.js';
 import type { ChatChannel } from '../player-chat.contracts.js';
 import { PlayerChatDirectThread } from './player-chat-direct-thread.entity.js';
 
 // Plain-text message kept until expires_at (retention); never edited. The
 // channel decides which reference is set (CHECK) and an insert trigger pins
-// the sender link and the reference to the message's server.
+// the sender link and the reference to the message's server. 12.4: a
+// moderator may hide it once (moderated_*, all-or-none); the content stays
+// as evidence and the history trigger allows no other update.
 @Entity('player_chat_messages')
 @Index('player_chat_messages_global_idx', ['gameServerId', 'createdAt', 'id'], {
   where: `channel_type = 'GLOBAL'`,
@@ -44,6 +47,10 @@ import { PlayerChatDirectThread } from './player-chat-direct-thread.entity.js';
   `char_length(content) BETWEEN 1 AND 500 AND content = btrim(content) AND content !~ '[[:cntrl:]]' AND length(btrim(sender_character_id)) > 0`,
 )
 @Check('player_chat_messages_expiry_check', `expires_at > created_at`)
+@Check(
+  'player_chat_messages_moderation_check',
+  `(moderated_at IS NULL AND moderated_by_staff_id IS NULL AND moderation_reason IS NULL) OR (moderated_at IS NOT NULL AND moderated_by_staff_id IS NOT NULL AND moderation_reason IS NOT NULL)`,
+)
 export class PlayerChatMessage {
   @PrimaryGeneratedColumn('uuid')
   id: string;
@@ -102,4 +109,21 @@ export class PlayerChatMessage {
   createdAt: Date;
   @Column({ name: 'expires_at', type: 'timestamptz' })
   expiresAt: Date;
+  @Column({ name: 'moderated_at', type: 'timestamptz', nullable: true })
+  moderatedAt: Date | null;
+  @Column({ name: 'moderated_by_staff_id', type: 'uuid', nullable: true })
+  moderatedByStaffId: string | null;
+  @ManyToOne(() => StaffUser)
+  @JoinColumn({
+    name: 'moderated_by_staff_id',
+    foreignKeyConstraintName: 'player_chat_messages_moderator_fkey',
+  })
+  moderatedByStaff: Relation<StaffUser>;
+  @Column({
+    name: 'moderation_reason',
+    type: 'varchar',
+    length: 500,
+    nullable: true,
+  })
+  moderationReason: string | null;
 }

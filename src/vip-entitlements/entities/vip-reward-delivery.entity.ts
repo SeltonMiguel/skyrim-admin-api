@@ -13,9 +13,11 @@ import {
 import type { Relation } from 'typeorm';
 import { GameCommand } from '../../game-bridge/entities/game-command.entity.js';
 import { GameServer } from '../../game-bridge/entities/game-server.entity.js';
+import { StaffUser } from '../../staff/entities/staff-user.entity.js';
 import type { VipReward } from '../../vip-store/vip-offer.contracts.js';
 import type {
   DeliveryErrorCode,
+  DeliveryResolution,
   DeliveryStatus,
 } from '../vip-delivery.contracts.js';
 import { PlayerVipEntitlement } from './player-vip-entitlement.entity.js';
@@ -34,6 +36,14 @@ import { PlayerVipEntitlement } from './player-vip-entitlement.entity.js';
 @Check(
   'vip_reward_deliveries_reward_check',
   `reward_index BETWEEN 0 AND 19 AND jsonb_typeof(reward) = 'object' AND octet_length(reward::text) <= 4096 AND length(btrim(character_external_id)) > 0`,
+)
+// 12.4: attempt of the current command (a new one only after a proven
+// pre-effect failure or an UNCERTAIN confirmed not delivered) and the
+// operator resolution of FAILED/UNCERTAIN, all-or-none.
+@Check('vip_reward_deliveries_attempt_check', `attempt BETWEEN 1 AND 10`)
+@Check(
+  'vip_reward_deliveries_resolution_check',
+  `(resolution IS NULL AND resolved_by_staff_id IS NULL AND resolved_at IS NULL AND resolution_reason IS NULL) OR (status IN ('FAILED', 'UNCERTAIN') AND resolution IN ('CONFIRMED_DELIVERED', 'CONFIRMED_NOT_DELIVERED') AND resolved_by_staff_id IS NOT NULL AND resolved_at IS NOT NULL AND resolution_reason IS NOT NULL)`,
 )
 export class VipRewardDelivery {
   @PrimaryGeneratedColumn('uuid')
@@ -79,4 +89,25 @@ export class VipRewardDelivery {
   updatedAt: Date;
   @Column({ name: 'completed_at', type: 'timestamptz', nullable: true })
   completedAt: Date | null;
+  @Column({ type: 'smallint', default: 1 })
+  attempt: number;
+  @Column({ type: 'varchar', length: 32, nullable: true })
+  resolution: DeliveryResolution | null;
+  @Column({ name: 'resolved_by_staff_id', type: 'uuid', nullable: true })
+  resolvedByStaffId: string | null;
+  @ManyToOne(() => StaffUser)
+  @JoinColumn({
+    name: 'resolved_by_staff_id',
+    foreignKeyConstraintName: 'vip_reward_deliveries_resolver_fkey',
+  })
+  resolvedByStaff: Relation<StaffUser>;
+  @Column({ name: 'resolved_at', type: 'timestamptz', nullable: true })
+  resolvedAt: Date | null;
+  @Column({
+    name: 'resolution_reason',
+    type: 'varchar',
+    length: 500,
+    nullable: true,
+  })
+  resolutionReason: string | null;
 }

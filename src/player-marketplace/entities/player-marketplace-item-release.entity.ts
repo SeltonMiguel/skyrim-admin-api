@@ -11,8 +11,10 @@ import {
 } from 'typeorm';
 import type { Relation } from 'typeorm';
 import { GameServer } from '../../game-bridge/entities/game-server.entity.js';
+import { StaffUser } from '../../staff/entities/staff-user.entity.js';
 import type {
   ReleaseReason,
+  ReleaseResolution,
   ReleaseStatus,
 } from '../player-marketplace.contracts.js';
 import { PlayerMarketplaceListing } from './player-marketplace-listing.entity.js';
@@ -39,6 +41,13 @@ import { PlayerMarketplaceListing } from './player-marketplace-listing.entity.js
 @Check(
   'player_marketplace_item_releases_reason_check',
   `reason IN ('CANCELLED', 'PURCHASE_FAILED') AND length(btrim(seller_character_id)) > 0`,
+)
+// Operator resolution of a FAILED release (12.4): the item was found with
+// the seller (RESOLVED_SUCCEEDED) or handled out of band (RESOLVED_FAILED).
+// Separate and all-or-none; the Agent-reported outcome stays.
+@Check(
+  'player_marketplace_item_releases_resolution_check',
+  `(resolution IS NULL AND resolved_by_staff_id IS NULL AND resolved_at IS NULL AND resolution_reason IS NULL) OR (status = 'FAILED' AND resolution IN ('RESOLVED_SUCCEEDED', 'RESOLVED_FAILED') AND resolved_by_staff_id IS NOT NULL AND resolved_at IS NOT NULL AND resolution_reason IS NOT NULL)`,
 )
 export class PlayerMarketplaceItemRelease {
   @PrimaryGeneratedColumn('uuid')
@@ -73,4 +82,23 @@ export class PlayerMarketplaceItemRelease {
   createdAt: Date;
   @Column({ name: 'completed_at', type: 'timestamptz', nullable: true })
   completedAt: Date | null;
+  @Column({ type: 'varchar', length: 24, nullable: true })
+  resolution: ReleaseResolution | null;
+  @Column({ name: 'resolved_by_staff_id', type: 'uuid', nullable: true })
+  resolvedByStaffId: string | null;
+  @ManyToOne(() => StaffUser)
+  @JoinColumn({
+    name: 'resolved_by_staff_id',
+    foreignKeyConstraintName: 'player_marketplace_item_releases_resolver_fkey',
+  })
+  resolvedByStaff: Relation<StaffUser>;
+  @Column({ name: 'resolved_at', type: 'timestamptz', nullable: true })
+  resolvedAt: Date | null;
+  @Column({
+    name: 'resolution_reason',
+    type: 'varchar',
+    length: 500,
+    nullable: true,
+  })
+  resolutionReason: string | null;
 }

@@ -469,9 +469,10 @@ export class PlayerChatService {
   ) {
     const builder = this.builder();
     where(builder);
-    // Expired messages are hidden, never deleted here.
+    // Expired and moderated (12.4) messages are hidden, never deleted here.
     const [messages, total] = await builder
       .andWhere('message.expiresAt > now()')
+      .andWhere('message.moderatedAt IS NULL')
       .orderBy('message.createdAt', 'DESC')
       .addOrderBy('message.id', 'DESC')
       .skip((query.page - 1) * query.limit)

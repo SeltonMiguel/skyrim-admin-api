@@ -27,6 +27,7 @@ const WORK = [
   'marketplace_release',
   'marketplace_release_failed',
 ];
+const RECOVERY = ['server_control', 'vip_delivery', 'marketplace_release'];
 const AGE = 'EXTRACT(EPOCH FROM now() - min(%s))::float8';
 type Row = { key: string; n: number; age: number | null };
 
@@ -35,7 +36,9 @@ type Row = { key: string; n: number; age: number | null };
 // the gauges are rebuilt from PostgreSQL after any restart. States follow
 // the real schema: trade AWAITING_GAME_CONFIRMATION (since locked_at),
 // listing PENDING_CUSTODY, purchase AWAITING_GAME_CONFIRMATION, release
-// PENDING/FAILED, VIP delivery statuses.
+// PENDING/FAILED, VIP delivery statuses. 12.4: an operator resolution
+// takes an item out of every "unresolved" gauge (Server Control UNCERTAIN,
+// release FAILED, recovery_unresolved); the event counters stay cumulative.
 @Injectable()
 export class BacklogCollector
   implements OnApplicationBootstrap, OnModuleDestroy
@@ -81,6 +84,7 @@ export class BacklogCollector
       await this.controls();
       await this.work();
       await this.vip();
+      await this.recovery();
       this.metrics.backlogCollected.set(Math.floor(Date.now() / 1000));
       return true;
     } catch {
@@ -110,7 +114,7 @@ export class BacklogCollector
   private async controls() {
     const rows = await this.rows(
       `SELECT status AS key, count(*)::int AS n, NULL AS age
-       FROM server_control_operations WHERE status = ANY($1) GROUP BY status`,
+       FROM server_control_operations WHERE status = ANY($1) AND resolution IS NULL GROUP BY status`,
       [CONTROL_STATES],
     );
     for (const status of CONTROL_STATES)
@@ -130,12 +134,43 @@ export class BacklogCollector
        UNION ALL SELECT 'marketplace_release', count(*)::int, ${AGE.replace('%s', 'created_at')}
          FROM player_marketplace_item_releases WHERE status = 'PENDING'
        UNION ALL SELECT 'marketplace_release_failed', count(*)::int, ${AGE.replace('%s', 'created_at')}
-         FROM player_marketplace_item_releases WHERE status = 'FAILED'`,
+         FROM player_marketplace_item_releases WHERE status = 'FAILED' AND resolution IS NULL`,
     );
     for (const work of WORK) {
       const row = rows.find((r) => r.key === work);
       this.metrics.workBacklog.set({ work }, row?.n ?? 0);
       this.metrics.workOldest.set({ work }, row?.age ?? 0);
+    }
+  }
+  // Items needing an operator decision (12.4), by domain.
+  private async recovery() {
+    const rows: {
+      key: string;
+      unresolved: number;
+      resolved: number;
+      age: number | null;
+    }[] = await this.database.query(
+      `SELECT 'server_control' AS key,
+              count(*) FILTER (WHERE resolution IS NULL)::int AS unresolved,
+              count(*) FILTER (WHERE resolution IS NOT NULL)::int AS resolved,
+              EXTRACT(EPOCH FROM now() - min(completed_at) FILTER (WHERE resolution IS NULL))::float8 AS age
+         FROM server_control_operations WHERE status = 'UNCERTAIN'
+       UNION ALL SELECT 'vip_delivery',
+              count(*) FILTER (WHERE resolution IS NULL)::int,
+              count(*) FILTER (WHERE resolution IS NOT NULL)::int,
+              EXTRACT(EPOCH FROM now() - min(completed_at) FILTER (WHERE resolution IS NULL))::float8
+         FROM vip_reward_deliveries WHERE status IN ('FAILED', 'UNCERTAIN')
+       UNION ALL SELECT 'marketplace_release',
+              count(*) FILTER (WHERE resolution IS NULL)::int,
+              count(*) FILTER (WHERE resolution IS NOT NULL)::int,
+              EXTRACT(EPOCH FROM now() - min(completed_at) FILTER (WHERE resolution IS NULL))::float8
+         FROM player_marketplace_item_releases WHERE status = 'FAILED'`,
+    );
+    for (const domain of RECOVERY) {
+      const row = rows.find((r) => r.key === domain);
+      this.metrics.recoveryUnresolved.set({ domain }, row?.unresolved ?? 0);
+      this.metrics.recoveryResolved.set({ domain }, row?.resolved ?? 0);
+      this.metrics.recoveryOldest.set({ domain }, row?.age ?? 0);
     }
   }
   private async vip() {

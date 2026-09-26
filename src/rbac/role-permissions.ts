@@ -44,6 +44,14 @@ export const ROLE_PERMISSIONS: Readonly<
     Permission.STAFF_TELEPORT_TO_PLAYER,
     Permission.PLAYER_TELEPORT_TO_STAFF,
     Permission.GAME_AGENT_CREDENTIAL_MANAGE,
+    Permission.OPERATIONS_READ,
+    Permission.SERVER_CONTROL_RESOLVE,
+    Permission.PLAYER_TRADE_RECOVER,
+    Permission.PLAYER_MARKETPLACE_RECOVER,
+    Permission.VIP_DELIVERY_RECOVER,
+    Permission.PLAYER_ACCOUNT_MODERATE,
+    Permission.PLAYER_ECONOMY_ADJUST,
+    Permission.PLAYER_CHAT_MODERATE,
   ],
   [RoleName.GENERAL_CHIEF]: [
     Permission.WORLD_READ,
@@ -76,6 +84,12 @@ export const ROLE_PERMISSIONS: Readonly<
     Permission.ANNOUNCEMENT_SEND,
     Permission.STAFF_TELEPORT_TO_PLAYER,
     Permission.PLAYER_TELEPORT_TO_STAFF,
+    Permission.OPERATIONS_READ,
+    Permission.PLAYER_TRADE_RECOVER,
+    Permission.PLAYER_MARKETPLACE_RECOVER,
+    Permission.VIP_DELIVERY_RECOVER,
+    Permission.PLAYER_ACCOUNT_MODERATE,
+    Permission.PLAYER_CHAT_MODERATE,
   ],
   [RoleName.ADMIN]: [
     Permission.WORLD_READ,
@@ -91,6 +105,8 @@ export const ROLE_PERMISSIONS: Readonly<
     Permission.ANNOUNCEMENT_SEND,
     Permission.STAFF_TELEPORT_TO_PLAYER,
     Permission.PLAYER_TELEPORT_TO_STAFF,
+    Permission.PLAYER_ACCOUNT_MODERATE,
+    Permission.PLAYER_CHAT_MODERATE,
   ],
   [RoleName.MODERATOR]: [
     Permission.DASHBOARD_READ,
@@ -101,6 +117,7 @@ export const ROLE_PERMISSIONS: Readonly<
     Permission.ANNOUNCEMENT_SEND,
     Permission.STAFF_TELEPORT_TO_PLAYER,
     Permission.PLAYER_TELEPORT_TO_STAFF,
+    Permission.PLAYER_CHAT_MODERATE,
   ],
   [RoleName.SUPPORT]: [
     Permission.DASHBOARD_READ,
@@ -114,5 +131,10 @@ export const ROLE_PERMISSIONS: Readonly<
     Permission.SERVER_PAUSE,
     Permission.SERVER_RESTART,
     Permission.GAME_AGENT_CREDENTIAL_MANAGE,
+    // 12.4: transport-level recovery only (no economy, account or reward).
+    Permission.OPERATIONS_READ,
+    Permission.SERVER_CONTROL_RESOLVE,
+    Permission.PLAYER_TRADE_RECOVER,
+    Permission.PLAYER_MARKETPLACE_RECOVER,
   ],
 };

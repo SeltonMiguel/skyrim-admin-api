@@ -28,7 +28,7 @@ import type { Currency, EconomyTransactionType } from '../economy.contracts.js';
 @Check('economy_transactions_currency_check', `currency IN ('GOLD')`)
 @Check(
   'economy_transactions_type_check',
-  `type IN ('SYSTEM_CREDIT', 'SYSTEM_DEBIT', 'TRANSFER') AND (type = 'TRANSFER' OR actor_type = 'SYSTEM')`,
+  `type IN ('SYSTEM_CREDIT', 'SYSTEM_DEBIT', 'TRANSFER', 'STAFF_ADJUSTMENT') AND (type = 'TRANSFER' OR (type IN ('SYSTEM_CREDIT', 'SYSTEM_DEBIT') AND actor_type = 'SYSTEM') OR (type = 'STAFF_ADJUSTMENT' AND actor_type = 'STAFF'))`,
 )
 @Check(
   'economy_transactions_actor_check',

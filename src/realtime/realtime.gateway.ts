@@ -47,6 +47,9 @@ export const RealtimeClose = {
   // 12.1: the Player session behind the socket was revoked by the backend
   // (logout, refresh reuse). Same code as UNAUTHORIZED, distinct reason.
   SESSION_REVOKED: 4001,
+  // 12.4: a moderator suspended or banned the account (reason
+  // ACCOUNT_DISABLED); all of its sockets close.
+  ACCOUNT_DISABLED: 4001,
   TOKEN_EXPIRED: 4002,
   PROTOCOL_ERROR: 4003,
   // 12.1: the identity already holds REALTIME_MAX_CONNECTIONS_PER_IDENTITY
@@ -81,6 +84,7 @@ export class RealtimeGateway
   // the revocation committed is refused when it completes after it.
   private readonly revoked = new Map<string, number>();
   private unsubscribeSessions?: () => void;
+  private unsubscribeAccounts?: () => void;
   constructor(
     private readonly upgrades: WebSocketUpgradeRouter,
     private readonly bus: RealtimeEventBus,
@@ -131,9 +135,25 @@ export class RealtimeGateway
     this.unsubscribeSessions = this.sessionControl.subscribe((sessionId) =>
       this.revokeSession(sessionId),
     );
+    this.unsubscribeAccounts = this.sessionControl.subscribeAccounts(
+      (playerId, sessionIds) => this.revokeAccount(playerId, sessionIds),
+    );
   }
-  // After the revocation committed: close exactly this session's sockets.
-  private revokeSession(sessionId: string): void {
+  // After the account's sessions were revoked (12.4): an AUTH in flight for
+  // any of them is refused, and every socket of the account closes.
+  private revokeAccount(playerId: string, sessionIds: readonly string[]): void {
+    for (const sessionId of sessionIds) this.trackRevoked(sessionId);
+    const closed = this.registry.closeKey(
+      connectionKey('PLAYER', playerId),
+      RealtimeClose.ACCOUNT_DISABLED,
+      'ACCOUNT_DISABLED',
+    );
+    if (closed) {
+      this.metrics?.realtimeRejects.inc({ reason: 'account_disabled' }, closed);
+      this.security.warn('realtime_account_disabled', { playerId, closed });
+    }
+  }
+  private trackRevoked(sessionId: string): void {
     const now = Date.now();
     if (this.revoked.size >= MAX_REVOKED_TRACKED)
       for (const [id, at] of this.revoked)
@@ -143,6 +163,10 @@ export class RealtimeGateway
         )
           this.revoked.delete(id);
     this.revoked.set(sessionId, now);
+  }
+  // After the revocation committed: close exactly this session's sockets.
+  private revokeSession(sessionId: string): void {
+    this.trackRevoked(sessionId);
     const closed = this.registry.closePlayerSession(
       sessionId,
       RealtimeClose.SESSION_REVOKED,
@@ -162,6 +186,7 @@ export class RealtimeGateway
   beforeApplicationShutdown(): void {
     this.unsubscribe?.();
     this.unsubscribeSessions?.();
+    this.unsubscribeAccounts?.();
     for (const socket of this.wss?.clients ?? [])
       socket.close(RealtimeClose.SHUTDOWN, 'SHUTDOWN');
     this.wss?.close();

@@ -163,8 +163,14 @@ export class EconomyLedgerService {
       throw new Error('currency');
     if (!Object.values(EconomyTransactionType).includes(posting.type))
       throw new Error('type');
-    if (posting.type !== EconomyTransactionType.TRANSFER)
-      if (actor.type !== ActorType.SYSTEM) throw new Error('actor');
+    // Same rule as economy_transactions_type_check.
+    if (
+      posting.type === EconomyTransactionType.STAFF_ADJUSTMENT
+        ? actor.type !== ActorType.STAFF
+        : posting.type !== EconomyTransactionType.TRANSFER &&
+          actor.type !== ActorType.SYSTEM
+    )
+      throw new Error('actor');
     const legs = posting.legs.map((leg) => ({
       account: this.account(leg.account),
       amount: leg.amount,

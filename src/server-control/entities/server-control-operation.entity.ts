@@ -16,6 +16,7 @@ import { StaffUser } from '../../staff/entities/staff-user.entity.js';
 import { ServerControlStatus } from '../server-control.contracts.js';
 import type {
   ServerControlErrorCode,
+  ServerControlResolution,
   ServerControlType,
 } from '../server-control.contracts.js';
 
@@ -68,6 +69,12 @@ import type {
 @Check(
   'server_control_operations_uncertain_check',
   `status <> 'UNCERTAIN' OR dispatch_claimed_at IS NOT NULL`,
+)
+// Operator resolution of an UNCERTAIN operation (12.4): a separate record,
+// all-or-none; status and error_code keep the original outcome.
+@Check(
+  'server_control_operations_resolution_check',
+  `(resolution IS NULL AND resolved_by_staff_id IS NULL AND resolved_at IS NULL AND resolution_reason IS NULL) OR (status = 'UNCERTAIN' AND resolution IN ('RESOLVED_SUCCEEDED', 'RESOLVED_FAILED') AND resolved_by_staff_id IS NOT NULL AND resolved_at IS NOT NULL AND resolution_reason IS NOT NULL)`,
 )
 export class ServerControlOperation {
   @PrimaryGeneratedColumn('uuid')
@@ -125,4 +132,23 @@ export class ServerControlOperation {
   errorCode: ServerControlErrorCode | null;
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
+  @Column({ type: 'varchar', length: 24, nullable: true })
+  resolution: ServerControlResolution | null;
+  @Column({ name: 'resolved_by_staff_id', type: 'uuid', nullable: true })
+  resolvedByStaffId: string | null;
+  @ManyToOne(() => StaffUser)
+  @JoinColumn({
+    name: 'resolved_by_staff_id',
+    foreignKeyConstraintName: 'server_control_operations_resolver_fkey',
+  })
+  resolvedByStaff: Relation<StaffUser>;
+  @Column({ name: 'resolved_at', type: 'timestamptz', nullable: true })
+  resolvedAt: Date | null;
+  @Column({
+    name: 'resolution_reason',
+    type: 'varchar',
+    length: 500,
+    nullable: true,
+  })
+  resolutionReason: string | null;
 }

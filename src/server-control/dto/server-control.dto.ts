@@ -3,11 +3,13 @@ import { IsEnum, IsIn, IsOptional, IsUUID } from 'class-validator';
 import { PageQueryDto } from '../../admin-queries/dto/query.dto.js';
 import {
   SERVER_CONTROL_ERRORS,
+  SERVER_CONTROL_RESOLUTIONS,
   SERVER_CONTROL_TYPES,
   ServerControlStatus,
 } from '../server-control.contracts.js';
 import type {
   ServerControlErrorCode,
+  ServerControlResolution,
   ServerControlType,
 } from '../server-control.contracts.js';
 
@@ -45,6 +47,16 @@ export class ServerControlOperationDetailDto extends ServerControlOperationRefer
   })
   errorCode: ServerControlErrorCode | null;
   @ApiProperty({ type: String, nullable: true }) errorMessage: string | null;
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    enum: SERVER_CONTROL_RESOLUTIONS,
+    description:
+      'UNCERTAIN only (12.4): what an operator verified out of band. Status and errorCode keep the original outcome.',
+  })
+  resolution: ServerControlResolution | null;
+  @ApiProperty({ type: String, format: 'date-time', nullable: true })
+  resolvedAt: Date | null;
 }
 // Cold-start recovery of the Admin Web (11.6): operations of one server,
 // newest first, restricted to the types the caller may read.

@@ -53,6 +53,13 @@ export enum ReleaseReason {
   CANCELLED = 'CANCELLED',
   PURCHASE_FAILED = 'PURCHASE_FAILED',
 }
+// Operator resolution of a FAILED release (12.4). A FAILED release is never
+// retried: its workId is final in the Agent journal and UNIQUE(listing_id)
+// forbids a second release, so recovery is inspection plus this record.
+export enum ReleaseResolution {
+  RESOLVED_SUCCEEDED = 'RESOLVED_SUCCEEDED',
+  RESOLVED_FAILED = 'RESOLVED_FAILED',
+}
 export enum ReleaseOutcome {
   RELEASED = 'RELEASED',
   FAILED = 'FAILED',

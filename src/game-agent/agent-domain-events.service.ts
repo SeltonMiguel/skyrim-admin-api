@@ -16,7 +16,10 @@ import { CharacterLinkService } from '../player-characters/character-link.servic
 import { SettlementOutcome } from '../player-trades/player-trade.contracts.js';
 import { TradeSettlementService } from '../player-trades/trade-settlement.service.js';
 import { ProfessionExperienceService } from '../professions/profession-experience.service.js';
-import { ReceiptStatus } from './agent-domain-event.contracts.js';
+import {
+  isAgentWorkKind,
+  ReceiptStatus,
+} from './agent-domain-event.contracts.js';
 import type { AgentEventKind } from './agent-domain-event.contracts.js';
 import type { AgentDomainEventReceipt } from './entities/agent-domain-event-receipt.entity.js';
 import type { DomainEventPayload } from './agent-protocol.contracts.js';
@@ -47,6 +50,10 @@ type Handler = (
 ) => Promise<Verdict>;
 // Refusals that may succeed later with the same eventId: not persisted.
 const RETRYABLE = new Set(['LEDGER_REJECTED', 'SERVER_UNAVAILABLE']);
+// Refusals that do not prove the work item exists on the session's server:
+// never noted per work item (12.4), so an Agent cannot fill the table.
+const UNANCHORED =
+  /^(INVALID_INPUT|SERVER_MISMATCH|EVENT_CONFLICT|.*_NOT_FOUND)$/;
 class ReceiptRace extends Error {}
 const verdict = (result: {
   outcome: string;
@@ -216,6 +223,7 @@ export class AgentDomainEventService {
       return { type: 'ACK', duplicate: result.already, status: result.status };
     if (result.reason === 'SERVER_MISMATCH') return { type: 'SERVER_MISMATCH' };
     if (result.reason === 'EVENT_CONFLICT') return { type: 'CONFLICT' };
+    await this.noteRejection(gameServerId, event, result.reason);
     if (RETRYABLE.has(result.reason))
       return {
         type: 'REJECTED',
@@ -239,6 +247,32 @@ export class AgentDomainEventService {
       retryable: false,
       duplicate: false,
     };
+  }
+  // Last Agent rejection of an existing work item (12.4), for the operator
+  // queues: reason and count only, never the payload. Best-effort and
+  // outside the domain transaction: it never changes the answer.
+  private async noteRejection(
+    gameServerId: string,
+    event: DomainEventPayload,
+    reason: string,
+  ): Promise<void> {
+    if (!isAgentWorkKind(event.kind) || UNANCHORED.test(reason)) return;
+    const workId = (event.data as { workId?: unknown }).workId;
+    try {
+      await this.database.query(
+        `INSERT INTO agent_work_rejections(kind, work_id, game_server_id, reason)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (kind, work_id) DO UPDATE SET reason = EXCLUDED.reason,
+           rejection_count = LEAST(agent_work_rejections.rejection_count + 1, 2147483647),
+           last_rejected_at = now()
+         WHERE agent_work_rejections.game_server_id = EXCLUDED.game_server_id`,
+        [event.kind, workId, gameServerId, reason.slice(0, 64)],
+      );
+    } catch {
+      this.logger.warn(
+        `Agent work rejection not noted [gameServerId=${gameServerId} kind=${event.kind}]`,
+      );
+    }
   }
   private async known(
     gameServerId: string,

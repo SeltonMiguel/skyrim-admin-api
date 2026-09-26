@@ -34,6 +34,8 @@ export const ALLOWED_LABELS = new Set([
   'version',
   'git_sha',
   'topology',
+  'domain',
+  'action',
 ]);
 const LATENCY = [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10];
 const LIFECYCLE = [0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 300];
@@ -277,7 +279,7 @@ export class Metrics {
   );
   readonly controlOperations = this.gauge(
     'server_control_operations',
-    'Server Control operations by status (database, periodic; UNCERTAIN is cumulative).',
+    'Server Control operations by status (database, periodic; UNCERTAIN counts only those without an operator resolution, 12.4).',
     ['status'],
   );
 
@@ -311,6 +313,27 @@ export class Metrics {
     'vip_delivery_oldest_open_age_seconds',
     'Age of the oldest PENDING or COMMAND_CREATED delivery (database, periodic).',
     [],
+  );
+  // Operational recovery (12.4).
+  readonly operatorActions = this.counter(
+    'operator_actions_total',
+    'Operator recovery interventions by domain, action kind and outcome (applied, replayed, rejected).',
+    ['domain', 'action', 'outcome'],
+  );
+  readonly recoveryUnresolved = this.gauge(
+    'recovery_unresolved',
+    'Items needing an operator decision, without a resolution (database, periodic).',
+    ['domain'],
+  );
+  readonly recoveryResolved = this.gauge(
+    'recovery_resolved',
+    'Items an operator resolved (database, periodic; cumulative over retained rows).',
+    ['domain'],
+  );
+  readonly recoveryOldest = this.gauge(
+    'recovery_oldest_unresolved_age_seconds',
+    'Age of the oldest unresolved item by domain (database, periodic).',
+    ['domain'],
   );
   readonly backlogCollected = this.gauge(
     'backlog_collection_timestamp_seconds',

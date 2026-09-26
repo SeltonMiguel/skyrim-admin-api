@@ -31,5 +31,8 @@ export function serverControlDetail(
     errorMessage: operation.errorCode
       ? SERVER_CONTROL_ERRORS[operation.errorCode]
       : null,
+    // 12.4: operator resolution of an UNCERTAIN operation (status stays).
+    resolution: operation.resolution ?? null,
+    resolvedAt: operation.resolvedAt ?? null,
   };
 }

@@ -85,3 +85,11 @@ export const SERVER_CONTROL_POLICY: Readonly<
     path: 'restart',
   },
 };
+// Operator resolution of an UNCERTAIN operation (12.4), after checking the
+// real server state out of band. Never a retry: the original outcome stays.
+export const SERVER_CONTROL_RESOLUTIONS = [
+  'RESOLVED_SUCCEEDED',
+  'RESOLVED_FAILED',
+] as const;
+export type ServerControlResolution =
+  (typeof SERVER_CONTROL_RESOLUTIONS)[number];

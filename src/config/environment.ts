@@ -74,6 +74,10 @@ export interface ApplicationConfig {
   };
   // VIP CHARACTER reward delivery worker (11.4).
   vipDelivery: { workerIntervalMs: number };
+  // Operational recovery (12.4). The stale threshold only classifies queue
+  // items (never fails or retries anything); the action limit is per Staff
+  // user, per minute, for operator mutations.
+  operations: { staleAfterMs: number; actionsPerMinute: number };
   // Abuse controls and HTTP/WebSocket boundary (12.1). Limits are per process
   // (single replica until 12.5); the defaults are a conservative baseline to
   // be tuned by the load tests of 12.6.
@@ -186,6 +190,8 @@ interface Environment {
   SERVER_CONTROL_PENDING_TIMEOUT_MS: number;
   AGENT_WORK_PUSH_INTERVAL_MS: number;
   VIP_DELIVERY_WORKER_INTERVAL_MS: number;
+  OPERATIONS_STALE_AFTER_MS: number;
+  OPERATIONS_ACTION_RATE_LIMIT_PER_MINUTE: number;
   SERVER_CONTROL_DELIVERY_WINDOW_MS: number;
   SERVER_CONTROL_RESULT_TIMEOUT_MS: number;
   SERVER_CONTROL_WORKER_INTERVAL_MS: number;
@@ -401,6 +407,12 @@ const schema = Joi.object<Environment>({
     .min(50)
     .max(60000)
     .default(2000),
+  OPERATIONS_STALE_AFTER_MS: Joi.number()
+    .integer()
+    .min(60000)
+    .max(604800000)
+    .default(900000),
+  OPERATIONS_ACTION_RATE_LIMIT_PER_MINUTE: count(1, 1000, 30),
   SERVER_CONTROL_PENDING_TIMEOUT_MS: Joi.number()
     .integer()
     .min(500)
@@ -663,6 +675,10 @@ export function validateEnvironment(
       workPushIntervalMs: value.AGENT_WORK_PUSH_INTERVAL_MS,
     },
     vipDelivery: { workerIntervalMs: value.VIP_DELIVERY_WORKER_INTERVAL_MS },
+    operations: {
+      staleAfterMs: value.OPERATIONS_STALE_AFTER_MS,
+      actionsPerMinute: value.OPERATIONS_ACTION_RATE_LIMIT_PER_MINUTE,
+    },
     playerCharacters: { challengeTtl },
     playerGroups: { inviteTtl },
     playerGuilds: { inviteTtl: guildInviteTtl },

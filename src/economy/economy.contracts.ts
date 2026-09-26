@@ -9,18 +9,23 @@ export enum EconomyOwnerType {
 }
 // Closed; each key is also in a PostgreSQL CHECK. TRADE_ESCROW holds GOLD
 // reserved by accepted trades (10.13), MARKET_ESCROW GOLD reserved by
-// marketplace purchases (10.14).
+// marketplace purchases (10.14), ADJUSTMENT the counterpart of Staff
+// adjustments (12.4).
 export enum SystemAccountKey {
   MINT = 'MINT',
   BURN = 'BURN',
   TRADE_ESCROW = 'TRADE_ESCROW',
   MARKET_ESCROW = 'MARKET_ESCROW',
+  ADJUSTMENT = 'ADJUSTMENT',
 }
+// SYSTEM_* need a SYSTEM actor, STAFF_ADJUSTMENT a STAFF actor (CHECK).
 export enum EconomyTransactionType {
   SYSTEM_CREDIT = 'SYSTEM_CREDIT',
   SYSTEM_DEBIT = 'SYSTEM_DEBIT',
   TRANSFER = 'TRANSFER',
+  STAFF_ADJUSTMENT = 'STAFF_ADJUSTMENT',
 }
+export const STAFF_ADJUSTMENT_REFERENCE_TYPE = 'STAFF_ADJUSTMENT';
 export enum EntryDirection {
   CREDIT = 'CREDIT',
   DEBIT = 'DEBIT',

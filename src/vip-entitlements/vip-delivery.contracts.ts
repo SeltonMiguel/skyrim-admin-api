@@ -60,6 +60,30 @@ export function rewardCommand(
       return null;
   }
 }
-// Stable, internal: one command per delivery, whatever the retries.
-export const deliveryIdempotencyKey = (deliveryId: string) =>
-  `vip-delivery:${deliveryId}`;
+// Stable, internal: one command per delivery attempt, whatever the worker
+// retries. Attempt 1 keeps the 11.4 key; a new attempt (12.4, operator
+// recovery only) gets its own key, hence a new command.
+export const deliveryIdempotencyKey = (deliveryId: string, attempt = 1) =>
+  attempt === 1
+    ? `vip-delivery:${deliveryId}`
+    : `vip-delivery:${deliveryId}:${attempt}`;
+export const MAX_DELIVERY_ATTEMPTS = 10;
+
+// GameCommand error codes that prove the command was never delivered to
+// an Agent (set only while the command was PENDING, never after a
+// dispatch): the reward was certainly not given, so a new attempt cannot
+// duplicate it. EXECUTION_FAILED / BRIDGE_ERROR (reported after delivery)
+// and every TIMEOUT stay out: they need an operator resolution first.
+export const PRE_EFFECT_COMMAND_ERRORS = [
+  'DISPATCH_EXPIRED',
+  'DISPATCH_REJECTED',
+  'DISPATCH_EXHAUSTED',
+  'GATEWAY_UNAVAILABLE',
+  'SERVER_DISABLED',
+] as const;
+// Operator resolution of a FAILED/UNCERTAIN delivery (12.4), after checking
+// the character in game. CONFIRMED_NOT_DELIVERED allows a new attempt.
+export enum DeliveryResolution {
+  CONFIRMED_DELIVERED = 'CONFIRMED_DELIVERED',
+  CONFIRMED_NOT_DELIVERED = 'CONFIRMED_NOT_DELIVERED',
+}

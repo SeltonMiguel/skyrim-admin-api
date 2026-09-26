@@ -49,6 +49,9 @@ export const REALTIME_EVENT_TYPES = [
   'STAFF_GAME_SERVER_UPDATED',
   'STAFF_GAME_OPERATION_UPDATED',
   'STAFF_SERVER_CONTROL_UPDATED',
+  // 12.4: an operator intervention committed (domain, action, resource);
+  // a wake-up for the operations queues, never their content.
+  'STAFF_OPERATIONS_UPDATED',
 ] as const;
 export type RealtimeEventType = (typeof REALTIME_EVENT_TYPES)[number];
 export type RealtimeData = Record<string, string | number | boolean | null>;

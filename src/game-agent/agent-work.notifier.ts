@@ -57,6 +57,16 @@ export class AgentWorkNotifier
     if (this.timer) clearInterval(this.timer);
     await this.drain.wait();
   }
+  // Operator REQUEUE_SAME_WORK (12.4): forget that any connection was told
+  // about this work item, so the next tick pushes it again with the same
+  // workId (first page only; WORK_SYNC always returns it). Nothing in the
+  // domain changes. Returns how many connections had been told.
+  forget(kind: string, workId: string): number {
+    let forgotten = 0;
+    for (const told of this.told.values())
+      if (told.delete(`${kind}:${workId}`)) forgotten++;
+    return forgotten;
+  }
   async tick(): Promise<number> {
     if (this.running) this.drain.skip();
     if (this.running || this.stopped) return 0;

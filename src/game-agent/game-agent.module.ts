@@ -55,6 +55,7 @@ import { AgentWorkService } from './agent-work.service.js';
     GameCommandWorker,
   ],
   controllers: [AgentCredentialController],
-  exports: [AgentSessionModule],
+  // AgentWorkNotifier: operator REQUEUE_SAME_WORK (12.4) forgets a push hint.
+  exports: [AgentSessionModule, AgentWorkNotifier],
 })
 export class GameAgentModule {}
