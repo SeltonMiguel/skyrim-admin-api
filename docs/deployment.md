@@ -1,20 +1,37 @@
-# Deployment runbook (Etapa 12.2)
+# Deployment runbook (Etapas 12.2 e 12.5)
 
-**Do not run more than one backend replica before Stage 12.5.**
+Duas topologias (`BACKEND_TOPOLOGY`, detalhes em `docs/multi-instance.md`).
 
-A única topologia suportada é **uma instância do backend** contra um
-PostgreSQL. Isso é imposto pelo código: no boot, a instância toma o advisory
-lock `pg_advisory_lock(1397446994, 1)` (chave `0x534B5952 'SKYR'`, `1`),
-numa conexão dedicada que fica fora do pool. Uma segunda instância, ou uma
+**SINGLE (padrão): uma instância do backend** contra um PostgreSQL. Imposto
+pelo código: no boot, a instância toma o advisory lock
+`pg_advisory_lock(1397446994, 1)` (chave `0x534B5952 'SKYR'`, `1`), numa
+conexão dedicada que fica fora do pool. Uma segunda instância SINGLE, ou uma
 migration, contra o mesmo banco falha na hora com `InstanceLockHeldError` e
 exit 1. Se a conexão do lock cair (banco reiniciado, rede), a instância se
 encerra (`LOCK_LOST`, exit 1) em vez de seguir sem lock; configure restart
-automático (ex.: `restart: unless-stopped`).
+automático (ex.: `restart: unless-stopped`). **Estratégia de deploy:
+recreate.**
 
-**Estratégia de deploy: recreate.** A instância antiga para por completo antes
-da migration e da nova instância. Rolling deploy, blue/green ou qualquer
-sobreposição de duas instâncias não são suportados antes da 12.5; o lock
-recusaria a segunda de qualquer forma.
+**MULTI (12.5): N réplicas simultâneas** atrás de um load balancer, sem sticky
+session e sem forwarding interno. Nenhuma réplica toma o lock global; a
+coordenação é feita por linhas do PostgreSQL (ownership do Agent, leases,
+rate limits) e por LISTEN/NOTIFY. Requisitos:
+- todas as réplicas com a **mesma versão** e o mesmo `CLUSTER_BUS_CHANNEL`;
+- a conexão LISTEN de cada réplica precisa de conexão direta ao PostgreSQL ou
+  PgBouncer em *session pooling*; **transaction pooling não serve** para ela;
+- por réplica: `DB_POOL_MAX` + 1 conexões;
+- a perda de uma réplica não exige ação: os Agents dela reconectam em outra,
+  as leases expiram e o sweep marca as sessões órfãs como STALE.
+
+**Rolling deploy entre versões ainda não é suportado** em nenhuma topologia:
+depende de schema expand/contract, compatibilidade de protocolo com o Agent e
+convivência de binários antigo e novo, e só será aceito na 12.7. Até lá, uma
+nova versão é implantada parando todas as réplicas (recreate): pare as
+réplicas, rode a migration, suba as réplicas da nova versão. Em MULTI o
+migration runner ainda toma o lock global, mas isso só exclui outra migration
+ou uma instância SINGLE: **ele não detecta réplicas MULTI em execução**, então
+pará-las antes é responsabilidade do procedimento. Trocar de SINGLE para MULTI
+(ou o inverso) também é feito com tudo parado.
 
 ## Artefatos
 

@@ -5,8 +5,17 @@ logs estruturados em stdout/stderr. Coleta, armazenamento, dashboards e
 entrega de alertas ficam num sistema de monitoramento externo, escolhido pelo
 operador. Não há tracing distribuído, collector nem integração com vendor.
 
-**Uma réplica** (até a 12.5): cada métrica descreve a única instância; não
-há agregação entre processos.
+**Réplicas (12.5).** Cada réplica expõe o próprio `/api/v1/metrics`; não há
+label de instância (o scraper já identifica o target, e `instanceId` fica só
+nos logs). Duas famílias, com agregação diferente nos dashboards:
+- **locais** (processo, HTTP, pool, sockets, Agents possuídos
+  `agent_sessions_active`, workers, bus, leases, counters `*_total`):
+  `sum()` entre targets dá o total do cluster;
+- **snapshot global do banco** (`game_commands_backlog`,
+  `game_commands_oldest_age_seconds`, `server_control_operations`,
+  `work_backlog`, `work_oldest_age_seconds`, `vip_deliveries`,
+  `vip_delivery_oldest_open_age_seconds`, `recovery_*`): cada réplica
+  publica o mesmo valor; use `max()` entre targets, nunca `sum()`.
 
 ## Audit × log × métrica
 
@@ -153,6 +162,24 @@ o gauge `vip_deliveries{status}` continua o estado bruto das linhas.
 | `skyrim_admin_realtime_events_published_total` | counter | `surface` |
 | `skyrim_admin_realtime_delivery_failures_total` | counter | — |
 
+**Coordenação multi-instância** (12.5, locais; `docs/multi-instance.md`)
+
+| Métrica | Tipo | Labels |
+| --- | --- | --- |
+| `skyrim_admin_cluster_bus_connected` | gauge (1/0; ausente em SINGLE) | — |
+| `skyrim_admin_cluster_bus_reconnects_total` | counter | — |
+| `skyrim_admin_cluster_bus_errors_total` | counter | — |
+| `skyrim_admin_cluster_bus_messages_total` | counter | `kind` = REALTIME, PLAYER_SESSION_REVOKED, PLAYER_ACCOUNT_REVOKED, AGENT_SESSION_CLOSED, AGENT_CREDENTIAL_REVOKED (ou `unknown`); `outcome` = published, publish_failed, received, expired, read_failed |
+| `skyrim_admin_cluster_cleanup_rows_total` | counter | `kind` = bus_events, rate_limits, rate_limit_slots, realtime_leases |
+| `skyrim_admin_rate_limit_backend_errors_total` | counter | — (store compartilhado falhou; tentativa recusada) |
+| `skyrim_admin_realtime_connection_leases` | gauge | — (leases desta réplica) |
+| `skyrim_admin_agent_ownership_lost_total` | counter | `reason` = heartbeat_refused, superseded_remote, revoked_remote |
+
+`realtime_rejects_total{reason}` ganhou `account_disabled` (12.4) e
+`lease_unavailable` (12.5); `domain_events_total{outcome}` e
+`work_sync_requests_total{outcome}` ganharam `fenced` (sessão sem autoridade
+no banco).
+
 **Workers** (`worker` = game_command, server_control, vip_delivery, agent_work_push, heartbeat_sweep, backlog_collector)
 
 | Métrica | Tipo |
@@ -220,6 +247,9 @@ Os thresholds que dependem de carga ficam como `THRESHOLD_TO_BE_CALIBRATED_12_6`
 | Trade parado | `skyrim_admin_work_oldest_age_seconds{work="trade_settlement"} >` X | X = THRESHOLD_TO_BE_CALIBRATED_12_6 |
 | Release de Marketplace FAILED | `skyrim_admin_work_backlog{work="marketplace_release_failed"} > 0` | qualquer ocorrência |
 | VIP FAILED/UNCERTAIN | aumento de `skyrim_admin_vip_deliveries{status=~"FAILED\|UNCERTAIN"}`; `skyrim_admin_vip_delivery_oldest_open_age_seconds >` X | X = THRESHOLD_TO_BE_CALIBRATED_12_6 |
+| Bus distribuído fora (12.5) | `skyrim_admin_cluster_bus_connected == 0` por mais de 1 min; `increase(skyrim_admin_cluster_bus_errors_total[15m])` | só wake-up é perdido; investigar conexão direta/PgBouncer |
+| Rate limit compartilhado falhando (12.5) | `increase(skyrim_admin_rate_limit_backend_errors_total[5m]) > 0` | qualquer ocorrência (tentativas estão sendo recusadas) |
+| Perda de ownership de Agent (12.5) | `increase(skyrim_admin_agent_ownership_lost_total[15m])` | THRESHOLD_TO_BE_CALIBRATED_12_6 |
 | Worker sem sucesso | `time() - skyrim_admin_worker_last_success_timestamp_seconds > 10 × intervalo` | por worker |
 | Coleta de backlog parada | `time() - skyrim_admin_backlog_collection_timestamp_seconds > 5 × METRICS_COLLECTION_INTERVAL_MS` | — |
 | Spike de slow-client no realtime | `increase(skyrim_admin_realtime_slow_client_drops_total[15m])` | THRESHOLD_TO_BE_CALIBRATED_12_6 |

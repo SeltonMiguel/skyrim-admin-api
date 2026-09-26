@@ -665,6 +665,23 @@ Runbooks e matriz em `docs/operational-recovery.md`; migration
 | P2-8 testes de corrida (domínio) | **parcial** | novos: resolução concorrente (uma vence), retry VIP concorrente com a mesma key (um efeito); os listados em `docs/release-readiness.md` continuam abertos |
 | Flakes registrados (12.2) | inalterados | ver §25.2 |
 
+## 25.5 Status após a 12.5
+
+Topologia em `docs/multi-instance.md`; migration `1790060000000-MultiInstance`
+(27); `test/multi-instance.e2e-spec.ts`.
+
+| Finding | Status | Como |
+| --- | --- | --- |
+| P0-5 / F-MI1 instância única | **resolvido**: SINGLE mantém o lock; MULTI suportado | `BACKEND_TOPOLOGY=SINGLE\|MULTI`; `endAllActive` só em SINGLE; startup MULTI fecha só sessões com lease vencida |
+| P2-1 ownership de sessão do Agent | **resolvido** | `owner_instance_id` + lease = heartbeat renovado só pelo dono; sweep DB-safe de sessões órfãs |
+| P2-2 revogação/supersede cross-instância | **resolvido** | sinal pelo bus + fencing no banco em todo frame que muda estado (provado com o sinal suprimido) |
+| P2-3 bus realtime distribuído | **resolvido** | LISTEN/NOTIFY em conexão dedicada, envelopes efêmeros, sem replay; autorização Player por entrega no banco |
+| P2-4 orçamento de in-flight e alvo do claim | **resolvido** | contagem dentro do reserve sob lock do servidor; claim de Server Control exige a conexão dona |
+| P2-5 rate limits distribuídos | **resolvido** | `PostgresRateLimiter` (SHA-256, atômico, fail closed); chat em `rate_limit_slots`; recursos continuam locais |
+| P2-8 testes de corrida (Agent) | **parcial** | concorrência de dispatch, stale e VIP entre réplicas cobertas; os de domínio listados em `docs/release-readiness.md` continuam abertos |
+| Rolling deploy | aberto (12.7) | recreate continua obrigatório entre versões |
+| Flakes da 12.2 | inalterados; `server-control-agent` "keeps one non-terminal…" reproduziu 1× em 3 lotes das suítes críticas e 1× numa rodada focada da 12.5A; 8/8 e 4/4 isolado | mesma premissa de tempo da 12.2 (`pause(400)` + janela de entrega de 1 s: sob contenção o Agent recebe após `notAfter`); o claim da 12.5 só acrescenta um `EXISTS` no mesmo UPDATE. Timeout não alterado; medição e calibragem na 12.6 |
+
 ## 26. Roadmap final da Stage 12
 
 A ordem sugerida na abertura (multi-instância primeiro) foi **alterada**. Os P0

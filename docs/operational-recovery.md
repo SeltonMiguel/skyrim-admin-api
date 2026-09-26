@@ -273,7 +273,7 @@ fechamento dos sockets na suspensão/banimento.
 - O requeue esquece a dica de push; o push só envia a primeira página de work
   de cada servidor. Com mais de 50 itens pendentes o item vem pelo `WORK_SYNC`
   do Agent.
-- Instância única (12.5): rate limit do operador e fechamento de sockets são
-  por processo.
+- Em MULTI (12.5) o rate limit do operador é cluster-wide e o fechamento de
+  sockets é propagado entre réplicas; em SINGLE ambos são do processo.
 - `operator_actions.reason` e o Audit guardam texto do operador; o operador não
   deve colocar dados pessoais além do necessário.

@@ -245,10 +245,11 @@ Sem HTTP callback e sem HTTP polling na 11.1.
 
 Trade-offs aceitos:
 
-- **Instância única.** O socket vive num processo; o worker que chama
-  `GameGateway.send` precisa estar no mesmo processo. É a mesma restrição do
-  `RealtimeEventBus` atual ("single instance only … Etapa 12"). Multi-instância
-  (roteamento por servidor, sticky, broker) fica para a Etapa 12.
+- **Socket numa instância.** O socket vive num processo; o worker que chama
+  `GameGateway.send` precisa estar no mesmo processo. Desde a 12.5 isso é
+  regra de ownership no banco (`owner_instance_id`): só a réplica dona envia
+  e aceita frames; HTTP pode chegar a qualquer réplica e o banco é a fila.
+  Sem sticky routing nem broker (`docs/multi-instance.md`).
 - **Reconexão é responsabilidade do Agent** (backoff exponencial com jitter).
 - **Backpressure:** o adapter deve recusar `send` (`TRANSIENT`) se o buffer do
   socket exceder um limite, em vez de acumular.
@@ -522,7 +523,7 @@ Conexões duplicadas: uma sessão ativa por servidor, garantida pelo índice par
 único existente e pelo lock do servidor; duas HELLO simultâneas serializam no
 banco e a última **autenticada com sucesso** (commit + promoção) vence; registry e
 banco concordam. A reconciliação de startup
-assume **instância única** (Etapa 12 trata multi-instância).
+fecha tudo em SINGLE e só sessões com lease vencida em MULTI (12.5).
 
 Códigos de close: `4000 AUTH_TIMEOUT`, `4001 UNAUTHORIZED`, `4003 PROTOCOL_ERROR`,
 `4005 PROTOCOL_UNSUPPORTED`, `4006 SUPERSEDED`, `4008 HEARTBEAT_TIMEOUT`,

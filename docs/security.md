@@ -1,10 +1,15 @@
-# Security boundary and abuse controls (12.1)
+# Security boundary and abuse controls (12.1, 12.5)
 
-Controles de segurança e abuso da réplica única, implementados na Etapa 12.1.
-Todos os limites são **por processo**: com mais de uma réplica, cada instância
-conta sozinha, e o limite efetivo vira N × limite. A troca por um store
-compartilhado é da 12.5; os defaults são uma baseline conservadora que a 12.6
-calibra com medições de carga.
+Controles de segurança e abuso implementados na Etapa 12.1. Desde a 12.5:
+- em `BACKEND_TOPOLOGY=SINGLE` os limites de taxa ficam na memória do processo;
+- em `MULTI` eles ficam no PostgreSQL e são **cluster-wide** (uma cota por
+  ator/IP/conta, qualquer que seja a réplica que atende);
+- os limites de **recurso** (Argon2 e HELLO simultâneos, sockets não
+  autenticados, total de sockets, frames por sessão de Agent) continuam por
+  processo, porque protegem CPU e memória daquela instância.
+
+Os defaults são uma baseline conservadora que a 12.6 calibra com medições de
+carga. Topologia completa em `docs/multi-instance.md`.
 
 ## Rate limiting: uma abstração
 
@@ -13,7 +18,14 @@ calibra com medições de carga.
 - janela fixa por `(scope, key)`;
 - `consume` conta a tentativa e decide; `check` só consulta; `reset` esquece uma chave ou um scope; toda recusa traz `retryAfterSeconds`;
 - a implementação em memória (`MemoryRateLimiter`) limita o mapa a 50 000 chaves: poda as janelas vencidas e, se ainda estiver cheio, descarta as chaves mais antigas;
-- é registrado no `CommonModule` (global); a 12.5 troca só o provider.
+- é registrado no `CommonModule` (global); o contrato é assíncrono desde a 12.5;
+- em MULTI o provider é `PostgresRateLimiter` (`src/cluster/pg-rate-limiter.ts`):
+  um upsert atômico por `(scope, SHA-256(scope + chave))` em
+  `rate_limit_buckets`, relógio do banco, limpeza limitada. IP, username,
+  sessão ou id nunca são gravados em texto. **Falha fechada**: erro do banco no
+  `consume`/`check` recusa a tentativa (429, `rate_limit_backend_errors_total`);
+- o anti-spam de chat (janela deslizante com um slot por Idempotency-Key) usa
+  `rate_limit_slots` em MULTI, com a mesma semântica.
 
 `ConcurrencyLimiter` limita operações caras simultâneas (Argon2, verificação de
 HELLO): um slot ocupado recusa na hora, sem fila.
@@ -109,8 +121,9 @@ Garantias:
 
 A grace window, o Audit e a detecção de reuso não mudaram.
 
-Staff: sem mudança. Os grants são revalidados a cada entrega, e uma conta
-desativada fecha com 4001 na próxima entrega.
+Staff: sem mudança. Os grants são revalidados no banco a cada entrega, e uma
+conta desativada fecha com 4001 na próxima entrega; isso vale entre réplicas
+(role alterada em B vale para o socket em A).
 
 **Status de conta (12.4):** `POST /api/v1/operations/players/:playerId/status`
 (`PLAYER_ACCOUNT_MODERATE`, Idempotency-Key, reason, Audit
@@ -120,11 +133,23 @@ e, depois do commit, `RealtimeSessionControl.playerAccountRevoked` faz o
 gateway lembrar essas sessões como revogadas (AUTH em voo recusado) e fechar
 **todos** os sockets da conta com **4001 `ACCOUNT_DISABLED`**
 (`realtime_account_disabled`). Voltar a ACTIVE não revive sessão: o Player faz
-login de novo. Mudança de status por SQL continua sem fechar sockets: use a
-API (`docs/operational-recovery.md` §5.11).
+login de novo (`docs/operational-recovery.md` §5.11).
 
-Instância única: o fechamento é in-process. Com várias réplicas, um socket em
-outra instância só fecha com o close distribuído da 12.5.
+**Entre réplicas (12.5):** logout, reuso de refresh e status de conta são
+propagados pelo bus (`PLAYER_SESSION_REVOKED`, `PLAYER_ACCOUNT_REVOKED`) e cada
+réplica fecha seus sockets. O sinal é só UX: **antes de entregar qualquer
+evento Player**, o gateway confere no banco, numa query por entrega, que a
+sessão de cada socket alvo não foi revogada, não expirou e que a conta está
+ACTIVE; senão fecha o socket (`SESSION_REVOKED`) sem entregar. Assim um NOTIFY
+perdido, ou uma mudança feita direto no banco, nunca entrega dado privado
+(provado em `test/multi-instance.e2e-spec.ts` com o sinal suprimido). Falha do
+banco nessa checagem pula a entrega (falha fechada; o HTTP recupera).
+
+**Agent entre réplicas:** a sessão de Agent pertence à réplica que segura o
+socket (`game_connections.owner_instance_id`, lease = heartbeat). Todo frame
+que muda estado é validado no banco (CONNECTED, dona, lease válida, credencial
+ACTIVE); supersede e revogação em outra réplica fecham o socket pelo bus e,
+se o sinal se perder, o banco recusa o próximo frame.
 
 ## Proxy e IP do cliente
 

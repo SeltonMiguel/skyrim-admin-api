@@ -58,21 +58,30 @@ Controles descritos em `docs/security.md` (12.1).
 
 ## Multi-instance
 
-Exigida somente para mais de uma réplica. Até lá:
+Exigida somente para mais de uma réplica (`BACKEND_TOPOLOGY=MULTI`,
+`docs/multi-instance.md`). Topologia SINGLE:
 
 - [x] Réplica única garantida na configuração de deploy (réplicas = 1, estratégia recreate) e documentada no runbook (P0-5) — 12.2: imposta pelo advisory lock de instância única (segunda instância e migration concorrente recusadas; `test/deployment-lifecycle.e2e-spec.ts` e smoke de container); `docs/deployment.md`
 - [ ] Orquestrador de produção configurado com réplicas = 1, estratégia recreate e restart automático (LOCK_LOST sai com exit 1)
 
-Para escalar:
+Topologia MULTI (12.5; evidência: `test/multi-instance.e2e-spec.ts`, réplicas reais sobre um PostgreSQL, sem mock de coordenação, 3 execuções verdes):
 
-- [ ] A reconciliação de startup fecha só sessões de instâncias sem lease válido; teste com dois apps sobre o mesmo DB (P2-1)
-- [ ] Revogação de credencial e supersede em uma instância fecham o socket na outra; teste e2e com duas instâncias (P2-2)
-- [ ] DOMAIN_EVENT, WORK_SYNC e COMMAND_ACK revalidam no DB que a sessão ainda está ativa (P2-2)
-- [ ] Orçamento `AGENT_MAX_IN_FLIGHT_COMMANDS` recontado sob o lock de `game_servers`; teste com dois workers (P2-4)
-- [ ] Claim de Server Control só vence para a conexão CONNECTED no DB; teste com sessão obsoleta em outra instância (P2-4)
-- [ ] Wake-up realtime Player e Staff entregue entre instâncias; teste e2e mutation em B → evento no socket em A (P2-3)
-- [ ] Rate limits compartilhados entre instâncias, com teste (P2-5)
-- [ ] e2e com duas instâncias reproduzindo a matriz de reconnect da 11.6 sem regressão de garantias
+- [x] Várias réplicas simultâneas ready, cada uma com `instanceId` próprio; MULTI nunca toma o lock global (config recusa lock + MULTI)
+- [x] A reconciliação de startup fecha só sessões sem lease válido: Agent de A continua CONNECTED quando outra réplica sobe (P2-1)
+- [x] Supersede e revogação de credencial em uma instância fecham o socket na outra; com o sinal suprimido, heartbeat, DOMAIN_EVENT e RESULT do socket antigo são recusados pelo banco (P2-2)
+- [x] DOMAIN_EVENT, WORK_SYNC, COMMAND_ACK/RESULT, SERVER_CONTROL_RESULT, heartbeat e runtime validados no banco (sessão CONNECTED, dona, lease, credencial) (P2-2)
+- [x] Orçamento `AGENT_MAX_IN_FLIGHT_COMMANDS` contado sob o lock de `game_servers`; dispatch concorrente de duas réplicas nunca excede o limite (P2-4)
+- [x] Claim de Server Control só pela réplica dona da conexão CONNECTED; entrega única; após o claim nunca há reenvio (RESULT tardio aceito ou UNCERTAIN) (P2-4)
+- [x] GameCommand criado em B entregue só pelo dono A; failover antes do envio e depois da execução sem reexecução nem tentativa fantasma
+- [x] Wake-up realtime Player e Staff entregue entre instâncias; logout/ban com sinal perdido não entrega dado privado; role Staff alterada em B vale em A (P2-3)
+- [x] Rate limits compartilhados (login Staff, ações de operador), chaves em SHA-256, reset e expiração; falha do store recusa (fail closed) (P2-5)
+- [x] Cap de conexões por conta cluster-wide, com expiração das leases de uma réplica morta
+- [x] Workers de A e B sem efeito duplicado (Trade work, VIP delivery); stale de dono morto marcado uma vez, dono vivo nunca
+- [x] Shutdown de uma réplica encerra só os Agents e leases dela; as demais seguem ready
+- [x] Migration 27 forward-only: banco novo e 26 → 27 com dados preservados, `pending=0`, diff 0/0
+- [ ] Rolling deploy entre versões (expand/contract, compatibilidade Agent e binários) — 12.7
+- [ ] PgBouncer/rede de produção validados para a conexão LISTEN (direta ou session pooling)
+- [ ] Orquestrador de produção com N réplicas, load balancer e alertas do bus configurados
 
 ## Observability
 

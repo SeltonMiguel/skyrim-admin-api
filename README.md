@@ -595,7 +595,7 @@ HTTP e entrega de mensagens novas por `CHAT_MESSAGE_CREATED` no realtime. DIRECT
 liga os ownership links atuais: um novo dono do character não herda as mensagens
 privadas. Mensagens expiram após `PLAYER_CHAT_RETENTION` (padrão 7d) e os envios
 exigem `Idempotency-Key` e respeitam `PLAYER_CHAT_RATE_LIMIT_COUNT`/`_WINDOW`
-(padrão 5 por 10s, em memória, instância única). A migration
+(padrão 5 por 10s; em memória em SINGLE, no PostgreSQL em MULTI). A migration
 `1789990000000-PlayerChat` completa vinte migrations.
 
 A Subetapa 10.16 adiciona Player Settings account-scoped em
@@ -717,11 +717,14 @@ A Subetapa 12.1 fecha os riscos concretos de autenticação e abuso da réplica
 - tetos de WebSocket e HELLO;
 - limites por Player nas mutations que criam GameCommands ou reservas.
 
-Todos os limites são por processo até a 12.5. Variáveis e semântica em
-[Security](docs/security.md).
+Em SINGLE os limites são do processo; em MULTI (12.5) os limites de taxa são
+cluster-wide no PostgreSQL e os de recurso continuam por processo. Variáveis e
+semântica em [Security](docs/security.md).
 
 A Subetapa 12.2 torna o backend implantável e recuperável como **uma única
-instância**. Do not run more than one backend replica before Stage 12.5:
+instância** (`BACKEND_TOPOLOGY=SINGLE`); a 12.5 acrescenta `MULTI`, várias
+réplicas coordenadas pelo PostgreSQL ([Multi-instance](docs/multi-instance.md)).
+Em SINGLE:
 
 - um advisory lock do PostgreSQL impõe isso e recusa uma segunda instância;
 - `Dockerfile` multi-stage não-root;

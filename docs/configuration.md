@@ -1,12 +1,15 @@
 # Configuration reference
 
-Todas as 92 variáveis de ambiente do backend (`src/config/environment.ts`), na
+Todas as 98 variáveis de ambiente do backend (`src/config/environment.ts`), na
 Etapa 12.2. A validação é feita no boot, por Joi mais as relações entre valores
 (`abortEarly: false`). Uma variável inválida impede o start. A mensagem cita
 só o **nome** da variável, nunca o valor. O migration runner e o preflight usam
 a mesma validação.
 
-**Do not run more than one backend replica before Stage 12.5.**
+Topologia (12.5): `BACKEND_TOPOLOGY=SINGLE` (uma réplica, lock global) ou
+`MULTI` (várias réplicas coordenadas pelo PostgreSQL; `docs/multi-instance.md`).
+Com MULTI, os limites marcados "cluster-wide" são compartilhados entre as
+réplicas; os de recurso continuam por processo.
 
 Classes:
 - **REQUIRED_PRODUCTION**: obrigatória, ou com valor explícito obrigatório, em `NODE_ENV=production`.
@@ -23,9 +26,23 @@ strings `N{s,m,h,d}` (ex.: `15m`).
 | --- | --- | --- | --- |
 | `NODE_ENV` | REQUIRED_PRODUCTION | `development` | `production` na imagem e no runbook. O servidor (`dist/main.js`) recusa `test`. Fora de produção loga um aviso |
 | `PORT` | OPTIONAL_SAFE_DEFAULT | `3000` | |
-| `BACKEND_TOPOLOGY` | OPTIONAL_SAFE_DEFAULT | `SINGLE` | só `SINGLE`; qualquer outro valor falha no boot até a 12.5 |
-| `SINGLE_INSTANCE_LOCK_ENABLED` | REQUIRED_PRODUCTION (implícito) | `true` em produção, `false` fora | advisory lock `pg_advisory_lock(1397446994, 1)` numa conexão dedicada; `false` em produção falha no boot |
+| `BACKEND_TOPOLOGY` | OPTIONAL_SAFE_DEFAULT | `SINGLE` | `SINGLE` ou `MULTI` (12.5); qualquer outro valor falha no boot, sem fallback |
+| `SINGLE_INSTANCE_LOCK_ENABLED` | REQUIRED_PRODUCTION (implícito) | `true` em produção, `false` fora | advisory lock `pg_advisory_lock(1397446994, 1)` numa conexão dedicada; `false` em produção SINGLE falha no boot; `true` com `MULTI` falha no boot (MULTI nunca usa o lock) |
 | `SHUTDOWN_TIMEOUT_MS` | OPTIONAL_SAFE_DEFAULT | `8000` | 1000–600000; o stop timeout do orquestrador precisa ser maior (ex.: `docker stop -t 15`) |
+
+## Coordenação multi-instância (12.5, usadas só em MULTI)
+
+| Variável | Classe | Default | Notas |
+| --- | --- | --- | --- |
+| `CLUSTER_BUS_CHANNEL` | OPTIONAL_SAFE_DEFAULT | `skyrim_admin_bus` | canal LISTEN/NOTIFY (`^[a-z_][a-z0-9_]{0,62}$`); igual em todas as réplicas de um ambiente, distinto entre ambientes no mesmo banco |
+| `CLUSTER_BUS_EVENT_TTL_MS` | OPTIONAL_SAFE_DEFAULT | `60000` | 5000–600000; vida do envelope em `distributed_bus_events` (sem replay) |
+| `CLUSTER_BUS_RECONNECT_MAX_MS` | OPTIONAL_SAFE_DEFAULT | `30000` | 1000–300000; teto do backoff de reconexão do LISTEN (começa em 250 ms) |
+| `CLUSTER_CLEANUP_INTERVAL_MS` | OPTIONAL_SAFE_DEFAULT | `60000` | 1000–600000; limpeza limitada de envelopes, buckets, slots e leases expirados |
+| `REALTIME_LEASE_TTL_MS` | OPTIONAL_SAFE_DEFAULT | `60000` | 10000–600000; lease de socket realtime (tempo até o cap liberar os sockets de uma réplica morta) |
+| `REALTIME_LEASE_RENEW_INTERVAL_MS` | OPTIONAL_SAFE_DEFAULT | `20000` | 1000–300000; no máximo metade de `REALTIME_LEASE_TTL_MS` (validado) |
+
+A lease de Agent não tem variável própria: é o heartbeat
+(`GAME_BRIDGE_HEARTBEAT_TIMEOUT_MS`), renovado só pela réplica dona.
 
 ## Banco de dados
 
@@ -35,7 +52,7 @@ strings `N{s,m,h,d}` (ex.: `15m`).
 | `DB_PORT` | OPTIONAL_SAFE_DEFAULT | `5432` | |
 | `DB_SSL_MODE` | REQUIRED_PRODUCTION | `disable` fora de produção | `disable`, `require` (cifra sem verificar o servidor) ou `verify-full` (CA + hostname). Em produção precisa ser explícito |
 | `DB_SSL_CA_FILE` | OPTIONAL | — | caminho de um PEM, só com `verify-full`; um erro cita o nome da variável, nunca o conteúdo |
-| `DB_POOL_MAX` | OPTIONAL_SAFE_DEFAULT | `10` | por réplica. Total de conexões = réplicas × `DB_POOL_MAX` + 1 (lock). Hoje réplicas = 1. Calibrar na 12.6 |
+| `DB_POOL_MAX` | OPTIONAL_SAFE_DEFAULT | `10` | por réplica. Total de conexões = réplicas × (`DB_POOL_MAX` + 1): +1 é o lock em SINGLE ou o LISTEN em MULTI. Calibrar na 12.6 |
 | `DB_POOL_IDLE_TIMEOUT_MS` | OPTIONAL_SAFE_DEFAULT | `30000` | |
 | `DB_CONNECT_TIMEOUT_MS` | OPTIONAL_SAFE_DEFAULT | `5000` | |
 | `DB_QUERY_TIMEOUT_MS` | OPTIONAL_SAFE_DEFAULT | `5000` | timeout do cliente nas queries da API; ≤ `DB_STATEMENT_TIMEOUT_MS` |
@@ -58,13 +75,13 @@ strings `N{s,m,h,d}` (ex.: `15m`).
 | `SWAGGER_ENABLED` | OPTIONAL_SAFE_DEFAULT | off em produção | |
 | `SECURITY_HSTS_MAX_AGE_SECONDS` | OPTIONAL (decisão) | `0` | HSTS na app ou no proxy TLS |
 | `AUTH_REFRESH_REUSE_GRACE_MS` | OPTIONAL_SAFE_DEFAULT | `10000` | 0 = estrito |
-| `STAFF_LOGIN_RATE_LIMIT_WINDOW` / `_PER_IP` / `_PER_USERNAME` | OPTIONAL_SAFE_DEFAULT | `15m` / `30` / `10` | por processo; calibrar na 12.6 |
-| `STAFF_LOGIN_MAX_CONCURRENT` | OPTIONAL_SAFE_DEFAULT | `4` | Argon2 de 64 MiB simultâneos |
+| `STAFF_LOGIN_RATE_LIMIT_WINDOW` / `_PER_IP` / `_PER_USERNAME` | OPTIONAL_SAFE_DEFAULT | `15m` / `30` / `10` | cluster-wide em MULTI; calibrar na 12.6 |
+| `STAFF_LOGIN_MAX_CONCURRENT` | OPTIONAL_SAFE_DEFAULT | `4` | Argon2 de 64 MiB simultâneos, sempre por processo (recurso local) |
 | `STAFF_REFRESH_RATE_LIMIT_WINDOW` / `_PER_IP` / `_PER_SESSION` | OPTIONAL_SAFE_DEFAULT | `1m` / `60` / `10` | |
 | `PLAYER_AUTH_RATE_LIMIT_PER_MINUTE` | OPTIONAL_SAFE_DEFAULT | `20` | por rota e IP |
 | `PLAYER_CHARACTER_QUERY_RATE_LIMIT_PER_MINUTE` | OPTIONAL_SAFE_DEFAULT | `30` | por Player |
 | `PLAYER_MARKET_MUTATION_RATE_LIMIT_PER_MINUTE` | OPTIONAL_SAFE_DEFAULT | `30` | por Player |
-| `REALTIME_MAX_CONNECTIONS` / `_MAX_PENDING_CONNECTIONS` / `_MAX_CONNECTIONS_PER_IDENTITY` | OPTIONAL_SAFE_DEFAULT | `10000` / `500` / `5` | |
+| `REALTIME_MAX_CONNECTIONS` / `_MAX_PENDING_CONNECTIONS` / `_MAX_CONNECTIONS_PER_IDENTITY` | OPTIONAL_SAFE_DEFAULT | `10000` / `500` / `5` | total e pendentes por processo; por identidade cluster-wide em MULTI (leases) |
 | `REALTIME_CONNECT_RATE_LIMIT_PER_MINUTE` | OPTIONAL_SAFE_DEFAULT | `60` | por IP |
 | `REALTIME_AUTH_TIMEOUT_MS` | OPTIONAL_SAFE_DEFAULT | `5000` | |
 | `AGENT_MAX_PENDING_CONNECTIONS` / `AGENT_MAX_CONCURRENT_AUTH` | OPTIONAL_SAFE_DEFAULT | `32` / `8` | |
