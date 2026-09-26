@@ -292,7 +292,7 @@ export class PlayerChatService {
     const bucket = `${actor.playerId}:${characterLinkId}`;
     let owner = false;
     if (!known) {
-      const slot = this.limiter.acquire(bucket, idempotency);
+      const slot = await this.limiter.acquire(bucket, idempotency);
       if ('retryAfter' in slot)
         throw new ChatRateLimitedException(slot.retryAfter);
       owner = slot.owner;
@@ -316,7 +316,8 @@ export class PlayerChatService {
         );
       return dto;
     } catch (error) {
-      if (owner) this.limiter.release(bucket, idempotency);
+      if (owner)
+        await this.limiter.release(bucket, idempotency).catch(() => undefined);
       throw error;
     }
   }

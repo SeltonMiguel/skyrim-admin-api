@@ -11,10 +11,11 @@ export interface RateLimitDecision {
 }
 
 // The only rate-limiting primitive of the backend (12.1): fixed windows per
-// (scope, key). Callers never keep their own maps. The in-memory
-// implementation is per process, which matches the single-replica
-// deployment; 12.5 swaps the provider for a shared store without touching
-// callers. Keys must never contain secrets (hash identifiers if needed).
+// (scope, key). Callers never keep their own maps. SINGLE uses the
+// in-memory implementation (per process); MULTI (12.5) uses the PostgreSQL
+// one (src/cluster/pg-rate-limiter.ts), so every replica shares one bucket.
+// Asynchronous since 12.5 for that store. Keys must never contain secrets;
+// the shared store hashes them.
 export abstract class RateLimiter {
   // Counts one attempt and says whether it is allowed.
   abstract consume(
@@ -22,16 +23,16 @@ export abstract class RateLimiter {
     key: string,
     rule: RateLimitRule,
     now?: number,
-  ): RateLimitDecision;
+  ): Promise<RateLimitDecision>;
   // Says whether one more attempt would be allowed, without counting it.
   abstract check(
     scope: string,
     key: string,
     rule: RateLimitRule,
     now?: number,
-  ): RateLimitDecision;
+  ): Promise<RateLimitDecision>;
   // Forgets a key (e.g. after a successful login) or a whole scope.
-  abstract reset(scope?: string, key?: string): void;
+  abstract reset(scope?: string, key?: string): Promise<void>;
 }
 
 // Bound on tracked keys; expired windows are pruned first, then the oldest
@@ -46,7 +47,16 @@ export class MemoryRateLimiter extends RateLimiter {
     { start: number; count: number; windowMs: number }
   >();
   private lastPrune = 0;
-  consume(
+  // Effects are synchronous; the Promise only matches the shared contract.
+  async consume(
+    scope: string,
+    key: string,
+    rule: RateLimitRule,
+    now = Date.now(),
+  ): Promise<RateLimitDecision> {
+    return this.consumeNow(scope, key, rule, now);
+  }
+  consumeNow(
     scope: string,
     key: string,
     rule: RateLimitRule,
@@ -64,18 +74,21 @@ export class MemoryRateLimiter extends RateLimiter {
     window.count++;
     return allowed(true, window.start, now, rule);
   }
-  check(
+  async check(
     scope: string,
     key: string,
     rule: RateLimitRule,
     now = Date.now(),
-  ): RateLimitDecision {
+  ): Promise<RateLimitDecision> {
     const window = this.current(`${scope}\u0000${key}`, now);
     if (!window || window.count < rule.limit)
       return { allowed: true, retryAfterSeconds: 0 };
     return allowed(false, window.start, now, rule);
   }
-  reset(scope?: string, key?: string): void {
+  async reset(scope?: string, key?: string): Promise<void> {
+    this.resetNow(scope, key);
+  }
+  resetNow(scope?: string, key?: string): void {
     if (scope === undefined) return this.windows.clear();
     if (key !== undefined) {
       this.windows.delete(`${scope}\u0000${key}`);

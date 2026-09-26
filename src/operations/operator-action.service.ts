@@ -108,10 +108,14 @@ export class OperatorActionService {
       domain: metricDomain(request.domain),
       action: metricAction(request.action),
     };
-    const decision = this.limiter.consume('operator-action', auth.user.id, {
-      limit: this.perMinute,
-      windowMs: 60_000,
-    });
+    const decision = await this.limiter.consume(
+      'operator-action',
+      auth.user.id,
+      {
+        limit: this.perMinute,
+        windowMs: 60_000,
+      },
+    );
     if (!decision.allowed) {
       this.metrics?.operatorActions.inc({ ...labels, outcome: 'rate_limited' });
       throw new TooManyRequestsException(decision.retryAfterSeconds);

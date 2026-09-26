@@ -46,8 +46,11 @@ import type {
 } from './agent-protocol.contracts.js';
 import { AgentSessionRegistry } from './agent-session.registry.js';
 import type { AgentSessionSnapshot } from './agent-session.registry.js';
+import { ClusterBus } from '../cluster/cluster-bus.js';
+import { InstanceIdentity } from '../cluster/instance-identity.js';
 
 type SocketState = 'AWAITING_HELLO' | 'AUTHENTICATING' | 'AUTHENTICATED';
+const DB_SWEEP_INTERVAL_MS = 5000;
 
 // Host Agent WebSocket transport (11.1): its own path, credential and
 // protocol, never the Player/Staff realtime socket. A socket must send HELLO
@@ -72,8 +75,11 @@ export class AgentGateway
   private sweep?: ReturnType<typeof setInterval>;
   private readonly sweeping: TickDrain;
   private stopping = false;
-  // Per-server promotion chains (in memory; single instance, Etapa 12).
+  // Per-server promotion chains of this process. Across replicas the HELLO
+  // transaction (server row lock) orders promotions (12.5).
   private readonly promotions = new Map<string, Promise<void>>();
+  private readonly topology: ApplicationConfig['deployment']['topology'];
+  private lastDbSweep = 0;
   constructor(
     private readonly upgrades: WebSocketUpgradeRouter,
     private readonly auth: AgentAuthService,
@@ -88,8 +94,11 @@ export class AgentGateway
     private readonly concurrency: ConcurrencyLimiter,
     private readonly security: SecurityLog,
     @Optional() private readonly metrics?: Metrics,
+    @Optional() private readonly cluster?: ClusterBus,
+    @Optional() private readonly instance?: InstanceIdentity,
   ) {
     const application = config.get('application', { infer: true });
+    this.topology = application.deployment?.topology ?? 'SINGLE';
     this.config = application.agent;
     this.limits = application.security.agent;
     this.sweeping = new TickDrain(metrics?.worker('heartbeat_sweep'));
@@ -106,18 +115,53 @@ export class AgentGateway
     this.upgrades.register(AGENT_PATH, this.upgrade);
   }
   async onApplicationBootstrap(): Promise<void> {
-    // Sockets never survive a restart: no persisted session is live here.
-    // A database outage must not prevent startup; the Game Bridge health
-    // check still treats those rows as stale once their heartbeat ages.
+    // SINGLE: sockets never survive a restart and the global lock proves no
+    // other instance runs, so no persisted session is live. MULTI (12.5):
+    // other replicas own live sessions; only rows whose lease (heartbeat)
+    // expired, or without an owner, are closed. A database outage must not
+    // prevent startup; the Game Bridge health check still treats those rows
+    // as stale once their heartbeat ages.
     try {
-      const stale = await this.connections.endAllActive('BACKEND_RESTART');
+      const stale =
+        this.topology === 'MULTI'
+          ? await this.connections.endExpired()
+          : await this.connections.endAllActive('BACKEND_RESTART');
       if (stale)
         this.logger.warn(
-          `Agent sessions closed on startup [count=${stale} reason=BACKEND_RESTART]`,
+          `Agent sessions closed on startup [count=${stale} reason=${this.topology === 'MULTI' ? 'STALE' : 'BACKEND_RESTART'}]`,
         );
     } catch {
       this.logger.error('Agent session reconciliation on startup failed');
     }
+    // Close signals from other replicas (12.5). Never the authority: a lost
+    // signal leaves a socket that the database fences on every frame.
+    this.cluster?.subscribe('AGENT_SESSION_CLOSED', (payload) => {
+      const { gameServerId, connectionId } = payload;
+      if (typeof gameServerId !== 'string' || typeof connectionId !== 'string')
+        return;
+      if (this.sessions.terminate(gameServerId, connectionId, 'SUPERSEDED')) {
+        this.metrics?.agentOwnershipLost.inc({ reason: 'superseded_remote' });
+        this.logger.log(
+          `Agent session closed by another instance [gameServerId=${gameServerId} connectionId=${connectionId}]`,
+        );
+      }
+    });
+    this.cluster?.subscribe('AGENT_CREDENTIAL_REVOKED', (payload) => {
+      if (typeof payload.credentialId !== 'string') return;
+      for (const session of this.sessions.byCredential(payload.credentialId))
+        if (
+          this.sessions.terminate(
+            session.gameServerId,
+            session.connectionId,
+            'CREDENTIAL_REVOKED',
+          )
+        ) {
+          this.metrics?.agentOwnershipLost.inc({ reason: 'revoked_remote' });
+          this.logger.log(
+            `Agent session closed: credential revoked on another instance [gameServerId=${session.gameServerId} connectionId=${session.connectionId}]`,
+          );
+        }
+    });
     // One periodic sweep instead of a timer per connection.
     this.sweep = setInterval(
       () => void this.sweepOnce(),
@@ -137,6 +181,22 @@ export class AgentGateway
     this.sweeping.begin();
     try {
       await this.expire();
+      // MULTI (12.5): sessions of a replica that died keep CONNECTED rows
+      // until someone persists STALE. Any replica may run this DB-only
+      // sweep: each close is a conditional transition under the server
+      // lock (heartbeat really expired), so exactly one persists and
+      // publishes it, and a live owner renewing its lease is never touched.
+      if (
+        this.topology === 'MULTI' &&
+        Date.now() - this.lastDbSweep >= DB_SWEEP_INTERVAL_MS
+      ) {
+        this.lastDbSweep = Date.now();
+        const stale = await this.connections.markStaleConnections();
+        if (stale)
+          this.logger.warn(
+            `Agent sessions without a live owner closed [count=${stale} reason=STALE]`,
+          );
+      }
     } catch {
       this.sweeping.fail();
       this.logger.error('Agent heartbeat sweep failed');
@@ -191,8 +251,17 @@ export class AgentGateway
     socket: Duplex,
     head: Buffer,
   ) => {
+    void this.admit(request, socket, head).catch(() => socket.destroy());
+  };
+  // Shared buckets in MULTI (12.5): the database round trip happens before
+  // any WebSocket state; a peer that left meanwhile is simply dropped.
+  private async admit(
+    request: IncomingMessage,
+    socket: Duplex,
+    head: Buffer,
+  ): Promise<void> {
     const ip = this.addresses.of(request);
-    const failures = this.limiter.check('agent-auth-failure', ip, {
+    const failures = await this.limiter.check('agent-auth-failure', ip, {
       limit: this.limits.authFailuresPerIpPerMinute,
       windowMs: 60_000,
     });
@@ -201,7 +270,7 @@ export class AgentGateway
       this.metrics?.agentAdmissionRejects.inc({ reason: 'auth_failures' });
       return rejectUpgrade(socket, 429, failures.retryAfterSeconds);
     }
-    const attempt = this.limiter.consume('agent-connect', ip, {
+    const attempt = await this.limiter.consume('agent-connect', ip, {
       limit: this.limits.connectsPerIpPerMinute,
       windowMs: 60_000,
     });
@@ -218,10 +287,11 @@ export class AgentGateway
       this.metrics?.agentAdmissionRejects.inc({ reason: 'capacity' });
       return rejectUpgrade(socket, 503, 1);
     }
+    if (socket.destroyed) return;
     this.wss!.handleUpgrade(request, socket, head, (ws) =>
       this.connect(ws, ip),
     );
-  };
+  }
   private connect(ws: WebSocket, ip: string): void {
     let state: SocketState = 'AWAITING_HELLO';
     let counted = true;
@@ -279,7 +349,7 @@ export class AgentGateway
       // A) + B) + C): verified and persisted in one transaction. Nothing is
       // published in memory, so a rollback leaves no registry entry and the
       // previous session (if any) is untouched.
-      let connection: GameConnection;
+      let connection: GameConnection & { supersededConnectionId?: string };
       try {
         connection = await this.auth.authenticate(gameServerId, payload);
       } catch (error) {
@@ -294,7 +364,7 @@ export class AgentGateway
             : { outcome: 'failed', reason: 'error' },
         );
         if (error instanceof AgentAuthError)
-          this.limiter.consume('agent-auth-failure', ip, {
+          await this.limiter.consume('agent-auth-failure', ip, {
             limit: this.limits.authFailuresPerIpPerMinute,
             windowMs: 60_000,
           });
@@ -320,6 +390,13 @@ export class AgentGateway
         await this.end(candidate, 'CLOSED');
         return;
       }
+      // The previous session may live on another replica: tell its owner to
+      // close it (its frames are already fenced by the committed HELLO).
+      if (connection.supersededConnectionId)
+        void this.cluster?.publish('AGENT_SESSION_CLOSED', {
+          gameServerId,
+          connectionId: connection.supersededConnectionId,
+        });
       // D): AUTHENTICATING, reachable by revocation and cleanup only.
       session = candidate;
       this.sessions.begin(candidate, ws);
@@ -356,7 +433,7 @@ export class AgentGateway
         ),
       );
       this.logger.log(
-        `Agent authenticated [gameServerId=${gameServerId} connectionId=${connection.id} credentialId=${payload.credentialId} agentVersion=${payload.agentVersion} gameProcessState=${payload.gameProcessState} skseReady=${payload.skseReady}]`,
+        `Agent authenticated [gameServerId=${gameServerId} connectionId=${connection.id} credentialId=${payload.credentialId} agentVersion=${payload.agentVersion} gameProcessState=${payload.gameProcessState} skseReady=${payload.skseReady} instanceId=${this.instance?.id ?? 'standalone'}]`,
       );
     };
     const authenticated = async (raw: string) => {

@@ -126,14 +126,26 @@ export interface ApplicationConfig {
     version: string;
     gitSha: string;
   };
-  // Deployment and lifecycle (12.2). Only SINGLE is supported until 12.5.
+  // Deployment and lifecycle (12.2). 12.5: SINGLE (one replica, global
+  // advisory lock) or MULTI (N replicas coordinated through PostgreSQL).
   deployment: {
-    topology: 'SINGLE';
+    topology: 'SINGLE' | 'MULTI';
     // PostgreSQL advisory lock held for the whole process life; always on
     // in production.
     singleInstanceLock: boolean;
     // Upper bound for the graceful shutdown before the process exits.
     shutdownTimeoutMs: number;
+  };
+  // Multi-instance coordination (12.5, docs/multi-instance.md). Used only in
+  // MULTI: LISTEN/NOTIFY bus, cluster-wide realtime connection leases and
+  // bounded cleanup of the ephemeral coordination rows.
+  cluster: {
+    busChannel: string;
+    busEventTtlMs: number;
+    busReconnectMaxMs: number;
+    cleanupIntervalMs: number;
+    realtimeLeaseTtlMs: number;
+    realtimeLeaseRenewMs: number;
   };
   database: {
     host: string;
@@ -217,6 +229,12 @@ interface Environment {
   GIT_SHA: string;
   BACKEND_TOPOLOGY: string;
   SINGLE_INSTANCE_LOCK_ENABLED?: boolean;
+  CLUSTER_BUS_CHANNEL: string;
+  CLUSTER_BUS_EVENT_TTL_MS: number;
+  CLUSTER_BUS_RECONNECT_MAX_MS: number;
+  CLUSTER_CLEANUP_INTERVAL_MS: number;
+  REALTIME_LEASE_TTL_MS: number;
+  REALTIME_LEASE_RENEW_INTERVAL_MS: number;
   SHUTDOWN_TIMEOUT_MS: number;
   DB_SSL_MODE?: 'disable' | 'require' | 'verify-full';
   DB_SSL_CA_FILE?: string;
@@ -464,7 +482,19 @@ const schema = Joi.object<Environment>({
   // Proxy trust is explicit: false (default), a hop count, or a
   // comma-separated list of loopback/linklocal/uniquelocal, IPs and CIDRs.
   TRUST_PROXY: Joi.string().trim().max(1024).default('false'),
-  BACKEND_TOPOLOGY: Joi.string().trim().uppercase().default('SINGLE'),
+  BACKEND_TOPOLOGY: Joi.string()
+    .trim()
+    .uppercase()
+    .valid('SINGLE', 'MULTI')
+    .default('SINGLE'),
+  CLUSTER_BUS_CHANNEL: Joi.string()
+    .pattern(/^[a-z_][a-z0-9_]{0,62}$/)
+    .default('skyrim_admin_bus'),
+  CLUSTER_BUS_EVENT_TTL_MS: count(5000, 600000, 60000),
+  CLUSTER_BUS_RECONNECT_MAX_MS: count(1000, 300000, 30000),
+  CLUSTER_CLEANUP_INTERVAL_MS: count(1000, 600000, 60000),
+  REALTIME_LEASE_TTL_MS: count(10000, 600000, 60000),
+  REALTIME_LEASE_RENEW_INTERVAL_MS: count(1000, 300000, 20000),
   METRICS_ENABLED: Joi.boolean(),
   METRICS_BEARER_TOKEN: Joi.string().min(32).max(512).pattern(/^\S+$/),
   METRICS_COLLECTION_INTERVAL_MS: count(1000, 300000, 15000),
@@ -590,15 +620,22 @@ export function validateEnvironment(
   const metricsEnabled = value.METRICS_ENABLED ?? !production;
   if (production && metricsEnabled && !value.METRICS_BEARER_TOKEN)
     throw new Error('Invalid environment variables: METRICS_BEARER_TOKEN');
-  // Multi-instance coordination is Stage 12.5: refuse it explicitly.
-  if (value.BACKEND_TOPOLOGY !== 'SINGLE')
+  const multi = value.BACKEND_TOPOLOGY === 'MULTI';
+  // MULTI never takes the global lock: asking for both is a configuration
+  // error, never a silent fallback to SINGLE.
+  if (multi && value.SINGLE_INSTANCE_LOCK_ENABLED === true)
     throw new Error(
-      'Invalid environment variables: BACKEND_TOPOLOGY (only SINGLE is supported before Stage 12.5)',
+      'Invalid environment variables: SINGLE_INSTANCE_LOCK_ENABLED (not allowed with BACKEND_TOPOLOGY=MULTI)',
     );
-  // Production always holds the single-instance lock.
-  if (production && value.SINGLE_INSTANCE_LOCK_ENABLED === false)
+  // SINGLE production always holds the single-instance lock.
+  if (!multi && production && value.SINGLE_INSTANCE_LOCK_ENABLED === false)
     throw new Error(
       'Invalid environment variables: SINGLE_INSTANCE_LOCK_ENABLED (required in production)',
+    );
+  // A lease must survive at least one missed renewal.
+  if (value.REALTIME_LEASE_RENEW_INTERVAL_MS * 2 > value.REALTIME_LEASE_TTL_MS)
+    throw new Error(
+      'Invalid environment variables: REALTIME_LEASE_RENEW_INTERVAL_MS (at most half of REALTIME_LEASE_TTL_MS)',
     );
   // Production must choose its database TLS mode explicitly.
   if (production && value.DB_SSL_MODE === undefined)
@@ -735,9 +772,18 @@ export function validateEnvironment(
       gitSha: value.GIT_SHA,
     },
     deployment: {
-      topology: 'SINGLE',
-      singleInstanceLock: value.SINGLE_INSTANCE_LOCK_ENABLED ?? production,
+      topology: multi ? 'MULTI' : 'SINGLE',
+      singleInstanceLock:
+        !multi && (value.SINGLE_INSTANCE_LOCK_ENABLED ?? production),
       shutdownTimeoutMs: value.SHUTDOWN_TIMEOUT_MS,
+    },
+    cluster: {
+      busChannel: value.CLUSTER_BUS_CHANNEL,
+      busEventTtlMs: value.CLUSTER_BUS_EVENT_TTL_MS,
+      busReconnectMaxMs: value.CLUSTER_BUS_RECONNECT_MAX_MS,
+      cleanupIntervalMs: value.CLUSTER_CLEANUP_INTERVAL_MS,
+      realtimeLeaseTtlMs: value.REALTIME_LEASE_TTL_MS,
+      realtimeLeaseRenewMs: value.REALTIME_LEASE_RENEW_INTERVAL_MS,
     },
     database: {
       host: value.DB_HOST,

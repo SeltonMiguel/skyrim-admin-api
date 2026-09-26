@@ -3,6 +3,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { DataSource, EntityManager } from 'typeorm';
@@ -29,6 +30,7 @@ import type {
   CreatedAgentCredentialDto,
 } from './dto/agent-credential.dto.js';
 import { GameAgentCredential } from './entities/game-agent-credential.entity.js';
+import { ClusterBus } from '../cluster/cluster-bus.js';
 
 const NOT_FOUND = 'Agent credential not found';
 const view = (credential: GameAgentCredential): AgentCredentialDto => ({
@@ -55,6 +57,7 @@ export class AgentCredentialService {
     private readonly sessions: AgentSessionRegistry,
     private readonly clock: BridgeClock,
     private readonly status: GameServerStatusNotifier,
+    @Optional() private readonly cluster?: ClusterBus,
   ) {}
   private credentials(manager: EntityManager) {
     return manager.getRepository<GameAgentCredential>('GameAgentCredential');
@@ -151,6 +154,11 @@ export class AgentCredentialService {
       },
     );
     if (revoked) {
+      // 12.5: sockets on other replicas close too. If this signal is lost,
+      // the rows closed above already fence every frame of those sockets.
+      void this.cluster?.publish('AGENT_CREDENTIAL_REVOKED', {
+        credentialId: credential.id,
+      });
       for (const session of this.sessions.byCredential(credential.id)) {
         this.sessions.terminate(
           session.gameServerId,

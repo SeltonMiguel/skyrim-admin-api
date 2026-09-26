@@ -110,6 +110,14 @@ export class RealtimeConnectionRegistry {
     }
     return sockets.length;
   }
+  // Sockets of one identity with the session that authenticated each one
+  // (12.5: Player delivery re-checks those sessions in the database).
+  withSessions(key: string): { socket: WebSocket; session?: string }[] {
+    return [...(this.sockets.get(key) ?? [])].map((socket) => ({
+      socket,
+      session: this.owners.get(socket)?.session,
+    }));
+  }
   sessionCount(session: string): number {
     return this.sessions.get(session)?.size ?? 0;
   }

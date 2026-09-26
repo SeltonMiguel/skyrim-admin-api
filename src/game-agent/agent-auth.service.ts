@@ -43,10 +43,12 @@ export class AgentAuthService {
   // creates the session row (closing the previous one as SUPERSEDED) and
   // stamps last_used_at. Nothing is published in memory here: a rollback
   // leaves no trace and never disturbs the previous session.
+  // 12.5: also returns the session this HELLO superseded (possibly owned by
+  // another replica), so its owner can be told to close the old socket.
   async authenticate(
     gameServerId: string,
     hello: HelloPayload,
-  ): Promise<GameConnection> {
+  ): Promise<GameConnection & { supersededConnectionId?: string }> {
     return this.database.transaction(async (manager) => {
       const server = await this.servers
         .get(gameServerId, manager, true)
@@ -72,6 +74,7 @@ export class AgentAuthService {
         throw new AgentAuthError('CREDENTIAL_REVOKED');
       if (!matches) throw new AgentAuthError('INVALID_SECRET');
       if (!server.enabled) throw new AgentAuthError('SERVER_DISABLED');
+      const previous = await this.connections.active(gameServerId, manager);
       // A fresh external id per socket: the Game Bridge never reuses one.
       const connection = await this.connections.connectInTransaction(manager, {
         gameServerId,
@@ -87,7 +90,9 @@ export class AgentAuthService {
       await manager
         .getRepository<GameAgentCredential>('GameAgentCredential')
         .update(credential.id, { lastUsedAt: this.clock.now() });
-      return connection;
+      return Object.assign(connection, {
+        supersededConnectionId: previous?.id,
+      });
     });
   }
   // Post-commit revalidation before a session becomes ACTIVE: the session

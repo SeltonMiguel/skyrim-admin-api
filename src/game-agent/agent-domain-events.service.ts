@@ -55,6 +55,10 @@ const RETRYABLE = new Set(['LEDGER_REJECTED', 'SERVER_UNAVAILABLE']);
 const UNANCHORED =
   /^(INVALID_INPUT|SERVER_MISMATCH|EVENT_CONFLICT|.*_NOT_FOUND)$/;
 class ReceiptRace extends Error {}
+// 12.5: the session lost its authority while the event was applied
+// (superseded, revoked, stale, owned by another replica): nothing commits.
+export class SessionFencedError extends Error {}
+export type SessionFence = (manager: EntityManager) => Promise<boolean>;
 const verdict = (result: {
   outcome: string;
   reason?: string;
@@ -184,9 +188,12 @@ export class AgentDomainEventService {
       'AgentDomainEventReceipt',
     );
   }
+  // `fence` (12.5) re-proves, inside the domain transaction and right before
+  // the receipt, that the reporting session still owns the server.
   async handle(
     gameServerId: string,
     event: DomainEventPayload,
+    fence?: SessionFence,
   ): Promise<DomainEventOutcome> {
     const hash = createHash('sha256')
       .update(canonicalJson({ kind: event.kind, data: event.data }, 16384))
@@ -209,6 +216,7 @@ export class AgentDomainEventService {
         event,
         gameServerId,
         async (manager) => {
+          if (fence && !(await fence(manager))) throw new SessionFencedError();
           // A concurrent delivery of the same eventId committed first: roll
           // this one back and answer from its receipt.
           if (!(await insert(manager, ReceiptStatus.APPLIED, null)).length)

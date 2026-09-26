@@ -256,12 +256,15 @@ export class GameCommandReceiver {
           message.attempt !== command.dispatchAttempts))
     )
       throw new BridgeRejection('STALE_ATTEMPT');
-    // The reporting session must be the server's current, healthy one.
+    // The reporting session must be the server's current, healthy one,
+    // owned by this instance (12.5: a superseded socket on another replica
+    // is fenced even if its close signal was lost). The server row lock of
+    // store.locked serializes this with HELLO, revoke and stale closes.
     const connection = await this.connections.active(message.serverId, manager);
     if (
       !connection ||
       connection.id !== message.connectionId ||
-      !this.connections.healthy(connection)
+      !this.connections.owned(connection)
     )
       throw new BridgeRejection('INACTIVE_SESSION');
   }

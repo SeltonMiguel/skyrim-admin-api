@@ -87,14 +87,16 @@ export class ServerControlReceiver {
         throw new ServerControlRejection('CORRELATION_MISMATCH');
       if (operation.type !== input.type)
         throw new ServerControlRejection('OPERATION_MISMATCH');
-      const connection = await this.connections.active(
-        input.gameServerId,
-        manager,
-      );
+      // 12.5: the reporting session must be the server's current one, owned
+      // by this instance with a valid lease and an ACTIVE credential; the
+      // connection row is share-locked so a concurrent supersede, revoke or
+      // stale close is ordered with this result.
       if (
-        !connection ||
-        connection.id !== input.connectionId ||
-        !this.connections.healthy(connection)
+        !(await this.connections.ownedInTransaction(
+          manager,
+          input.gameServerId,
+          input.connectionId,
+        ))
       )
         throw new ServerControlRejection('INACTIVE_SESSION');
       // Before the claim nothing was sent: a result is impossible.

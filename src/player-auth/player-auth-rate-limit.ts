@@ -15,7 +15,7 @@ const SCOPE = 'player-auth';
 
 // Fixed window per route and client IP (request.ip, resolved by the
 // TRUST_PROXY policy, so X-Forwarded-For counts only through a trusted
-// proxy). Backed by the shared RateLimiter (per process until 12.5).
+// proxy). Backed by the shared RateLimiter (shared between replicas in MULTI, 12.5).
 @Injectable()
 export class PlayerAuthRateLimiter {
   readonly limit: number;
@@ -28,8 +28,8 @@ export class PlayerAuthRateLimiter {
     }).playerAuth.rateLimitPerMinute;
   }
   // Returns seconds to wait when the limit is exceeded, otherwise null.
-  consume(key: string, now = Date.now()): number | null {
-    const decision = this.limiter.consume(
+  async consume(key: string, now = Date.now()): Promise<number | null> {
+    const decision = await this.limiter.consume(
       SCOPE,
       key,
       { limit: this.limit, windowMs: RATE_LIMIT_WINDOW_MS },
@@ -37,17 +37,17 @@ export class PlayerAuthRateLimiter {
     );
     return decision.allowed ? null : decision.retryAfterSeconds;
   }
-  reset(): void {
-    this.limiter.reset(SCOPE);
+  reset(): Promise<void> {
+    return this.limiter.reset(SCOPE);
   }
 }
 @Injectable()
 export class PlayerAuthRateLimitGuard implements CanActivate {
   constructor(private readonly limiter: PlayerAuthRateLimiter) {}
-  canActivate(context: ExecutionContext): boolean {
+  async canActivate(context: ExecutionContext): Promise<boolean> {
     const http = context.switchToHttp();
     const request = http.getRequest<Request>();
-    const retryAfter = this.limiter.consume(
+    const retryAfter = await this.limiter.consume(
       `${context.getClass().name}.${context.getHandler().name}:${request.ip ?? 'unknown'}`,
     );
     if (retryAfter === null) return true;

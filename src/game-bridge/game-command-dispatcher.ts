@@ -3,6 +3,7 @@ import { Injectable, Optional } from '@nestjs/common';
 import { Metrics, seconds } from '../observability/metrics.js';
 import { ConfigService } from '@nestjs/config';
 import { DataSource } from 'typeorm';
+import type { EntityManager } from 'typeorm';
 import type { ApplicationConfig } from '../config/environment.js';
 import { BridgeClock } from './bridge-clock.js';
 import { envelope } from './command-contract.js';
@@ -26,6 +27,7 @@ interface DispatchClaim {
 @Injectable()
 export class GameCommandDispatcher {
   private readonly policy: ApplicationConfig['gameBridge'];
+  private readonly maxInFlight: number;
   constructor(
     private readonly database: DataSource,
     private readonly store: GameCommandStore,
@@ -35,7 +37,9 @@ export class GameCommandDispatcher {
     config: ConfigService<{ application: ApplicationConfig }, true>,
     @Optional() private readonly metrics?: Metrics,
   ) {
-    this.policy = config.get('application', { infer: true }).gameBridge;
+    const application = config.get('application', { infer: true });
+    this.policy = application.gameBridge;
+    this.maxInFlight = application.agent.maxInFlightCommands;
   }
   async dispatch(id: string): Promise<GameCommand> {
     const reserved = await this.reserve(id);
@@ -129,6 +133,24 @@ export class GameCommandDispatcher {
         );
         return unchanged();
       }
+      // 12.5, before any attempt is consumed and under the server row lock
+      // that every reserve, ACK, RESULT, HELLO and revoke of this server
+      // takes: (1) only the instance owning the live session may cross the
+      // delivery boundary (another replica leaves the command untouched);
+      // (2) a new flight (PENDING) fits the server's in-flight budget,
+      // counted here, so concurrent workers of any replica cannot exceed it.
+      const live = await this.connections.active(command.gameServerId, manager);
+      if (
+        this.connections.healthy(live, now) &&
+        !this.connections.owned(live, now)
+      )
+        return unchanged();
+      if (
+        command.status === CommandStatus.PENDING &&
+        (await this.inFlight(command.gameServerId, manager, command.id)) >=
+          this.maxInFlight
+      )
+        return unchanged();
       command.dispatchAttempts++;
       command.lastDispatchAt = now;
       command.ackDeadlineAt = new Date(
@@ -219,8 +241,12 @@ export class GameCommandDispatcher {
   // Commands occupying the server's Agent: DISPATCHED, ACKNOWLEDGED, or
   // PENDING with a live reservation. Read from the database, so the count
   // survives restarts and never depends on in-memory bookkeeping.
-  async inFlight(gameServerId: string): Promise<number> {
-    return this.database
+  async inFlight(
+    gameServerId: string,
+    manager: EntityManager = this.database.manager,
+    except?: string,
+  ): Promise<number> {
+    const query = manager
       .getRepository<GameCommand>('GameCommand')
       .createQueryBuilder('command')
       .where('command.gameServerId = :gameServerId', { gameServerId })
@@ -230,8 +256,9 @@ export class GameCommandDispatcher {
           flying: [CommandStatus.DISPATCHED, CommandStatus.ACKNOWLEDGED],
           pending: CommandStatus.PENDING,
         },
-      )
-      .getCount();
+      );
+    if (except) query.andWhere('command.id <> :except', { except });
+    return query.getCount();
   }
   // Dispatches the due commands of one server whose type the caller can
   // deliver: every due DISPATCHED retry (already in flight) and at most

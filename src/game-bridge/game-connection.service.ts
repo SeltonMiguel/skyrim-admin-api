@@ -18,6 +18,10 @@ import {
 import { GameConnection } from './entities/game-connection.entity.js';
 import type { DisconnectReason } from './entities/game-connection.entity.js';
 import type { GameProcessState } from '../game-agent/agent-protocol.contracts.js';
+import {
+  InstanceIdentity,
+  STANDALONE_INSTANCE,
+} from '../cluster/instance-identity.js';
 
 export interface RuntimeSnapshot {
   gameProcessState: GameProcessState;
@@ -41,6 +45,7 @@ export interface ConnectInput {
 @Injectable()
 export class GameConnectionService {
   private readonly timeout: number;
+  private readonly instance: InstanceIdentity;
   constructor(
     private readonly database: DataSource,
     private readonly servers: GameServerService,
@@ -48,16 +53,62 @@ export class GameConnectionService {
     config: ConfigService<{ application: ApplicationConfig }, true>,
     // Staff wake-up after commit (11.6); absent in transport-less fixtures.
     @Optional() private readonly status?: GameServerStatusNotifier,
+    @Optional() instance?: InstanceIdentity,
   ) {
     this.timeout = config.get('application', {
       infer: true,
     }).gameBridge.heartbeatTimeoutMs;
+    this.instance = instance ?? STANDALONE_INSTANCE;
+  }
+  get instanceId(): string {
+    return this.instance.id;
+  }
+  get manager(): EntityManager {
+    return this.database.manager;
   }
   healthy(
     connection: GameConnection | null,
     now = this.clock.now(),
   ): connection is GameConnection {
     return connectionFresh(connection, now, this.timeout);
+  }
+  // 12.5: the session is the server's CONNECTED one, its lease (heartbeat
+  // freshness) is valid and this process execution owns its socket. Only
+  // then may this instance dispatch to it or accept its frames.
+  owned(
+    connection: GameConnection | null,
+    now = this.clock.now(),
+  ): connection is GameConnection {
+    return (
+      this.healthy(connection, now) &&
+      connection.ownerInstanceId === this.instance.id
+    );
+  }
+  // Transactional fence for state-changing Agent frames (12.5): shares the
+  // connection row lock (a concurrent supersede, revoke or stale close
+  // waits for this transaction, or this one sees its result) and checks
+  // CONNECTED, owner, lease and, for Agent sessions, the credential.
+  async ownedInTransaction(
+    manager: EntityManager,
+    serverId: string,
+    connectionId: string,
+  ): Promise<boolean> {
+    const rows = (await manager.query(
+      `SELECT c.id FROM game_connections c
+       LEFT JOIN game_agent_credentials k ON k.id = c.credential_id
+       WHERE c.id = $1 AND c.game_server_id = $2 AND c.status = 'CONNECTED'
+         AND c.owner_instance_id = $3
+         AND c.last_heartbeat_at > $4
+         AND (c.credential_id IS NULL OR k.status = 'ACTIVE')
+       FOR SHARE OF c`,
+      [
+        connectionId,
+        serverId,
+        this.instance.id,
+        new Date(this.clock.now().getTime() - this.timeout),
+      ],
+    )) as unknown[];
+    return rows.length === 1;
   }
   // Signals a possible operational change of the server after a commit.
   private notify(serverId: string): void {
@@ -131,6 +182,7 @@ export class GameConnectionService {
         disconnectedAt: null,
         disconnectReason: null,
         credentialId: agent?.credentialId ?? null,
+        ownerInstanceId: this.instance.id,
         capabilities: agent ? [...agent.capabilities] : [],
         gameProcessState: agent?.gameProcessState ?? null,
         skseReady: agent?.skseReady ?? null,
@@ -154,6 +206,9 @@ export class GameConnectionService {
       const connection = await this.active(serverId, manager);
       if (!server.enabled || !connection || connection.id !== connectionId)
         return false;
+      // Only the owner renews the lease; a socket another instance's HELLO
+      // superseded, or one this instance no longer owns, is not alive.
+      if (connection.ownerInstanceId !== this.instance.id) return false;
       const now = this.clock.now();
       if (!this.healthy(connection, now)) {
         await this.close(manager, connection, 'STALE', now);
@@ -200,6 +255,7 @@ export class GameConnectionService {
         serverId,
       })
       .andWhere("status = 'CONNECTED' AND credential_id IS NOT NULL")
+      .andWhere('owner_instance_id = :owner', { owner: this.instance.id })
       .execute();
     if (result.affected !== 1) return false;
     this.notify(serverId);
@@ -244,8 +300,43 @@ export class GameConnectionService {
       );
     return result.affected ?? 0;
   }
-  // Startup reconciliation: sockets never survive a restart, so no persisted
-  // session can still be live in this (single) instance. History is kept.
+  // Startup reconciliation, MULTI (12.5): sessions owned by live replicas
+  // keep their rows. Only sessions whose lease (heartbeat) already expired,
+  // or without an owner (older than 12.5), are closed as STALE; each row
+  // under the server lock, like the stale sweep.
+  async endExpired(): Promise<number> {
+    const candidates = await this.database
+      .getRepository<GameConnection>('GameConnection')
+      .createQueryBuilder('connection')
+      .where('connection.status = :status', { status: 'CONNECTED' })
+      .andWhere(
+        '(connection.lastHeartbeatAt <= :cutoff OR connection.ownerInstanceId IS NULL)',
+        { cutoff: new Date(this.clock.now().getTime() - this.timeout) },
+      )
+      .take(1000)
+      .getMany();
+    let count = 0;
+    for (const candidate of candidates) {
+      const closed = await this.database.transaction(async (manager) => {
+        await this.servers.get(candidate.gameServerId, manager, true);
+        const current = await this.active(candidate.gameServerId, manager);
+        if (
+          !current ||
+          current.id !== candidate.id ||
+          (this.healthy(current) && current.ownerInstanceId !== null)
+        )
+          return 0;
+        await this.close(manager, current, 'STALE', this.clock.now());
+        return 1;
+      });
+      if (closed) this.notify(candidate.gameServerId);
+      count += closed;
+    }
+    return count;
+  }
+  // Startup reconciliation, SINGLE: sockets never survive a restart and the
+  // global lock proves no other instance runs, so no persisted session can
+  // still be live. Never used in MULTI. History is kept.
   async endAllActive(reason: DisconnectReason): Promise<number> {
     const result = await this.database
       .getRepository<GameConnection>('GameConnection')

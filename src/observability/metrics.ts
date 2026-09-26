@@ -373,6 +373,49 @@ export class Metrics {
     [],
   );
 
+  // Multi-instance coordination (12.5). All local to this process; no
+  // instance id label (the scraper's target/instance identifies it).
+  readonly clusterBusConnected = this.gauge(
+    'cluster_bus_connected',
+    'The dedicated LISTEN connection of the PostgreSQL bus is up (1) or reconnecting (0); absent in SINGLE.',
+    [],
+  );
+  readonly clusterBusReconnects = this.counter(
+    'cluster_bus_reconnects_total',
+    'LISTEN connection restored after a loss.',
+    [],
+  );
+  readonly clusterBusErrors = this.counter(
+    'cluster_bus_errors_total',
+    'Failed LISTEN (re)connection attempts.',
+    [],
+  );
+  readonly clusterBusMessages = this.counter(
+    'cluster_bus_messages_total',
+    'Bus messages by kind and outcome (published, publish_failed, received, expired, read_failed).',
+    ['kind', 'outcome'],
+  );
+  readonly clusterCleanup = this.counter(
+    'cluster_cleanup_rows_total',
+    'Expired coordination rows deleted by this instance (bus_events, rate_limits, rate_limit_slots, realtime_leases).',
+    ['kind'],
+  );
+  readonly rateLimitBackendErrors = this.counter(
+    'rate_limit_backend_errors_total',
+    'Shared (PostgreSQL) rate-limit operations that failed; the request is refused (fail closed).',
+    [],
+  );
+  readonly realtimeLeases = this.gauge(
+    'realtime_connection_leases',
+    'Cluster connection leases held by this instance (MULTI).',
+    [],
+  );
+  readonly agentOwnershipLost = this.counter(
+    'agent_ownership_lost_total',
+    'Local Agent sockets closed because the database no longer grants this instance their session.',
+    ['reason'],
+  );
+
   // Workers.
   readonly workerTicks = this.counter(
     'worker_ticks_total',

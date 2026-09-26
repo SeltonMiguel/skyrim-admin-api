@@ -1,4 +1,5 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
+import { Metrics } from '../observability/metrics.js';
 import { BridgeClock } from '../game-bridge/bridge-clock.js';
 import { GameConnectionService } from '../game-bridge/game-connection.service.js';
 import {
@@ -35,6 +36,7 @@ export class AgentMessageRouter {
     private readonly serverControl: AgentServerControlAdapter,
     private readonly domain: AgentDomainEventAdapter,
     private readonly clock: BridgeClock,
+    @Optional() private readonly metrics?: Metrics,
   ) {}
   async route(
     session: AgentSessionSnapshot,
@@ -84,14 +86,23 @@ export class AgentMessageRouter {
       }
       throw error;
     }
-    // The database decides liveness (disabled server, superseded or stale
-    // session all return false); the registry only mirrors it.
+    // The database decides liveness (disabled server, superseded, stale or,
+    // 12.5, owned by another replica all return false); the registry only
+    // mirrors it. Only a successful renewal refreshes the local heartbeat,
+    // so a replica cut off from the database closes the socket at its local
+    // heartbeat timeout instead of acting on memory.
     const alive = await this.connections.heartbeat(
       session.gameServerId,
       session.connectionId,
       runtime,
     );
-    if (!alive) return { close: 'SESSION_CLOSED' };
+    if (!alive) {
+      this.metrics?.agentOwnershipLost.inc({ reason: 'heartbeat_refused' });
+      this.logger.warn(
+        `Agent session no longer granted by the database [gameServerId=${session.gameServerId} connectionId=${session.connectionId}]`,
+      );
+      return { close: 'SESSION_CLOSED' };
+    }
     const now = this.clock.now();
     this.sessions.heartbeat(
       session.gameServerId,

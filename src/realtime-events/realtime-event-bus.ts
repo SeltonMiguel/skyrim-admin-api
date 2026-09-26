@@ -78,12 +78,22 @@ export type RealtimeListener = (
   recipients: RealtimeRecipients,
 ) => void;
 
-// In-process, best-effort fan-out. Single instance only: no outbox or broker
-// (multi-instance delivery is Etapa 12).
+export type RealtimeRelay = (
+  envelope: RealtimeEnvelope,
+  recipients: RealtimeRecipients,
+) => void;
+
+// Best-effort fan-out: first to this process's listeners, then (MULTI,
+// 12.5) through the relay installed by the cluster bus to the other
+// replicas, which fan out to their own sockets only. No outbox, no replay.
 @Injectable()
 export class RealtimeEventBus {
   private readonly logger = new Logger(RealtimeEventBus.name);
   private readonly listeners = new Set<RealtimeListener>();
+  private relay?: RealtimeRelay;
+  setRelay(relay: RealtimeRelay): void {
+    this.relay = relay;
+  }
   subscribe(listener: RealtimeListener): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
@@ -117,12 +127,30 @@ export class RealtimeEventBus {
     const targets: RealtimeRecipients = staff
       ? { playerIds: [], staffPermission: target.staffPermission }
       : { playerIds: [...new Set(target.playerIds)], staffPermission: null };
+    this.fanOut(envelope, targets);
+    try {
+      this.relay?.(envelope, targets);
+    } catch {
+      this.logger.error(`Realtime relay failed [type=${type}]`);
+    }
+    return envelope;
+  }
+  // An envelope published by another replica: local listeners only (the
+  // surfaces were checked at its origin and are checked again here).
+  deliverRemote(envelope: RealtimeEnvelope, recipients: RealtimeRecipients) {
+    if (
+      !REALTIME_EVENT_TYPES.includes(envelope.type) ||
+      isStaffEvent(envelope.type) !== (recipients.staffPermission !== null)
+    )
+      return;
+    this.fanOut(envelope, recipients);
+  }
+  private fanOut(envelope: RealtimeEnvelope, targets: RealtimeRecipients) {
     for (const listener of this.listeners)
       try {
         listener(envelope, targets);
       } catch {
-        this.logger.error(`Realtime listener failed [type=${type}]`);
+        this.logger.error(`Realtime listener failed [type=${envelope.type}]`);
       }
-    return envelope;
   }
 }

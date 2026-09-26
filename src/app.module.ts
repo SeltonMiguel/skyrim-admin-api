@@ -1,4 +1,5 @@
 import { OperationsModule } from './operations/operations.module.js';
+import { ClusterModule } from './cluster/cluster.module.js';
 import { PlayerGameServersModule } from './player-game-servers/player-game-servers.module.js';
 import { RealtimeEventsModule } from './realtime-events/realtime-events.module.js';
 import { RealtimeModule } from './realtime/realtime.module.js';
@@ -61,6 +62,7 @@ import { ObservabilityModule } from './observability/observability.module.js';
     PlayerCharacterOperationsModule,
     ProfessionsModule,
     RealtimeEventsModule,
+    ClusterModule,
     PlayerGroupsModule,
     PlayerGuildsModule,
     EconomyModule,

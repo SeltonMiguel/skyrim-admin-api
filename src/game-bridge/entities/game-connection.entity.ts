@@ -36,6 +36,9 @@ export type DisconnectReason = (typeof DISCONNECT_REASONS)[number];
 })
 @Index('game_connections_heartbeat_idx', ['status', 'lastHeartbeatAt'])
 @Index('game_connections_credential_idx', ['credentialId'])
+@Index('game_connections_owner_idx', ['ownerInstanceId'], {
+  where: `status = 'CONNECTED'`,
+})
 @Check(
   'game_connections_reason_check',
   `disconnect_reason IS NULL OR disconnect_reason IN ('SUPERSEDED', 'STALE', 'REQUESTED', 'CLOSED', 'CREDENTIAL_REVOKED', 'SHUTDOWN', 'BACKEND_RESTART')`,
@@ -121,6 +124,11 @@ export class GameConnection {
   gameProcessState: GameProcessState | null;
   @Column({ name: 'skse_ready', type: 'boolean', nullable: true })
   skseReady: boolean | null;
+  // 12.5: the process execution holding this socket (InstanceIdentity).
+  // Its lease is the heartbeat freshness; only the owner renews it, and
+  // only the owner may dispatch to or accept frames from this session.
+  @Column({ name: 'owner_instance_id', type: 'uuid', nullable: true })
+  ownerInstanceId: string | null;
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
 }

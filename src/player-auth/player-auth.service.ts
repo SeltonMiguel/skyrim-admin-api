@@ -147,6 +147,20 @@ export class PlayerAuthService {
   }
   // Revokes only this session; after commit its realtime sockets close
   // (other sessions of the account stay connected).
+  // 12.5: which of these sessions may still receive private realtime data
+  // (not revoked, not expired, account ACTIVE). One query for a whole
+  // delivery, whatever replica revoked them; the database is the authority,
+  // the revocation signal only closes sockets sooner.
+  async liveSessions(sessionIds: readonly string[]): Promise<Set<string>> {
+    if (!sessionIds.length) return new Set();
+    const rows = (await this.database.query(
+      `SELECT s.id FROM player_sessions s JOIN players p ON p.id = s.player_id
+       WHERE s.id = ANY($1::uuid[]) AND s.revoked_at IS NULL
+         AND s.expires_at > now() AND p.status = 'ACTIVE'`,
+      [[...new Set(sessionIds)]],
+    )) as { id: string }[];
+    return new Set(rows.map((row) => row.id));
+  }
   async logout(auth: AuthenticatedPlayer): Promise<void> {
     await this.database.transaction(async (manager) => {
       await this.lockPlayer(manager, auth.player.id);

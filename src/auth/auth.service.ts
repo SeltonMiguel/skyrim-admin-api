@@ -42,10 +42,13 @@ export class AuthService {
     metadata: { ipAddress?: string; userAgent?: string } = {},
   ) {
     // Throttled before any database or Argon2 work (12.1).
-    const release = this.throttle.beginLogin(metadata.ipAddress, dto.username);
+    const release = await this.throttle.beginLogin(
+      metadata.ipAddress,
+      dto.username,
+    );
     try {
       const result = await this.authenticateLogin(dto, metadata);
-      this.throttle.loginSucceeded(dto.username);
+      await this.throttle.loginSucceeded(dto.username);
       return result;
     } finally {
       release();
@@ -107,9 +110,9 @@ export class AuthService {
   // is a concurrent refresh that lost the race (401, session kept); after it,
   // it is a replay and the session (only this one) is revoked and audited.
   async refresh(token: string, ipAddress?: string) {
-    this.throttle.refreshAttempt(ipAddress);
+    await this.throttle.refreshAttempt(ipAddress);
     const claims = await this.tokens.verify(token, 'refresh');
-    this.throttle.refreshSession(ipAddress, claims.sid);
+    await this.throttle.refreshSession(ipAddress, claims.sid);
     const outcome = await this.database.transaction(async (manager) => {
       // All writers lock user before session, including disable and logout.
       const user = await this.lockUser(manager, claims.sub);

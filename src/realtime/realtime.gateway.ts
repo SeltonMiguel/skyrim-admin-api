@@ -27,6 +27,7 @@ import type { Permission } from '../rbac/permissions.js';
 import { ClientAddress } from '../common/net/client-address.service.js';
 import { RateLimiter } from '../common/rate-limit/rate-limiter.js';
 import { SecurityLog } from '../common/security/security-log.js';
+import { RealtimeLeaseService } from '../cluster/realtime-leases.js';
 import { rejectUpgrade } from '../websocket/reject-upgrade.js';
 import {
   connectionKey,
@@ -40,6 +41,8 @@ export const MAX_REALTIME_FRAME_BYTES = 16 * 1024;
 // Longer than any Player access token (PLAYER_JWT_ACCESS_TTL ≤ 1 h).
 const REVOKED_TRACK_MS = 60 * 60 * 1000;
 const MAX_REVOKED_TRACKED = 10_000;
+// Pending Player deliveries awaiting their session check (bounded).
+const MAX_PLAYER_BACKLOG = 10_000;
 // Application close codes (4000–4999).
 export const RealtimeClose = {
   AUTH_TIMEOUT: 4000,
@@ -55,6 +58,8 @@ export const RealtimeClose = {
   // 12.1: the identity already holds REALTIME_MAX_CONNECTIONS_PER_IDENTITY
   // sockets; the new one is refused (existing ones are kept).
   CONNECTION_LIMIT: 4004,
+  // 12.5: the cluster lease store is unavailable; retry later.
+  TRY_AGAIN_LATER: 1013,
   SHUTDOWN: 1001,
 } as const;
 
@@ -85,6 +90,11 @@ export class RealtimeGateway
   private readonly revoked = new Map<string, number>();
   private unsubscribeSessions?: () => void;
   private unsubscribeAccounts?: () => void;
+  // Cluster lease of each authenticated socket (MULTI).
+  private readonly leases = new Map<WebSocket, string>();
+  // Player deliveries in publish order (each waits for its session check).
+  private playerChain: Promise<void> = Promise.resolve();
+  private playerBacklog = 0;
   constructor(
     private readonly upgrades: WebSocketUpgradeRouter,
     private readonly bus: RealtimeEventBus,
@@ -97,6 +107,7 @@ export class RealtimeGateway
     private readonly security: SecurityLog,
     private readonly sessionControl: RealtimeSessionControl,
     @Optional() private readonly metrics?: Metrics,
+    @Optional() private readonly clusterLeases?: RealtimeLeaseService,
   ) {
     if (metrics) {
       registry.observer = {
@@ -199,8 +210,8 @@ export class RealtimeGateway
       this.metrics?.realtimeEvents.inc({ surface: 'player' });
     else if (recipients.staffPermission)
       this.metrics?.realtimeEvents.inc({ surface: 'staff' });
-    for (const playerId of recipients.playerIds)
-      this.registry.send(connectionKey('PLAYER', playerId), frame);
+    if (recipients.playerIds.length)
+      this.queuePlayers(recipients.playerIds, frame);
     const permission = recipients.staffPermission;
     if (!permission) return;
     for (const socket of this.registry.surface('STAFF'))
@@ -208,6 +219,44 @@ export class RealtimeGateway
         if (grants?.includes(permission))
           sendFrame(socket, frame, this.registry.observer);
       });
+  }
+  // Player delivery authorization (12.5): the database, not the revocation
+  // signal, decides. Before writing a Player frame, the sessions of every
+  // target socket are checked in ONE query (revoked, expired, account not
+  // ACTIVE); sockets whose session is no longer live are closed and get
+  // nothing, even if the close signal from another replica was lost. A
+  // database failure skips the delivery (fail closed; HTTP recovers).
+  // Deliveries run in publish order and the backlog is bounded.
+  private queuePlayers(playerIds: readonly string[], frame: string): void {
+    if (this.playerBacklog >= MAX_PLAYER_BACKLOG) {
+      this.metrics?.realtimeDeliveryFailures.inc();
+      return;
+    }
+    this.playerBacklog++;
+    this.playerChain = this.playerChain
+      .then(() => this.deliverPlayers(playerIds, frame))
+      .catch(() => this.metrics?.realtimeDeliveryFailures.inc())
+      .finally(() => this.playerBacklog--);
+  }
+  private async deliverPlayers(
+    playerIds: readonly string[],
+    frame: string,
+  ): Promise<void> {
+    const targets = playerIds.flatMap((playerId) =>
+      this.registry.withSessions(connectionKey('PLAYER', playerId)),
+    );
+    if (!targets.length) return;
+    const live = await this.players.liveSessions(
+      targets.flatMap((t) => (t.session ? [t.session] : [])),
+    );
+    for (const { socket, session } of targets) {
+      if (session && live.has(session)) {
+        sendFrame(socket, frame, this.registry.observer);
+        continue;
+      }
+      if (session) this.revokeSession(session);
+      else socket.close(RealtimeClose.UNAUTHORIZED, 'UNAUTHORIZED');
+    }
   }
   // Staff grants are re-read at every delivery through the same service as
   // HTTP (session, account status, current role), so a role change applies
@@ -242,13 +291,20 @@ export class RealtimeGateway
     socket: Duplex,
     head: Buffer,
   ) => {
+    void this.admit(request, socket, head).catch(() => socket.destroy());
+  };
+  private async admit(
+    request: IncomingMessage,
+    socket: Duplex,
+    head: Buffer,
+  ): Promise<void> {
     const ip = this.addresses.of(request);
     if (!this.originAllowed(request.headers.origin)) {
       this.security.warn('realtime_origin_refused', { ip });
       this.metrics?.realtimeRejects.inc({ reason: 'origin' });
       return rejectUpgrade(socket, 403);
     }
-    const attempt = this.limiter.consume('realtime-connect', ip, {
+    const attempt = await this.limiter.consume('realtime-connect', ip, {
       limit: this.limits.connectsPerIpPerMinute,
       windowMs: 60_000,
     });
@@ -269,8 +325,9 @@ export class RealtimeGateway
       this.metrics?.realtimeRejects.inc({ reason: 'capacity' });
       return rejectUpgrade(socket, 503, 1);
     }
+    if (socket.destroyed) return;
     this.wss!.handleUpgrade(request, socket, head, (ws) => this.connect(ws));
-  };
+  }
   // A request without Origin is not a browser (Electron main process, native
   // client) and is judged by its token alone. A browser Origin must be in
   // REALTIME_ALLOWED_ORIGINS; with no allowlist, any browser Origin is
@@ -296,6 +353,36 @@ export class RealtimeGateway
       this.metrics?.realtimeRejects.inc({ reason: 'auth_timeout' });
       ws.close(RealtimeClose.AUTH_TIMEOUT, 'AUTH_TIMEOUT');
     }, this.authTimeoutMs);
+    const refuse = (surface: RealtimeSurface, id: string) => {
+      this.security.warn('realtime_identity_limit', {
+        surface,
+        id,
+        max: this.limits.maxConnectionsPerIdentity,
+      });
+      this.metrics?.realtimeRejects.inc({ reason: 'identity_limit' });
+      ws.close(RealtimeClose.CONNECTION_LIMIT, 'CONNECTION_LIMIT');
+    };
+    const accept = (
+      surface: RealtimeSurface,
+      token: string,
+      identity: { id: string; sessionId?: string; expiresAt: Date },
+    ) => {
+      state = 'AUTHENTICATED';
+      key = connectionKey(surface, identity.id);
+      if (surface === 'STAFF') this.staffTokens.set(ws, token);
+      this.registry.add(key, ws, identity.sessionId);
+      expiry = setTimeout(
+        () => ws.close(RealtimeClose.TOKEN_EXPIRED, 'TOKEN_EXPIRED'),
+        Math.max(0, identity.expiresAt.getTime() - Date.now()),
+      );
+      ws.send(
+        JSON.stringify({
+          type: 'AUTHENTICATED',
+          surface,
+          expiresAt: identity.expiresAt.toISOString(),
+        }),
+      );
+    };
     ws.on('message', (raw: RawData, isBinary: boolean) => {
       // Clients only send the AUTH frame; anything else is a protocol error.
       if (state !== 'AUTHENTICATING' || isBinary) {
@@ -310,7 +397,7 @@ export class RealtimeGateway
         ws.close(RealtimeClose.PROTOCOL_ERROR, 'PROTOCOL_ERROR');
         return;
       }
-      void this.identify(frame.surface, frame.token).then((identity) => {
+      void this.identify(frame.surface, frame.token).then(async (identity) => {
         if (ws.readyState !== WebSocket.OPEN) return;
         if (!identity) {
           this.metrics?.realtimeRejects.inc({ reason: 'auth_failed' });
@@ -319,40 +406,41 @@ export class RealtimeGateway
         }
         clearTimeout(timeout);
         settle();
-        const identityKey = connectionKey(frame.surface, identity.id);
-        if (
-          this.registry.count(identityKey) >=
-          this.limits.maxConnectionsPerIdentity
-        ) {
-          this.security.warn('realtime_identity_limit', {
-            surface: frame.surface,
-            id: identity.id,
-            max: this.limits.maxConnectionsPerIdentity,
-          });
-          this.metrics?.realtimeRejects.inc({ reason: 'identity_limit' });
-          ws.close(RealtimeClose.CONNECTION_LIMIT, 'CONNECTION_LIMIT');
-          return;
-        }
         if (identity.sessionId && this.recentlyRevoked(identity.sessionId)) {
           this.metrics?.realtimeRejects.inc({ reason: 'session_revoked' });
           ws.close(RealtimeClose.SESSION_REVOKED, 'SESSION_REVOKED');
           return;
         }
-        state = 'AUTHENTICATED';
-        key = identityKey;
-        if (frame.surface === 'STAFF') this.staffTokens.set(ws, frame.token);
-        this.registry.add(key, ws, identity.sessionId);
-        expiry = setTimeout(
-          () => ws.close(RealtimeClose.TOKEN_EXPIRED, 'TOKEN_EXPIRED'),
-          Math.max(0, identity.expiresAt.getTime() - Date.now()),
-        );
-        ws.send(
-          JSON.stringify({
-            type: 'AUTHENTICATED',
-            surface: frame.surface,
-            expiresAt: identity.expiresAt.toISOString(),
-          }),
-        );
+        // SINGLE: the per-principal cap counts this registry. MULTI (12.5):
+        // it counts every replica's sockets through cluster leases.
+        if (!this.clusterLeases?.enabled) {
+          if (
+            this.registry.count(connectionKey(frame.surface, identity.id)) >=
+            this.limits.maxConnectionsPerIdentity
+          )
+            return refuse(frame.surface, identity.id);
+          return accept(frame.surface, frame.token, identity);
+        }
+        let lease: string | null;
+        try {
+          lease = await this.clusterLeases.acquire(
+            frame.surface,
+            identity.id,
+            identity.sessionId,
+            this.limits.maxConnectionsPerIdentity,
+          );
+        } catch {
+          this.metrics?.realtimeRejects.inc({ reason: 'lease_unavailable' });
+          ws.close(RealtimeClose.TRY_AGAIN_LATER, 'TRY_AGAIN_LATER');
+          return;
+        }
+        if (!lease) return refuse(frame.surface, identity.id);
+        if (ws.readyState !== WebSocket.OPEN) {
+          void this.clusterLeases.release(lease);
+          return;
+        }
+        this.leases.set(ws, lease);
+        accept(frame.surface, frame.token, identity);
       });
     });
     ws.on('close', () => {
@@ -361,6 +449,11 @@ export class RealtimeGateway
       if (expiry) clearTimeout(expiry);
       if (key) this.registry.remove(key, ws);
       this.staffTokens.delete(ws);
+      const lease = this.leases.get(ws);
+      if (lease) {
+        this.leases.delete(ws);
+        void this.clusterLeases?.release(lease);
+      }
     });
     ws.on('error', () => ws.terminate());
   }

@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { ApplicationConfig } from '../config/environment.js';
+import { InstanceIdentity } from '../cluster/instance-identity.js';
 import { InstanceLock } from './instance-lock.js';
 
 const LOCK_PROBE_MS = 5000;
@@ -15,7 +16,8 @@ const LOCK_PROBE_MS = 5000;
 // worker or socket starts (onModuleInit runs before every
 // onApplicationBootstrap) and released only after workers stopped and
 // sockets closed (onApplicationShutdown runs last); and the readiness
-// flags used by GET /ready.
+// flags used by GET /ready. MULTI (12.5) never takes the lock: replicas
+// coordinate through PostgreSQL rows (docs/multi-instance.md).
 @Injectable()
 export class LifecycleService
   implements OnModuleInit, OnApplicationBootstrap, OnApplicationShutdown
@@ -27,12 +29,20 @@ export class LifecycleService
   private lockLost = false;
   private probe?: ReturnType<typeof setInterval>;
   private lostHandler?: () => void;
-  constructor(config: ConfigService<{ application: ApplicationConfig }, true>) {
+  readonly topology: ApplicationConfig['deployment']['topology'];
+  constructor(
+    config: ConfigService<{ application: ApplicationConfig }, true>,
+    private readonly instance: InstanceIdentity,
+  ) {
     const application = config.get('application', { infer: true });
+    this.topology = application.deployment.topology;
     if (application.deployment.singleInstanceLock)
       this.lock = new InstanceLock(application.database);
   }
   async onModuleInit(): Promise<void> {
+    this.logger.log(
+      `Instance starting [instanceId=${this.instance.id} topology=${this.topology}]`,
+    );
     if (!this.lock) return;
     // Fails the startup (InstanceLockHeldError) when another instance runs.
     await this.lock.acquire();
@@ -54,6 +64,7 @@ export class LifecycleService
   }
   async onApplicationShutdown(): Promise<void> {
     this.shuttingDown = true;
+    this.logger.log(`Instance stopping [instanceId=${this.instance.id}]`);
     if (this.probe) clearInterval(this.probe);
     if (this.lock?.held) {
       await this.lock.release();

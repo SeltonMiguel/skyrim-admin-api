@@ -35,11 +35,14 @@ export class StaffAuthThrottle {
     this.policy = config.get('application', { infer: true }).security;
   }
   // Returns the release of the Argon2 slot; throws 429 when throttled.
-  beginLogin(ip: string | undefined, username: string): () => void {
+  async beginLogin(
+    ip: string | undefined,
+    username: string,
+  ): Promise<() => void> {
     const { windowMs, perIp, perUsername, maxConcurrent } =
       this.policy.staffLogin;
     const address = ip ?? 'unknown';
-    const byIp = this.limiter.consume(LOGIN_IP, address, {
+    const byIp = await this.limiter.consume(LOGIN_IP, address, {
       limit: perIp,
       windowMs,
     });
@@ -50,7 +53,7 @@ export class StaffAuthThrottle {
         byIp.retryAfterSeconds,
         username,
       );
-    const byUser = this.limiter.consume(LOGIN_USERNAME, username, {
+    const byUser = await this.limiter.consume(LOGIN_USERNAME, username, {
       limit: perUsername,
       windowMs,
     });
@@ -68,13 +71,13 @@ export class StaffAuthThrottle {
     }
     return release;
   }
-  loginSucceeded(username: string): void {
-    this.limiter.reset(LOGIN_USERNAME, username);
+  async loginSucceeded(username: string): Promise<void> {
+    await this.limiter.reset(LOGIN_USERNAME, username);
   }
-  refreshAttempt(ip: string | undefined): void {
+  async refreshAttempt(ip: string | undefined): Promise<void> {
     const { windowMs, perIp } = this.policy.staffRefresh;
     const address = ip ?? 'unknown';
-    const decision = this.limiter.consume(REFRESH_IP, address, {
+    const decision = await this.limiter.consume(REFRESH_IP, address, {
       limit: perIp,
       windowMs,
     });
@@ -83,9 +86,12 @@ export class StaffAuthThrottle {
       throw new TooManyRequestsException(decision.retryAfterSeconds);
     }
   }
-  refreshSession(ip: string | undefined, sessionId: string): void {
+  async refreshSession(
+    ip: string | undefined,
+    sessionId: string,
+  ): Promise<void> {
     const { windowMs, perSession } = this.policy.staffRefresh;
-    const decision = this.limiter.consume(REFRESH_SESSION, sessionId, {
+    const decision = await this.limiter.consume(REFRESH_SESSION, sessionId, {
       limit: perSession,
       windowMs,
     });

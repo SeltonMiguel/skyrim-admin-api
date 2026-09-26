@@ -12,7 +12,11 @@ import type {
   AgentErrorCode,
 } from './agent-protocol.contracts.js';
 import type { RouteOutcome } from './agent-command.adapter.js';
-import { AgentDomainEventService } from './agent-domain-events.service.js';
+import {
+  AgentDomainEventService,
+  SessionFencedError,
+} from './agent-domain-events.service.js';
+import { GameConnectionService } from '../game-bridge/game-connection.service.js';
 import type { AgentSessionSnapshot } from './agent-session.registry.js';
 import { AgentWorkService } from './agent-work.service.js';
 
@@ -28,6 +32,7 @@ export class AgentDomainEventAdapter {
     private readonly events: AgentDomainEventService,
     private readonly work: AgentWorkService,
     private readonly clock: BridgeClock,
+    private readonly connections: GameConnectionService,
     @Optional() private readonly metrics?: Metrics,
   ) {}
   async event(
@@ -45,8 +50,27 @@ export class AgentDomainEventAdapter {
       this.metrics?.domainEvents.inc({ kind: event.kind, outcome });
     const workId = 'workId' in event.data ? ` workId=${event.data.workId}` : '';
     const ids = `eventId=${event.eventId} kind=${event.kind} gameServerId=${session.gameServerId} connectionId=${session.connectionId}${workId}`;
+    // 12.5: only the session this instance owns (CONNECTED, lease valid,
+    // credential ACTIVE) may change state; checked here and again inside
+    // the domain transaction. A socket superseded or revoked on another
+    // replica is closed even if its close signal was lost.
+    const fence = (manager = this.connections.manager) =>
+      this.connections.ownedInTransaction(
+        manager,
+        session.gameServerId,
+        session.connectionId,
+      );
     try {
-      const outcome = await this.events.handle(session.gameServerId, event);
+      if (!(await fence())) {
+        count('fenced');
+        this.logger.warn(`Agent domain event from a fenced session [${ids}]`);
+        return { close: 'SESSION_CLOSED' };
+      }
+      const outcome = await this.events.handle(
+        session.gameServerId,
+        event,
+        fence,
+      );
       switch (outcome.type) {
         case 'ACK':
           count(outcome.duplicate ? 'duplicate' : 'applied');
@@ -89,7 +113,12 @@ export class AgentDomainEventAdapter {
           );
           return { close: 'SERVER_MISMATCH' };
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof SessionFencedError) {
+        count('fenced');
+        this.logger.warn(`Agent domain event from a fenced session [${ids}]`);
+        return { close: 'SESSION_CLOSED' };
+      }
       count('unavailable');
       this.logger.error(`Agent domain event not processed [${ids}]`);
       return this.error(session, envelope, 'TEMPORARILY_UNAVAILABLE', {
@@ -111,6 +140,17 @@ export class AgentDomainEventAdapter {
     }
     let page;
     try {
+      // 12.5: a fenced session learns nothing more about the server's work.
+      if (
+        !(await this.connections.ownedInTransaction(
+          this.connections.manager,
+          session.gameServerId,
+          session.connectionId,
+        ))
+      ) {
+        this.metrics?.workSyncs.inc({ outcome: 'fenced' });
+        return { close: 'SESSION_CLOSED' };
+      }
       page = await this.work.page(session.gameServerId, request);
     } catch (error) {
       this.metrics?.workSyncs.inc({

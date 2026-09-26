@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { DataSource } from 'typeorm';
 import type { ApplicationConfig } from '../config/environment.js';
 import { BridgeClock } from '../game-bridge/bridge-clock.js';
+import { GameConnectionService } from '../game-bridge/game-connection.service.js';
 import { RealtimeEventBus } from '../realtime-events/realtime-event-bus.js';
 import { ServerControlOperation } from './entities/server-control-operation.entity.js';
 import { ServerControlStatus as S } from './server-control.contracts.js';
@@ -48,15 +49,19 @@ export class ServerControlDispatcher {
   private readonly pendingTimeoutMs: number;
   private readonly deliveryWindowMs: number;
   private readonly resultTimeoutMs: number;
+  private readonly heartbeatTimeoutMs: number;
   constructor(
     private readonly database: DataSource,
     private readonly gateway: ServerControlGateway,
     private readonly clock: BridgeClock,
     config: ConfigService<{ application: ApplicationConfig }, true>,
     private readonly events: RealtimeEventBus,
+    private readonly connections: GameConnectionService,
     @Optional() private readonly metrics?: Metrics,
   ) {
-    const policy = config.get('application', { infer: true }).serverControl;
+    const application = config.get('application', { infer: true });
+    this.heartbeatTimeoutMs = application.gameBridge.heartbeatTimeoutMs;
+    const policy = application.serverControl;
     this.pendingTimeoutMs = policy.pendingTimeoutMs;
     this.deliveryWindowMs = policy.deliveryWindowMs;
     this.resultTimeoutMs = policy.resultTimeoutMs;
@@ -126,7 +131,20 @@ export class ServerControlDispatcher {
       return (await this.failIfDisabled(pending)) ? 'FAILED' : 'HELD';
     const issuedAt = this.clock.now();
     const notAfter = new Date(issuedAt.getTime() + this.deliveryWindowMs);
+    // 12.5: the claim itself proves, in the same autocommit UPDATE, that the
+    // target is the server's CONNECTED session, owned by this instance with
+    // a valid lease. A replica without the socket (or with a superseded
+    // one) never claims, so the at-most-once boundary is crossed only by
+    // the owner, once.
     const claim = await this.unclaimed(id, true)
+      .andWhere(
+        `EXISTS (SELECT 1 FROM game_connections c WHERE c.id = :connectionId AND c.game_server_id = server_control_operations.game_server_id AND c.status = 'CONNECTED' AND c.owner_instance_id = :owner AND c.last_heartbeat_at > :fresh)`,
+        {
+          connectionId,
+          owner: this.connections.instanceId,
+          fresh: new Date(issuedAt.getTime() - this.heartbeatTimeoutMs),
+        },
+      )
       .set({
         dispatchClaimedAt: issuedAt,
         dispatchConnectionId: connectionId,

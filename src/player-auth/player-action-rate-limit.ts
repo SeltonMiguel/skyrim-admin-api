@@ -19,7 +19,7 @@ const PLAYER_ACTION = 'player-action-rate-limit';
 // Per authenticated player, per minute (12.1), for Player mutations that
 // create rows or GameCommands (character queries, trade/listing creation,
 // purchase reservation, listing cancel/release). Keyed by the player, never
-// by IP, and applied after PlayerAuthGuard. Per process until 12.5; the
+// by IP, and applied after PlayerAuthGuard. Shared between replicas in MULTI (12.5); the
 // defaults are a baseline for the 12.6 load tests.
 @Injectable()
 export class PlayerActionRateLimitGuard implements CanActivate {
@@ -33,7 +33,7 @@ export class PlayerActionRateLimitGuard implements CanActivate {
       infer: true,
     }).security.playerLimits;
   }
-  canActivate(context: ExecutionContext): boolean {
+  async canActivate(context: ExecutionContext): Promise<boolean> {
     const action = this.reflector.get<PlayerAction>(
       PLAYER_ACTION,
       context.getHandler(),
@@ -41,7 +41,7 @@ export class PlayerActionRateLimitGuard implements CanActivate {
     const player = context.switchToHttp().getRequest<PlayerAuthRequest>()
       .playerAuth?.player.id;
     if (!action || !player) return true;
-    const decision = this.limiter.consume(`player-${action}`, player, {
+    const decision = await this.limiter.consume(`player-${action}`, player, {
       limit: this.limits[action],
       windowMs: 60_000,
     });
