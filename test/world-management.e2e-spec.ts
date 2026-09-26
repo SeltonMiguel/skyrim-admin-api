@@ -108,7 +108,7 @@ describeDatabase('World with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(25);
+    expect(await database.runMigrations()).toHaveLength(26);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -171,9 +171,9 @@ describeDatabase('World with real PostgreSQL', () => {
     expect(
       (await database.driver.createSchemaBuilder().log()).upQueries,
     ).toEqual([]);
-    expect(await database.query('SELECT * FROM permissions')).toHaveLength(37);
+    expect(await database.query('SELECT * FROM permissions')).toHaveLength(45);
     expect(await database.query('SELECT * FROM role_permissions')).toHaveLength(
-      95,
+      116,
     );
     const rows = await database.query(
       'SELECT tablename FROM pg_tables WHERE schemaname = $1 ORDER BY tablename',
@@ -181,6 +181,7 @@ describeDatabase('World with real PostgreSQL', () => {
     );
     expect(rows.map((r: { tablename: string }) => r.tablename)).toEqual([
       'agent_domain_event_receipts',
+      'agent_work_rejections',
       'audit_logs',
       'character_professions',
       'economy_accounts',
@@ -192,6 +193,7 @@ describeDatabase('World with real PostgreSQL', () => {
       'game_connections',
       'game_servers',
       'migrations',
+      'operator_actions',
       'permissions',
       'player_character_link_challenges',
       'player_characters',
@@ -231,6 +233,7 @@ describeDatabase('World with real PostgreSQL', () => {
       'vip_entitlement_requests',
       'vip_offers',
       'vip_reward_deliveries',
+      'vip_reward_delivery_attempts',
     ]);
   });
   it.each(WORLD_COMMAND_TYPES)(
@@ -506,6 +509,7 @@ describeDatabase('World with real PostgreSQL', () => {
         .expect(404);
   });
   it('reverses only the four permissions and nine grants and reapplies cleanly', async () => {
+    await database.undoLastMigration(); // Etapa 12.4 Operational Recovery
     await database.undoLastMigration(); // Etapa 11.4 Agent Domain Events
     await database.undoLastMigration(); // Etapa 11.3 Server Control Transport
     await database.undoLastMigration(); // Etapa 11.1 Game Agent Transport
@@ -534,7 +538,7 @@ describeDatabase('World with real PostgreSQL', () => {
         "SELECT * FROM permissions WHERE name LIKE 'WORLD_%'",
       ),
     ).toEqual([]);
-    expect(await database.runMigrations()).toHaveLength(19);
+    expect(await database.runMigrations()).toHaveLength(20);
     expect(await database.runMigrations()).toHaveLength(0);
     expect(
       await database.query(

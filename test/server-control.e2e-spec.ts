@@ -94,7 +94,7 @@ describeDatabase('Server Control with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(25);
+    expect(await database.runMigrations()).toHaveLength(26);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -161,10 +161,10 @@ describeDatabase('Server Control with real PostgreSQL', () => {
     expect(
       (await database.driver.createSchemaBuilder().log()).upQueries,
     ).toEqual([]);
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(25);
-    expect(await database.query('SELECT * FROM permissions')).toHaveLength(37);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(26);
+    expect(await database.query('SELECT * FROM permissions')).toHaveLength(45);
     expect(await database.query('SELECT * FROM role_permissions')).toHaveLength(
-      95,
+      116,
     );
     expect(
       await database.query(
@@ -172,9 +172,13 @@ describeDatabase('Server Control with real PostgreSQL', () => {
       ),
     ).toEqual(
       ['COORDINATOR', 'DEV'].flatMap((role_name) =>
-        ['SERVER_PAUSE', 'SERVER_RESTART', 'SERVER_START'].map(
-          (permission_name) => ({ role_name, permission_name }),
-        ),
+        [
+          // 12.4: resolution of UNCERTAIN operations (never a retry).
+          'SERVER_CONTROL_RESOLVE',
+          'SERVER_PAUSE',
+          'SERVER_RESTART',
+          'SERVER_START',
+        ].map((permission_name) => ({ role_name, permission_name })),
       ),
     );
     const rows = await database.query(
@@ -183,6 +187,7 @@ describeDatabase('Server Control with real PostgreSQL', () => {
     );
     expect(rows.map((r: { tablename: string }) => r.tablename)).toEqual([
       'agent_domain_event_receipts',
+      'agent_work_rejections',
       'audit_logs',
       'character_professions',
       'economy_accounts',
@@ -194,6 +199,7 @@ describeDatabase('Server Control with real PostgreSQL', () => {
       'game_connections',
       'game_servers',
       'migrations',
+      'operator_actions',
       'permissions',
       'player_character_link_challenges',
       'player_characters',
@@ -233,6 +239,7 @@ describeDatabase('Server Control with real PostgreSQL', () => {
       'vip_entitlement_requests',
       'vip_offers',
       'vip_reward_deliveries',
+      'vip_reward_delivery_attempts',
     ]);
   });
   it.each(Object.values(R))(
@@ -755,6 +762,8 @@ describeDatabase('Server Control with real PostgreSQL', () => {
         'completedAt',
         'errorCode',
         'errorMessage',
+        'resolution',
+        'resolvedAt',
       ].sort(),
     );
     expect(detail.text).not.toContain(stored.idempotencyKey);
@@ -847,6 +856,7 @@ describeDatabase('Server Control with real PostgreSQL', () => {
     expect(await count()).toBe(0);
   });
   it('reconciles Etapa 09 work in the 11.3 migration, reverts to the old schema and reapplies', async () => {
+    await database.undoLastMigration(); // Etapa 12.4 Operational Recovery
     await database.undoLastMigration(); // Etapa 11.4 Agent Domain Events
     await database.undoLastMigration(); // Etapa 11.3 Server Control Transport
     const staff = staffIds.get(R.DEV)!;
@@ -886,7 +896,7 @@ describeDatabase('Server Control with real PostgreSQL', () => {
           [id],
         )
       )[0];
-    expect(await database.runMigrations()).toHaveLength(2);
+    expect(await database.runMigrations()).toHaveLength(3);
     // Possibly delivered before any result receiver existed: unknown.
     for (const id of [claimed, dispatched]) {
       expect(await state(id)).toEqual({
@@ -904,6 +914,7 @@ describeDatabase('Server Control with real PostgreSQL', () => {
         status: 'FAILED',
         error_code: 'DISPATCH_EXPIRED',
       });
+    await database.undoLastMigration(); // Etapa 12.4 Operational Recovery
     await database.undoLastMigration(); // Etapa 11.4 Agent Domain Events
     await database.undoLastMigration();
     expect(await state(claimed)).toEqual({
@@ -920,13 +931,14 @@ describeDatabase('Server Control with real PostgreSQL', () => {
         [schema],
       ),
     ).toEqual([]);
-    expect(await database.runMigrations()).toHaveLength(2);
+    expect(await database.runMigrations()).toHaveLength(3);
     expect(await database.runMigrations()).toHaveLength(0);
     expect(
       (await database.driver.createSchemaBuilder().log()).upQueries,
     ).toEqual([]);
   });
   it('reverts only the operation table and reapplies cleanly', async () => {
+    await database.undoLastMigration(); // Etapa 12.4 Operational Recovery
     await database.undoLastMigration(); // Etapa 11.4 Agent Domain Events
     await database.undoLastMigration(); // Etapa 11.3 Server Control Transport
     await database.undoLastMigration(); // Etapa 11.1 Game Agent Transport
@@ -954,7 +966,7 @@ describeDatabase('Server Control with real PostgreSQL', () => {
     expect(await database.query('SELECT * FROM role_permissions')).toHaveLength(
       93,
     );
-    expect(await database.runMigrations()).toHaveLength(17);
+    expect(await database.runMigrations()).toHaveLength(18);
     expect(await database.runMigrations()).toHaveLength(0);
     expect(
       (await database.driver.createSchemaBuilder().log()).upQueries,

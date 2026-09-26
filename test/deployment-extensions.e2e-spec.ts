@@ -146,13 +146,13 @@ describeDatabase(
       expect(await installed()).toBe(0);
     });
 
-    it('B + C: the migration runner creates it explicitly, applies the 25 migrations, then the runtime is ready', async () => {
+    it('B + C: the migration runner creates it explicitly, applies the 26 migrations, then the runtime is ready', async () => {
       const logged: string[] = [];
       const applied = await runMigrations(loadEnvironment(), overrides, (m) =>
         logged.push(m),
       );
       expect(logged).toEqual(['Created required extension uuid-ossp']);
-      expect(applied).toHaveLength(25);
+      expect(applied).toHaveLength(26);
       expect(await installed()).toBe(1);
       expect((await schemaStatus(database)).pending).toEqual([]);
       // Idempotent: nothing created or applied the second time.

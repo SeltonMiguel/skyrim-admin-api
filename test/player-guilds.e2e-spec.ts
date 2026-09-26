@@ -212,7 +212,7 @@ describeDatabase('Player guilds with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(25);
+    expect(await database.runMigrations()).toHaveLength(26);
     await database.undoLastMigration();
     expect(await database.runMigrations()).toHaveLength(1);
     expect(await database.runMigrations()).toHaveLength(0);
@@ -266,7 +266,7 @@ describeDatabase('Player guilds with real PostgreSQL', () => {
   it('adds the three guild tables with database-enforced identity invariants', async () => {
     expect(database.options.synchronize).toBe(false);
     expect(await database.showMigrations()).toBe(false);
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(25);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(26);
     const diff = await database.driver.createSchemaBuilder().log();
     expect([diff.upQueries, diff.downQueries]).toEqual([[], []]);
     const other = await servers.register({ code: randomUUID(), name: 'Other' });
@@ -1667,6 +1667,7 @@ describeDatabase('Player guilds with real PostgreSQL', () => {
     }
   });
   it('reverts only the guild tables and reapplies cleanly', async () => {
+    await database.undoLastMigration(); // Etapa 12.4 Operational Recovery
     await database.undoLastMigration(); // Etapa 11.4 Agent Domain Events
     await database.undoLastMigration(); // Etapa 11.3 Server Control Transport
     await database.undoLastMigration(); // Etapa 11.1 Game Agent Transport
@@ -1689,7 +1690,7 @@ describeDatabase('Player guilds with real PostgreSQL', () => {
         [schema],
       ),
     ).toHaveLength(3);
-    expect(await database.runMigrations()).toHaveLength(10);
+    expect(await database.runMigrations()).toHaveLength(11);
     expect(await database.runMigrations()).toHaveLength(0);
     expect(
       (await database.driver.createSchemaBuilder().log()).upQueries,

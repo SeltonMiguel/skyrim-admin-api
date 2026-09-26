@@ -239,7 +239,8 @@ describeDatabase('Player trades with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(25);
+    expect(await database.runMigrations()).toHaveLength(26);
+    await database.undoLastMigration(); // Etapa 12.4 Operational Recovery
     await database.undoLastMigration(); // Etapa 11.4 Agent Domain Events
     await database.undoLastMigration(); // Etapa 11.3 Server Control Transport
     await database.undoLastMigration(); // Etapa 11.1 Game Agent Transport
@@ -254,7 +255,7 @@ describeDatabase('Player trades with real PostgreSQL', () => {
         [schema],
       ),
     ).toEqual([]);
-    expect(await database.runMigrations()).toHaveLength(8);
+    expect(await database.runMigrations()).toHaveLength(9);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -310,7 +311,7 @@ describeDatabase('Player trades with real PostgreSQL', () => {
   it('adds the trade tables and TRADE_ESCROW with database-enforced lifecycle', async () => {
     expect(database.options.synchronize).toBe(false);
     expect(await database.showMigrations()).toBe(false);
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(25);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(26);
     const diff = await database.driver.createSchemaBuilder().log();
     expect([diff.upQueries, diff.downQueries]).toEqual([[], []]);
     const insertTrade = (a: string, b: string) =>
@@ -1300,6 +1301,7 @@ describeDatabase('Player trades with real PostgreSQL', () => {
     await reconciled();
     // No credentials, entitlements, settings, messages or listings here: 11.3, 11.1
     // and 10.17 to 10.14 revert, then 10.13 refuses and is kept.
+    await database.undoLastMigration(); // Etapa 12.4 Operational Recovery
     await database.undoLastMigration(); // Etapa 11.4 Agent Domain Events
     await database.undoLastMigration(); // Etapa 11.3 Server Control Transport
     await database.undoLastMigration();
@@ -1310,7 +1312,7 @@ describeDatabase('Player trades with real PostgreSQL', () => {
     await expect(database.undoLastMigration()).rejects.toThrow(
       'player trades exist',
     );
-    expect(await database.runMigrations()).toHaveLength(7);
+    expect(await database.runMigrations()).toHaveLength(8);
     expect(await database.showMigrations()).toBe(false);
   });
 });

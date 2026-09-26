@@ -108,7 +108,7 @@ describeDatabase('Moderation with real PostgreSQL', () => {
       extra: { ...options.extra, options: `-c search_path=${schema},public` },
     });
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(25);
+    expect(await database.runMigrations()).toHaveLength(26);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -171,9 +171,9 @@ describeDatabase('Moderation with real PostgreSQL', () => {
     expect(
       (await database.driver.createSchemaBuilder().log()).upQueries,
     ).toEqual([]);
-    expect(await database.query('SELECT * FROM permissions')).toHaveLength(37);
+    expect(await database.query('SELECT * FROM permissions')).toHaveLength(45);
     expect(await database.query('SELECT * FROM role_permissions')).toHaveLength(
-      95,
+      116,
     );
     const rows = await database.query(
       'SELECT tablename FROM pg_tables WHERE schemaname = $1 ORDER BY tablename',
@@ -181,6 +181,7 @@ describeDatabase('Moderation with real PostgreSQL', () => {
     );
     expect(rows.map((r: { tablename: string }) => r.tablename)).toEqual([
       'agent_domain_event_receipts',
+      'agent_work_rejections',
       'audit_logs',
       'character_professions',
       'economy_accounts',
@@ -192,6 +193,7 @@ describeDatabase('Moderation with real PostgreSQL', () => {
       'game_connections',
       'game_servers',
       'migrations',
+      'operator_actions',
       'permissions',
       'player_character_link_challenges',
       'player_characters',
@@ -231,6 +233,7 @@ describeDatabase('Moderation with real PostgreSQL', () => {
       'vip_entitlement_requests',
       'vip_offers',
       'vip_reward_deliveries',
+      'vip_reward_delivery_attempts',
     ]);
   });
   it.each(MODERATION_COMMAND_TYPES)(

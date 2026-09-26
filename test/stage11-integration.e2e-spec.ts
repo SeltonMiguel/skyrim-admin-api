@@ -284,7 +284,7 @@ describeDatabase(
       await admin.initialize();
       await admin.query(`CREATE SCHEMA "${schema}"`);
       await boot();
-      expect(await database.runMigrations()).toHaveLength(25);
+      expect(await database.runMigrations()).toHaveLength(26);
       const hash = await new PasswordService().hash(password);
       for (const role of ROLES) {
         const [row] = await database.query(
@@ -1303,12 +1303,12 @@ describeDatabase(
       await staff('audit').expect(200);
     });
 
-    it('keeps all 25 migrations applied and the schema aligned without synchronization', async () => {
+    it('keeps all 26 migrations applied and the schema aligned without synchronization', async () => {
       expect(await database.showMigrations()).toBe(false);
       expect(
         (await database.query('SELECT count(*)::int AS n FROM migrations'))[0]
           .n,
-      ).toBe(25);
+      ).toBe(26);
       expect(database.options.synchronize).toBe(false);
       const sql = await database.driver.createSchemaBuilder().log();
       expect(sql.upQueries).toEqual([]);

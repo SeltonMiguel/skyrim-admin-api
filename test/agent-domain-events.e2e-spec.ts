@@ -201,7 +201,7 @@ describeDatabase(
         extra: { ...options.extra, options: `-c search_path=${schema},public` },
       });
       await database.initialize();
-      expect(await database.runMigrations()).toHaveLength(25);
+      expect(await database.runMigrations()).toHaveLength(26);
       const { AppModule } = await import('../src/app.module.js');
       const module = await Test.createTestingModule({ imports: [AppModule] })
         .overrideProvider(DataSource)
@@ -1250,6 +1250,7 @@ describeDatabase(
       expect(
         (await database.driver.createSchemaBuilder().log()).upQueries,
       ).toEqual([]);
+      await database.undoLastMigration(); // Etapa 12.4 Operational Recovery
       // Earlier tests left a PENDING release: a held item is never forgotten.
       await expect(database.undoLastMigration()).rejects.toThrow(
         'Pending marketplace item releases or VIP reward deliveries exist',
@@ -1280,7 +1281,7 @@ describeDatabase(
         "UPDATE player_marketplace_listings SET status = 'CANCELLED', custody_event_id = 'legacy-custody', cancelled_at = now() WHERE id = $1",
         [listed.listingId],
       );
-      expect(await database.runMigrations()).toHaveLength(1);
+      expect(await database.runMigrations()).toHaveLength(2);
       expect(await database.runMigrations()).toHaveLength(0);
       expect(
         await one(
@@ -1293,7 +1294,7 @@ describeDatabase(
         reason: 'CANCELLED',
         status: 'PENDING',
       });
-      expect(await database.query('SELECT * FROM migrations')).toHaveLength(25);
+      expect(await database.query('SELECT * FROM migrations')).toHaveLength(26);
       expect(await database.showMigrations()).toBe(false);
       expect(
         (await database.driver.createSchemaBuilder().log()).upQueries,

@@ -26,6 +26,7 @@ const generous: Record<string, string> = {
   AGENT_MAX_CONCURRENT_AUTH: '64',
   PLAYER_CHARACTER_QUERY_RATE_LIMIT_PER_MINUTE: '10000',
   PLAYER_MARKET_MUTATION_RATE_LIMIT_PER_MINUTE: '10000',
+  OPERATIONS_ACTION_RATE_LIMIT_PER_MINUTE: '1000',
 };
 for (const [name, value] of Object.entries(generous))
   process.env[name] ??= value;

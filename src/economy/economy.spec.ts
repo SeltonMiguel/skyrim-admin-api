@@ -166,11 +166,13 @@ describe('Economy ledger validation', () => {
       'BURN',
       'TRADE_ESCROW',
       'MARKET_ESCROW',
+      'ADJUSTMENT',
     ]);
     expect(Object.values(T)).toEqual([
       'SYSTEM_CREDIT',
       'SYSTEM_DEBIT',
       'TRANSFER',
+      'STAFF_ADJUSTMENT',
     ]);
   });
 });

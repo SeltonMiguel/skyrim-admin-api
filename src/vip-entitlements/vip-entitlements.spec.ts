@@ -189,7 +189,7 @@ describe('VIP entitlement boundaries', () => {
   it('reaches the game only through typed GameCommands of the delivery, and processes no payment', () => {
     for (const [file, source] of sources) {
       const delivery =
-        /vip-delivery\.|vip-reward-delivery\.entity|vip-entitlements\.module/.test(
+        /vip-delivery\.|vip-reward-delivery(-attempt)?\.entity|vip-entitlements\.module/.test(
           file,
         );
       for (const [, module] of source.matchAll(/from '([^']+)'/g)) {

@@ -192,7 +192,7 @@ describeDatabase('Host Agent transport with real PostgreSQL', () => {
     await admin.query(`CREATE SCHEMA "${schema}"`);
     database = await schemaSource(options);
     await database.initialize();
-    expect(await database.runMigrations()).toHaveLength(25);
+    expect(await database.runMigrations()).toHaveLength(26);
     expect(await database.runMigrations()).toHaveLength(0);
     ({ created: app, url } = await bootApp(database));
     registry = app.get(AgentSessionRegistry);
@@ -240,10 +240,10 @@ describeDatabase('Host Agent transport with real PostgreSQL', () => {
     expect(
       (await database.driver.createSchemaBuilder().log()).upQueries,
     ).toEqual([]);
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(25);
-    expect(await database.query('SELECT * FROM permissions')).toHaveLength(37);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(26);
+    expect(await database.query('SELECT * FROM permissions')).toHaveLength(45);
     expect(await database.query('SELECT * FROM role_permissions')).toHaveLength(
-      95,
+      116,
     );
     expect(
       await database.query(
@@ -256,6 +256,7 @@ describeDatabase('Host Agent transport with real PostgreSQL', () => {
         [schema],
       );
     expect(await columns()).toHaveLength(4);
+    await database.undoLastMigration(); // Etapa 12.4 Operational Recovery
     await database.undoLastMigration(); // Etapa 11.4 Agent Domain Events
     await database.undoLastMigration(); // Etapa 11.3 Server Control Transport
     await database.undoLastMigration();
@@ -270,7 +271,7 @@ describeDatabase('Host Agent transport with real PostgreSQL', () => {
     expect(await database.query('SELECT * FROM role_permissions')).toHaveLength(
       93,
     );
-    expect(await database.runMigrations()).toHaveLength(3);
+    expect(await database.runMigrations()).toHaveLength(4);
     expect(await database.runMigrations()).toHaveLength(0);
     expect(
       (await database.driver.createSchemaBuilder().log()).upQueries,
@@ -1040,14 +1041,15 @@ describeDatabase('Host Agent transport with real PostgreSQL', () => {
   });
 
   it('refuses to revert while credentials exist', async () => {
+    await database.undoLastMigration(); // Etapa 12.4 Operational Recovery
     await database.undoLastMigration(); // Etapa 11.4 Agent Domain Events
     await database.undoLastMigration(); // Etapa 11.3 Server Control Transport
     await expect(database.undoLastMigration()).rejects.toThrow(
       'Game Agent credentials exist',
     );
     expect(await database.query('SELECT * FROM migrations')).toHaveLength(23);
-    expect(await database.runMigrations()).toHaveLength(2);
+    expect(await database.runMigrations()).toHaveLength(3);
     expect(await database.showMigrations()).toBe(false);
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(25);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(26);
   });
 });

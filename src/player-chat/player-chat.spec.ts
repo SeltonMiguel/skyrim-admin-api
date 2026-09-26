@@ -34,9 +34,10 @@ describe('Chat contracts', () => {
     expect(MAX_CHAT_MESSAGE_LENGTH).toBe(500);
     expect(CHAT_PAGE_DEFAULT_LIMIT).toBe(50);
     expect(REALTIME_EVENT_TYPES).toContain('CHAT_MESSAGE_CREATED');
+    // Sending is never audited; only the Staff hide (12.4) is.
     expect(
       Object.values(AuditAction).filter((a) => a.includes('CHAT_MESSAGE')),
-    ).toEqual([]);
+    ).toEqual(['PLAYER_CHAT_MESSAGE_HIDDEN']);
   });
   it('accepts trimmed plain text counted in code points', () => {
     expect(chatMessage('  hello, world!  ')).toBe('hello, world!');

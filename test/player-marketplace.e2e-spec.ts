@@ -314,7 +314,8 @@ describeDatabase('Player marketplace with real PostgreSQL', () => {
     });
     await database.initialize();
     // Apply, revert (empty marketplace) and reapply the 10.14 migration.
-    expect(await database.runMigrations()).toHaveLength(25);
+    expect(await database.runMigrations()).toHaveLength(26);
+    await database.undoLastMigration(); // Etapa 12.4 Operational Recovery
     await database.undoLastMigration(); // Etapa 11.4 Agent Domain Events
     await database.undoLastMigration(); // Etapa 11.3 Server Control Transport
     await database.undoLastMigration(); // Etapa 11.1 Game Agent Transport
@@ -328,7 +329,7 @@ describeDatabase('Player marketplace with real PostgreSQL', () => {
         [schema],
       ),
     ).toEqual([]);
-    expect(await database.runMigrations()).toHaveLength(7);
+    expect(await database.runMigrations()).toHaveLength(8);
     expect(await database.runMigrations()).toHaveLength(0);
     const { AppModule } = await import('../src/app.module.js');
     const module = await Test.createTestingModule({ imports: [AppModule] })
@@ -386,7 +387,7 @@ describeDatabase('Player marketplace with real PostgreSQL', () => {
   it('adds the marketplace tables and MARKET_ESCROW with a database-enforced lifecycle', async () => {
     expect(database.options.synchronize).toBe(false);
     expect(await database.showMigrations()).toBe(false);
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(25);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(26);
     const diff = await database.driver.createSchemaBuilder().log();
     expect([diff.upQueries, diff.downQueries]).toEqual([[], []]);
     const insert = (quantity: number, price: number) =>
@@ -1669,8 +1670,9 @@ describeDatabase('Player marketplace with real PostgreSQL', () => {
     expect(props('ListingDto')).toEqual(LISTING_KEYS);
     expect(props('OwnListingDto')).toEqual(OWN_LISTING_KEYS);
     expect(props('PurchaseDto')).toEqual(PURCHASE_KEYS);
-    const paths = Object.keys(docs.paths).filter((p) =>
-      p.includes('marketplace'),
+    // Player routes; Staff recovery (12.4) lives under /operations.
+    const paths = Object.keys(docs.paths).filter(
+      (p) => p.includes('marketplace') && !p.startsWith('/api/v1/operations/'),
     );
     expect(paths.sort()).toEqual([
       '/api/v1/player/marketplace/listings',
@@ -1847,6 +1849,7 @@ describeDatabase('Player marketplace with real PostgreSQL', () => {
   });
   it('refuses to revert while marketplace listings exist', async () => {
     await reconciled();
+    await database.undoLastMigration(); // Etapa 12.4 Operational Recovery
     // Cancelled ACTIVE listings left items to return: 11.4 refuses to
     // forget them until the Agent reports the releases.
     await expect(database.undoLastMigration()).rejects.toThrow(
@@ -1866,8 +1869,8 @@ describeDatabase('Player marketplace with real PostgreSQL', () => {
     await expect(database.undoLastMigration()).rejects.toThrow(
       'marketplace listings exist',
     );
-    expect(await database.runMigrations()).toHaveLength(6);
+    expect(await database.runMigrations()).toHaveLength(7);
     expect(await database.showMigrations()).toBe(false);
-    expect(await database.query('SELECT * FROM migrations')).toHaveLength(25);
+    expect(await database.query('SELECT * FROM migrations')).toHaveLength(26);
   });
 });

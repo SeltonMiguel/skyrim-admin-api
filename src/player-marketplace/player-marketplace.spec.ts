@@ -79,6 +79,9 @@ describe('Marketplace contracts', () => {
       'PLAYER_MARKETPLACE_PURCHASE_FAILED',
       'PLAYER_MARKETPLACE_ITEM_RELEASED',
       'PLAYER_MARKETPLACE_ITEM_RELEASE_FAILED',
+      // 12.4 operator recovery of a FAILED release.
+      'PLAYER_MARKETPLACE_RELEASE_ACKNOWLEDGED',
+      'PLAYER_MARKETPLACE_RELEASE_RESOLVED',
     ]);
   });
 });

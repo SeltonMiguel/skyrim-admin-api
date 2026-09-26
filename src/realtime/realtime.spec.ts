@@ -86,11 +86,12 @@ describe('Realtime event bus', () => {
       { playerIds: ['p'], staffPermission: null },
     ]);
   });
-  it('declares exactly three Staff wake-ups', () => {
+  it('declares exactly four Staff wake-ups', () => {
     expect(REALTIME_EVENT_TYPES.filter((t) => t.startsWith('STAFF_'))).toEqual([
       'STAFF_GAME_SERVER_UPDATED',
       'STAFF_GAME_OPERATION_UPDATED',
       'STAFF_SERVER_CONTROL_UPDATED',
+      'STAFF_OPERATIONS_UPDATED',
     ]);
   });
 });
