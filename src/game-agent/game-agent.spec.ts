@@ -573,11 +573,40 @@ describe('Host Agent gateway: HELLO commit vs registry visibility', () => {
       expect(registry.getSession(serverId)?.connectionId).toBe(committed.id);
       return { ws, connectionId: committed.id };
     };
-    return { registry, auth, connections, connect, row, established };
+    return { registry, auth, connections, connect, row, established, gateway };
   };
   const authenticatedFrames = (ws: FakeAgentSocket) =>
     ws.sent.filter((m) => m.type === 'AUTHENTICATED');
 
+  it('drains the heartbeat sweep on shutdown and closes sessions as SHUTDOWN afterwards (12.2)', async () => {
+    const { gateway, connections, established } = setup();
+    const { ws } = await established();
+    const sweep = deferred<number>();
+    const expire = jest
+      .spyOn(gateway, 'expire')
+      .mockReturnValueOnce(sweep.promise);
+    void (gateway as unknown as { sweepOnce(): Promise<void> }).sweepOnce();
+    let drained = false;
+    const destroying = gateway.onModuleDestroy().then(() => {
+      drained = true;
+    });
+    await flush();
+    expect(drained).toBe(false);
+    sweep.resolve(0);
+    await destroying;
+    expect(drained).toBe(true);
+    // No new sweep once stopping.
+    await (gateway as unknown as { sweepOnce(): Promise<void> }).sweepOnce();
+    expect(expire).toHaveBeenCalledTimes(1);
+    // Phase 2 persists SHUTDOWN (not STALE) and closes with 1001.
+    await gateway.beforeApplicationShutdown();
+    expect(connections.end).toHaveBeenCalledWith(
+      serverId,
+      expect.any(String),
+      'SHUTDOWN',
+    );
+    expect(ws.closes).toContainEqual({ code: 1001, reason: 'SHUTDOWN' });
+  });
   it('refuses HELLO verification beyond the concurrent cap with AUTH_BUSY (12.1)', async () => {
     const { auth, connect, row } = setup();
     const running = Array.from({ length: 8 }, () => deferred<never>());

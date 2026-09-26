@@ -9,6 +9,8 @@ const example: Record<string, string> = {
   JWT_REFRESH_SECRET: randomBytes(48).toString('hex'),
   PLAYER_JWT_ACCESS_SECRET: randomBytes(48).toString('hex'),
   PLAYER_JWT_REFRESH_SECRET: randomBytes(48).toString('hex'),
+  // Production requires an explicit database TLS decision (12.2).
+  DB_SSL_MODE: 'disable',
 };
 
 describe('Environment validation', () => {
@@ -520,5 +522,91 @@ describe('Security environment (12.1)', () => {
       expect(() =>
         validateEnvironment({ ...example, CORS_ORIGINS: value }),
       ).toThrow('CORS_ORIGINS');
+  });
+});
+
+describe('Deployment and database environment (12.2)', () => {
+  it('defaults to one replica, a lock only in production and bounded pools', () => {
+    const dev = validateEnvironment(example);
+    expect(dev.deployment).toEqual({
+      topology: 'SINGLE',
+      singleInstanceLock: false,
+      shutdownTimeoutMs: 8000,
+    });
+    expect(dev.database).toMatchObject({
+      ssl: { mode: 'disable' },
+      poolMax: 10,
+      poolIdleTimeoutMs: 30000,
+      connectTimeoutMs: 5000,
+      queryTimeoutMs: 5000,
+      statementTimeoutMs: 10000,
+      migration: { statementTimeoutMs: 600000, lockTimeoutMs: 10000 },
+    });
+    const production = validateEnvironment({
+      ...example,
+      NODE_ENV: 'production',
+    });
+    expect(production.deployment.singleInstanceLock).toBe(true);
+  });
+  it('refuses MULTI topology, a disabled lock or an implicit TLS mode in production', () => {
+    expect(() =>
+      validateEnvironment({ ...example, BACKEND_TOPOLOGY: 'MULTI' }),
+    ).toThrow('only SINGLE is supported before Stage 12.5');
+    expect(() =>
+      validateEnvironment({
+        ...example,
+        NODE_ENV: 'production',
+        SINGLE_INSTANCE_LOCK_ENABLED: 'false',
+      }),
+    ).toThrow('SINGLE_INSTANCE_LOCK_ENABLED');
+    expect(() =>
+      validateEnvironment({
+        ...example,
+        NODE_ENV: 'production',
+        DB_SSL_MODE: undefined,
+      }),
+    ).toThrow('DB_SSL_MODE');
+    expect(
+      validateEnvironment({ ...example, SINGLE_INSTANCE_LOCK_ENABLED: 'true' })
+        .deployment.singleInstanceLock,
+    ).toBe(true);
+  });
+  it('validates TLS modes, the CA file and timeout relations without printing values', () => {
+    for (const mode of ['disable', 'require', 'verify-full'])
+      expect(
+        validateEnvironment({ ...example, DB_SSL_MODE: mode }).database.ssl
+          .mode,
+      ).toBe(mode);
+    expect(() =>
+      validateEnvironment({ ...example, DB_SSL_MODE: 'allow' }),
+    ).toThrow('DB_SSL_MODE');
+    expect(() =>
+      validateEnvironment({
+        ...example,
+        DB_SSL_MODE: 'require',
+        DB_SSL_CA_FILE: '.env.example',
+      }),
+    ).toThrow('DB_SSL_CA_FILE');
+    expect(() =>
+      validateEnvironment({
+        ...example,
+        DB_SSL_MODE: 'verify-full',
+        DB_SSL_CA_FILE: '/nonexistent/secret-ca.pem',
+      }),
+    ).toThrow(/^Invalid environment variables: DB_SSL_CA_FILE$/);
+    expect(
+      validateEnvironment({
+        ...example,
+        DB_SSL_MODE: 'verify-full',
+        DB_SSL_CA_FILE: '.env.example',
+      }).database.ssl.ca,
+    ).toContain('DB_HOST');
+    expect(() =>
+      validateEnvironment({
+        ...example,
+        DB_QUERY_TIMEOUT_MS: '20000',
+        DB_STATEMENT_TIMEOUT_MS: '10000',
+      }),
+    ).toThrow('DB_QUERY_TIMEOUT_MS');
   });
 });
