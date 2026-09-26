@@ -14,9 +14,19 @@ type Socket = Pick<
   'readyState' | 'OPEN' | 'bufferedAmount' | 'send' | 'terminate'
 >;
 // Best effort, never throws: a closed socket is skipped, a slow one dropped.
-export function sendFrame(socket: Socket, frame: string): boolean {
+// Metrics hook (12.3): slow-client drops and failed writes.
+export interface SendObserver {
+  dropped(): void;
+  failed(): void;
+}
+export function sendFrame(
+  socket: Socket,
+  frame: string,
+  observer?: SendObserver,
+): boolean {
   if (socket.readyState !== socket.OPEN) return false;
   if (socket.bufferedAmount > MAX_REALTIME_BUFFERED_BYTES) {
+    observer?.dropped();
     socket.terminate();
     return false;
   }
@@ -24,6 +34,7 @@ export function sendFrame(socket: Socket, frame: string): boolean {
     socket.send(frame);
     return true;
   } catch {
+    observer?.failed();
     return false;
   }
 }
@@ -35,6 +46,7 @@ export function sendFrame(socket: Socket, frame: string): boolean {
 @Injectable()
 export class RealtimeConnectionRegistry {
   private readonly sockets = new Map<string, Set<WebSocket>>();
+  observer?: SendObserver;
   private readonly sessions = new Map<string, Set<WebSocket>>();
   private readonly owners = new Map<
     WebSocket,
@@ -94,7 +106,8 @@ export class RealtimeConnectionRegistry {
     return total;
   }
   send(key: string, frame: string): void {
-    for (const socket of this.sockets.get(key) ?? []) sendFrame(socket, frame);
+    for (const socket of this.sockets.get(key) ?? [])
+      sendFrame(socket, frame, this.observer);
   }
   all(): WebSocket[] {
     return [...this.sockets.values()].flatMap((set) => [...set]);

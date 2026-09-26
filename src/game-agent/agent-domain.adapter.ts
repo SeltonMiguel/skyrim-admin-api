@@ -1,4 +1,5 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
+import { Metrics } from '../observability/metrics.js';
 import { BridgeClock } from '../game-bridge/bridge-clock.js';
 import {
   AgentProtocolError,
@@ -27,6 +28,7 @@ export class AgentDomainEventAdapter {
     private readonly events: AgentDomainEventService,
     private readonly work: AgentWorkService,
     private readonly clock: BridgeClock,
+    @Optional() private readonly metrics?: Metrics,
   ) {}
   async event(
     session: AgentSessionSnapshot,
@@ -36,14 +38,18 @@ export class AgentDomainEventAdapter {
     try {
       event = domainEventPayload(envelope.payload);
     } catch (error) {
+      this.metrics?.domainEvents.inc({ kind: 'unknown', outcome: 'invalid' });
       return this.invalid(session, envelope, error, 'domain event');
     }
+    const count = (outcome: string) =>
+      this.metrics?.domainEvents.inc({ kind: event.kind, outcome });
     const workId = 'workId' in event.data ? ` workId=${event.data.workId}` : '';
     const ids = `eventId=${event.eventId} kind=${event.kind} gameServerId=${session.gameServerId} connectionId=${session.connectionId}${workId}`;
     try {
       const outcome = await this.events.handle(session.gameServerId, event);
       switch (outcome.type) {
         case 'ACK':
+          count(outcome.duplicate ? 'duplicate' : 'applied');
           this.logger.log(
             `Agent domain event ${outcome.duplicate ? 'duplicate' : 'applied'} [${ids}]`,
           );
@@ -61,6 +67,7 @@ export class AgentDomainEventAdapter {
             ),
           };
         case 'REJECTED':
+          count(outcome.retryable ? 'rejected_retryable' : 'rejected');
           this.logger.warn(
             `Agent domain event rejected by the domain [${ids} reason=${outcome.reason} duplicate=${outcome.duplicate}]`,
           );
@@ -70,17 +77,20 @@ export class AgentDomainEventAdapter {
             reason: outcome.reason,
           });
         case 'CONFLICT':
+          count('conflict');
           this.logger.warn(`Agent domain event conflict [${ids}]`);
           return this.error(session, envelope, 'EVENT_CONFLICT', {
             eventId: event.eventId,
           });
         case 'SERVER_MISMATCH':
+          count('server_mismatch');
           this.logger.warn(
             `Agent domain event for another server's work rejected [${ids}]`,
           );
           return { close: 'SERVER_MISMATCH' };
       }
     } catch {
+      count('unavailable');
       this.logger.error(`Agent domain event not processed [${ids}]`);
       return this.error(session, envelope, 'TEMPORARILY_UNAVAILABLE', {
         retryable: true,
@@ -96,12 +106,17 @@ export class AgentDomainEventAdapter {
     try {
       request = workSyncPayload(envelope.payload);
     } catch (error) {
+      this.metrics?.workSyncs.inc({ outcome: 'invalid' });
       return this.invalid(session, envelope, error, 'work sync');
     }
     let page;
     try {
       page = await this.work.page(session.gameServerId, request);
     } catch (error) {
+      this.metrics?.workSyncs.inc({
+        outcome:
+          error instanceof AgentProtocolError ? 'invalid' : 'unavailable',
+      });
       if (error instanceof AgentProtocolError)
         return this.invalid(session, envelope, error, 'work sync cursor');
       this.logger.error(
@@ -111,6 +126,7 @@ export class AgentDomainEventAdapter {
         retryable: true,
       });
     }
+    this.metrics?.workSyncs.inc({ outcome: 'ok' });
     this.logger.log(
       `Agent work sync [gameServerId=${session.gameServerId} connectionId=${session.connectionId} kind=${request.kind ?? 'ALL'} count=${page.items.length} more=${page.nextCursor !== null}]`,
     );

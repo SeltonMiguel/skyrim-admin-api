@@ -32,10 +32,12 @@ import { AppConfigModule } from './config/app-config.module.js';
 import { DatabaseModule } from './database/database.module.js';
 import { HealthModule } from './health/health.module.js';
 import { LifecycleModule } from './lifecycle/lifecycle.module.js';
+import { ObservabilityModule } from './observability/observability.module.js';
 
 @Module({
   imports: [
     LifecycleModule,
+    ObservabilityModule,
     AppConfigModule,
     CommonModule,
     DatabaseModule,

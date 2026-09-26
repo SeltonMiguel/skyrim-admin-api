@@ -4,11 +4,14 @@ import type { Logger } from 'typeorm';
 // Never log SQL, parameters, driver errors or entities: these can contain secrets.
 export class SafeDatabaseLogger implements Logger {
   private readonly logger = new NestLogger('Database');
+  // Metrics hook (12.3): counts failures, never sees SQL or parameters.
+  onQueryError?: () => void;
   constructor(private readonly enabled: boolean) {}
   logQuery(): void {
     if (this.enabled) this.logger.debug('Database query');
   }
   logQueryError(): void {
+    this.onQueryError?.();
     this.logger.error('Database query failed');
   }
   logQuerySlow(time: number): void {

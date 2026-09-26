@@ -1,4 +1,5 @@
-import { ConflictException, Injectable } from '@nestjs/common';
+import { ConflictException, Injectable, Optional } from '@nestjs/common';
+import { Metrics } from '../observability/metrics.js';
 import { randomUUID } from 'node:crypto';
 import { DataSource, EntityManager } from 'typeorm';
 import { RequestContext } from '../common/request-context/request-context.service.js';
@@ -54,6 +55,7 @@ export class GameCommandBus {
     private readonly servers: GameServerService,
     private readonly context: RequestContext,
     private readonly clock: BridgeClock,
+    @Optional() private readonly metrics?: Metrics,
   ) {}
   async submit(input: SubmitCommand): Promise<GameCommand> {
     // Snapshot before transaction acquisition; never retain caller-owned payload.
@@ -116,6 +118,14 @@ export class GameCommandBus {
     const command = await repository.findOneByOrFail(scoped);
     if (!sameCommand(command, type, payload))
       throw new ConflictException('Idempotency key conflicts with command');
-    return { command, created: command.id === id };
+    const created = command.id === id;
+    // Counted at insert, inside the caller's transaction: a later rollback
+    // of that transaction (e.g. Audit unavailable) may over-count by one.
+    if (created)
+      this.metrics?.commandsCreated.inc({
+        command_type: command.type,
+        actor_type: command.actorType,
+      });
+    return { command, created };
   }
 }

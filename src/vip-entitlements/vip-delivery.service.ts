@@ -1,9 +1,11 @@
 import {
   Injectable,
+  Optional,
   Logger,
   OnApplicationBootstrap,
   OnModuleDestroy,
 } from '@nestjs/common';
+import { Metrics } from '../observability/metrics.js';
 import { TickDrain } from '../lifecycle/tick-drain.js';
 import { ConfigService } from '@nestjs/config';
 import { DataSource } from 'typeorm';
@@ -52,7 +54,7 @@ export class VipDeliveryService
   private readonly intervalMs: number;
   private timer?: ReturnType<typeof setInterval>;
   private running = false;
-  private readonly drain = new TickDrain();
+  private readonly drain: TickDrain;
   private stopped = false;
   private readonly held = new Set<string>();
   constructor(
@@ -60,7 +62,9 @@ export class VipDeliveryService
     private readonly bus: GameCommandBus,
     private readonly sessions: AgentSessionRegistry,
     config: ConfigService<{ application: ApplicationConfig }, true>,
+    @Optional() metrics?: Metrics,
   ) {
+    this.drain = new TickDrain(metrics?.worker('vip_delivery'));
     this.intervalMs = config.get('application', {
       infer: true,
     }).vipDelivery.workerIntervalMs;
@@ -76,6 +80,7 @@ export class VipDeliveryService
     await this.drain.wait();
   }
   async tick(): Promise<void> {
+    if (this.running) this.drain.skip();
     if (this.running || this.stopped) return;
     this.running = true;
     this.drain.begin();
@@ -91,6 +96,7 @@ export class VipDeliveryService
         .getMany();
       for (const { id } of pending) await this.advanceSafely(id);
     } catch {
+      this.drain.fail();
       this.logger.error('VIP delivery tick failed');
     } finally {
       this.running = false;

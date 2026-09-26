@@ -5,6 +5,7 @@ import {
   OnApplicationBootstrap,
   OnModuleDestroy,
   OnModuleInit,
+  Optional,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { IncomingMessage } from 'node:http';
@@ -26,6 +27,7 @@ import { ConcurrencyLimiter } from '../common/rate-limit/concurrency-limiter.js'
 import { RateLimiter } from '../common/rate-limit/rate-limiter.js';
 import { SecurityLog } from '../common/security/security-log.js';
 import { TickDrain } from '../lifecycle/tick-drain.js';
+import { Metrics } from '../observability/metrics.js';
 import { AgentAuthError, AgentAuthService } from './agent-auth.service.js';
 import { AgentMessageRouter } from './agent-message.router.js';
 import {
@@ -68,7 +70,7 @@ export class AgentGateway
   private pending = 0;
   private wss?: WebSocketServer;
   private sweep?: ReturnType<typeof setInterval>;
-  private readonly sweeping = new TickDrain();
+  private readonly sweeping: TickDrain;
   private stopping = false;
   // Per-server promotion chains (in memory; single instance, Etapa 12).
   private readonly promotions = new Map<string, Promise<void>>();
@@ -85,10 +87,15 @@ export class AgentGateway
     private readonly limiter: RateLimiter,
     private readonly concurrency: ConcurrencyLimiter,
     private readonly security: SecurityLog,
+    @Optional() private readonly metrics?: Metrics,
   ) {
     const application = config.get('application', { infer: true });
     this.config = application.agent;
     this.limits = application.security.agent;
+    this.sweeping = new TickDrain(metrics?.worker('heartbeat_sweep'));
+    metrics?.onCollect(() =>
+      metrics.agentSessions.set(this.sessions.activeSessions().length),
+    );
   }
   onModuleInit(): void {
     // ws closes frames above the limit with 1009 before any JSON parse.
@@ -131,6 +138,7 @@ export class AgentGateway
     try {
       await this.expire();
     } catch {
+      this.sweeping.fail();
       this.logger.error('Agent heartbeat sweep failed');
     } finally {
       this.sweeping.end();
@@ -169,6 +177,7 @@ export class AgentGateway
         session.connectionId,
         'HEARTBEAT_TIMEOUT',
       );
+      this.metrics?.agentCloses.inc({ reason: 'HEARTBEAT_TIMEOUT' });
     }
     return expired.length;
   }
@@ -189,6 +198,7 @@ export class AgentGateway
     });
     if (!failures.allowed) {
       this.security.warn('agent_hello_blocked', { ip, reason: 'failures' });
+      this.metrics?.agentAdmissionRejects.inc({ reason: 'auth_failures' });
       return rejectUpgrade(socket, 429, failures.retryAfterSeconds);
     }
     const attempt = this.limiter.consume('agent-connect', ip, {
@@ -197,6 +207,7 @@ export class AgentGateway
     });
     if (!attempt.allowed) {
       this.security.warn('agent_hello_blocked', { ip, reason: 'rate' });
+      this.metrics?.agentAdmissionRejects.inc({ reason: 'rate' });
       return rejectUpgrade(socket, 429, attempt.retryAfterSeconds);
     }
     if (this.pending >= this.limits.maxPendingConnections) {
@@ -204,6 +215,7 @@ export class AgentGateway
         ip,
         pending: this.pending,
       });
+      this.metrics?.agentAdmissionRejects.inc({ reason: 'capacity' });
       return rejectUpgrade(socket, 503, 1);
     }
     this.wss!.handleUpgrade(request, socket, head, (ws) =>
@@ -225,8 +237,9 @@ export class AgentGateway
     let windowStart = 0;
     let windowCount = 0;
     const close = (reason: AgentCloseReason) => {
-      if (ws.readyState === WebSocket.OPEN)
-        ws.close(AgentClose[reason], reason);
+      if (ws.readyState !== WebSocket.OPEN) return;
+      this.metrics?.agentCloses.inc({ reason });
+      ws.close(AgentClose[reason], reason);
     };
     const timeout = setTimeout(() => {
       this.logger.warn('Agent HELLO timeout');
@@ -260,6 +273,7 @@ export class AgentGateway
           ip,
           max: this.limits.maxConcurrentAuth,
         });
+        this.metrics?.agentAdmissionRejects.inc({ reason: 'busy' });
         return close('AUTH_BUSY');
       }
       // A) + B) + C): verified and persisted in one transaction. Nothing is
@@ -273,6 +287,11 @@ export class AgentGateway
           error instanceof AgentAuthError
             ? `Agent authentication rejected [gameServerId=${gameServerId} credentialId=${payload.credentialId} reason=${error.reason}]`
             : `Agent authentication failed [gameServerId=${gameServerId}]`,
+        );
+        this.metrics?.agentAuth.inc(
+          error instanceof AgentAuthError
+            ? { outcome: 'rejected', reason: error.reason }
+            : { outcome: 'failed', reason: 'error' },
         );
         if (error instanceof AgentAuthError)
           this.limiter.consume('agent-auth-failure', ip, {
@@ -307,6 +326,7 @@ export class AgentGateway
       // E) + F) + G): revalidate and promote.
       const outcome = await this.promote(candidate);
       if (outcome !== 'ACTIVE') {
+        this.metrics?.agentAuth.inc({ outcome: 'rejected', reason: outcome });
         this.logger.warn(
           `Agent session not activated [gameServerId=${gameServerId} connectionId=${connection.id} reason=${outcome}]`,
         );
@@ -314,6 +334,7 @@ export class AgentGateway
       }
       state = 'AUTHENTICATED';
       settle();
+      this.metrics?.agentAuth.inc({ outcome: 'success', reason: 'none' });
       // Staff wake-up: connected, or a supersede of the previous session.
       void this.status.changed(gameServerId);
       const now = this.clock.now();
@@ -439,6 +460,7 @@ export class AgentGateway
         );
         // Gone meanwhile: closed by the peer or by a revocation.
         if (!activated) return 'SESSION_CLOSED';
+        if (superseded) this.metrics?.agentCloses.inc({ reason: 'SUPERSEDED' });
         if (superseded)
           this.logger.log(
             `Agent session superseded [gameServerId=${gameServerId} connectionId=${superseded.connectionId} by=${connectionId}]`,
@@ -503,11 +525,15 @@ export class AgentGateway
     reason: DisconnectReason,
   ): Promise<void> {
     try {
-      await this.connections.end(
-        session.gameServerId,
-        session.connectionId,
-        reason,
-      );
+      // Counted only when this call persisted the end of the session.
+      if (
+        await this.connections.end(
+          session.gameServerId,
+          session.connectionId,
+          reason,
+        )
+      )
+        this.metrics?.agentDisconnects.inc({ reason });
     } catch {
       this.logger.error(
         `Agent session close not persisted [gameServerId=${session.gameServerId} connectionId=${session.connectionId}]`,

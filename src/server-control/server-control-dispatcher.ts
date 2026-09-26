@@ -1,4 +1,5 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
+import { Metrics } from '../observability/metrics.js';
 import { ConfigService } from '@nestjs/config';
 import { DataSource } from 'typeorm';
 import type { ApplicationConfig } from '../config/environment.js';
@@ -53,6 +54,7 @@ export class ServerControlDispatcher {
     private readonly clock: BridgeClock,
     config: ConfigService<{ application: ApplicationConfig }, true>,
     private readonly events: RealtimeEventBus,
+    @Optional() private readonly metrics?: Metrics,
   ) {
     const policy = config.get('application', { infer: true }).serverControl;
     this.pendingTimeoutMs = policy.pendingTimeoutMs;
@@ -93,14 +95,18 @@ export class ServerControlDispatcher {
     errorCode: ServerControlErrorCode,
     completedAt: Date,
   ): void {
-    publishServerControl(this.events, {
-      operationId: operation.id,
-      gameServerId: operation.gameServerId,
-      type: operation.type,
-      status: S.FAILED,
-      errorCode,
-      completedAt,
-    });
+    publishServerControl(
+      this.events,
+      {
+        operationId: operation.id,
+        gameServerId: operation.gameServerId,
+        type: operation.type,
+        status: S.FAILED,
+        errorCode,
+        completedAt,
+      },
+      this.metrics,
+    );
   }
   async dispatch(id: string): Promise<DispatchOutcome> {
     const pending = await this.repository().findOneBy({ id });

@@ -4,7 +4,9 @@ import {
   OnApplicationBootstrap,
   OnModuleInit,
   UnauthorizedException,
+  Optional,
 } from '@nestjs/common';
+import { Metrics } from '../observability/metrics.js';
 import { ConfigService } from '@nestjs/config';
 import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
@@ -90,7 +92,24 @@ export class RealtimeGateway
     private readonly limiter: RateLimiter,
     private readonly security: SecurityLog,
     private readonly sessionControl: RealtimeSessionControl,
+    @Optional() private readonly metrics?: Metrics,
   ) {
+    if (metrics) {
+      registry.observer = {
+        dropped: () => metrics.realtimeSlowDrops.inc(),
+        failed: () => metrics.realtimeDeliveryFailures.inc(),
+      };
+      metrics.onCollect(() => {
+        metrics.realtimeConnections.set(
+          { surface: 'player' },
+          registry.surface('PLAYER').length,
+        );
+        metrics.realtimeConnections.set(
+          { surface: 'staff' },
+          registry.surface('STAFF').length,
+        );
+      });
+    }
     const application = config.get('application', { infer: true });
     this.authTimeoutMs = application.realtime.authTimeoutMs;
     this.limits = application.security.realtime;
@@ -129,8 +148,10 @@ export class RealtimeGateway
       RealtimeClose.SESSION_REVOKED,
       'SESSION_REVOKED',
     );
-    if (closed)
+    if (closed) {
+      this.metrics?.realtimeRejects.inc({ reason: 'session_revoked' }, closed);
       this.security.warn('realtime_session_revoked', { sessionId, closed });
+    }
   }
   private recentlyRevoked(sessionId: string): boolean {
     const at = this.revoked.get(sessionId);
@@ -149,13 +170,18 @@ export class RealtimeGateway
   // permission. Never awaited by the publisher (after its commit).
   private deliver(envelope: RealtimeEnvelope, recipients: RealtimeRecipients) {
     const frame = JSON.stringify(envelope);
+    if (recipients.playerIds.length)
+      this.metrics?.realtimeEvents.inc({ surface: 'player' });
+    else if (recipients.staffPermission)
+      this.metrics?.realtimeEvents.inc({ surface: 'staff' });
     for (const playerId of recipients.playerIds)
       this.registry.send(connectionKey('PLAYER', playerId), frame);
     const permission = recipients.staffPermission;
     if (!permission) return;
     for (const socket of this.registry.surface('STAFF'))
       void this.authorize(socket).then((grants) => {
-        if (grants?.includes(permission)) sendFrame(socket, frame);
+        if (grants?.includes(permission))
+          sendFrame(socket, frame, this.registry.observer);
       });
   }
   // Staff grants are re-read at every delivery through the same service as
@@ -194,6 +220,7 @@ export class RealtimeGateway
     const ip = this.addresses.of(request);
     if (!this.originAllowed(request.headers.origin)) {
       this.security.warn('realtime_origin_refused', { ip });
+      this.metrics?.realtimeRejects.inc({ reason: 'origin' });
       return rejectUpgrade(socket, 403);
     }
     const attempt = this.limiter.consume('realtime-connect', ip, {
@@ -202,6 +229,7 @@ export class RealtimeGateway
     });
     if (!attempt.allowed) {
       this.security.warn('realtime_connect_throttled', { ip });
+      this.metrics?.realtimeRejects.inc({ reason: 'rate' });
       return rejectUpgrade(socket, 429, attempt.retryAfterSeconds);
     }
     if (
@@ -213,6 +241,7 @@ export class RealtimeGateway
         pending: this.pending,
         connected: this.registry.count(),
       });
+      this.metrics?.realtimeRejects.inc({ reason: 'capacity' });
       return rejectUpgrade(socket, 503, 1);
     }
     this.wss!.handleUpgrade(request, socket, head, (ws) => this.connect(ws));
@@ -238,25 +267,28 @@ export class RealtimeGateway
       counted = false;
       this.pending--;
     };
-    const timeout = setTimeout(
-      () => ws.close(RealtimeClose.AUTH_TIMEOUT, 'AUTH_TIMEOUT'),
-      this.authTimeoutMs,
-    );
+    const timeout = setTimeout(() => {
+      this.metrics?.realtimeRejects.inc({ reason: 'auth_timeout' });
+      ws.close(RealtimeClose.AUTH_TIMEOUT, 'AUTH_TIMEOUT');
+    }, this.authTimeoutMs);
     ws.on('message', (raw: RawData, isBinary: boolean) => {
       // Clients only send the AUTH frame; anything else is a protocol error.
       if (state !== 'AUTHENTICATING' || isBinary) {
+        this.metrics?.realtimeRejects.inc({ reason: 'protocol' });
         ws.close(RealtimeClose.PROTOCOL_ERROR, 'PROTOCOL_ERROR');
         return;
       }
       state = 'VERIFYING';
       const frame = parseAuthFrame(raw);
       if (!frame) {
+        this.metrics?.realtimeRejects.inc({ reason: 'protocol' });
         ws.close(RealtimeClose.PROTOCOL_ERROR, 'PROTOCOL_ERROR');
         return;
       }
       void this.identify(frame.surface, frame.token).then((identity) => {
         if (ws.readyState !== WebSocket.OPEN) return;
         if (!identity) {
+          this.metrics?.realtimeRejects.inc({ reason: 'auth_failed' });
           ws.close(RealtimeClose.UNAUTHORIZED, 'UNAUTHORIZED');
           return;
         }
@@ -272,10 +304,12 @@ export class RealtimeGateway
             id: identity.id,
             max: this.limits.maxConnectionsPerIdentity,
           });
+          this.metrics?.realtimeRejects.inc({ reason: 'identity_limit' });
           ws.close(RealtimeClose.CONNECTION_LIMIT, 'CONNECTION_LIMIT');
           return;
         }
         if (identity.sessionId && this.recentlyRevoked(identity.sessionId)) {
+          this.metrics?.realtimeRejects.inc({ reason: 'session_revoked' });
           ws.close(RealtimeClose.SESSION_REVOKED, 'SESSION_REVOKED');
           return;
         }

@@ -50,9 +50,17 @@ export class HttpExceptionFilter implements ExceptionFilter {
               : 'Internal server error';
 
     if (!known && !parser) {
+      // Server log only (redacted by the logger): class and stack, never
+      // the request payload; the client gets the generic 500 below.
       this.logger.error(
-        `Unhandled exception [requestId=${this.context.requestId ?? 'unknown'}]`,
-        exception instanceof Error ? exception.name : 'Unknown error',
+        {
+          message: 'Unhandled exception',
+          event: 'http_unhandled_exception',
+          requestId: this.context.requestId ?? 'unknown',
+          exception:
+            exception instanceof Error ? exception.name : 'Unknown error',
+        },
+        exception instanceof Error ? exception.stack : undefined,
       );
     }
 

@@ -11,6 +11,8 @@ import type { ApplicationConfig } from './config/environment.js';
 import { ClientAddress } from './common/net/client-address.service.js';
 import { requestIdMiddleware } from './common/middleware/request-id.middleware.js';
 import { RequestContext } from './common/request-context/request-context.service.js';
+import { httpObserver } from './observability/http-observer.js';
+import { Metrics } from './observability/metrics.js';
 
 export const SWAGGER_PATH = 'docs';
 // Headers a browser client may send and read (Bearer tokens, no cookies).
@@ -33,6 +35,8 @@ export function setupApp(app: INestApplication): void {
   express.disable('x-powered-by');
   // Register before Nest's body parser so malformed JSON also gets a request ID.
   app.use(requestIdMiddleware(app.get(RequestContext)));
+  // HTTP metrics and one structured log line per request (12.3).
+  app.use(httpObserver(app.get(Metrics)));
   app.use(securityHeaders(config));
   // CORS only for the configured browser origins. Requests without an Origin
   // (Electron main process, Host Agent, server-to-server) are unaffected.

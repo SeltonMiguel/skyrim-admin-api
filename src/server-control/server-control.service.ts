@@ -3,7 +3,9 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
+import { Metrics } from '../observability/metrics.js';
 import { randomUUID } from 'node:crypto';
 import { DataSource, In } from 'typeorm';
 import type { EntityManager } from 'typeorm';
@@ -43,6 +45,7 @@ export class ServerControlService {
     private readonly dispatcher: ServerControlDispatcher,
     private readonly context: RequestContext,
     private readonly clock: BridgeClock,
+    @Optional() private readonly metrics?: Metrics,
   ) {}
   private repository() {
     return this.database.getRepository<ServerControlOperation>(
@@ -133,6 +136,7 @@ export class ServerControlService {
     });
     // After commit, with no transaction open; HTTP replays never re-dispatch.
     if (!created) return serverControlReference(operation);
+    this.metrics?.controlCreated.inc({ type: operation.type });
     await this.dispatcher.dispatchSafely(operation.id);
     return serverControlReference(
       (await this.repository().findOneBy({ id: operation.id })) ?? operation,

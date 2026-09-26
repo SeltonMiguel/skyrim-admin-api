@@ -112,6 +112,16 @@ export interface ApplicationConfig {
     playerLimits: { characterQueries: number; marketMutations: number };
   };
   bootstrap: { username?: string; displayName?: string; password?: string };
+  // Observability (12.3). The metrics token is a secret: never logged.
+  observability: {
+    metricsEnabled: boolean;
+    metricsToken?: string;
+    collectionIntervalMs: number;
+    logFormat: 'json' | 'pretty';
+    logLevel: 'error' | 'warn' | 'log' | 'debug' | 'verbose';
+    version: string;
+    gitSha: string;
+  };
   // Deployment and lifecycle (12.2). Only SINGLE is supported until 12.5.
   deployment: {
     topology: 'SINGLE';
@@ -192,6 +202,13 @@ interface Environment {
   BOOTSTRAP_COORDINATOR_DISPLAY_NAME?: string;
   BOOTSTRAP_COORDINATOR_PASSWORD?: string;
   TRUST_PROXY: string;
+  METRICS_ENABLED?: boolean;
+  METRICS_BEARER_TOKEN?: string;
+  METRICS_COLLECTION_INTERVAL_MS: number;
+  LOG_FORMAT?: 'json' | 'pretty';
+  LOG_LEVEL: 'error' | 'warn' | 'log' | 'debug' | 'verbose';
+  APP_VERSION: string;
+  GIT_SHA: string;
   BACKEND_TOPOLOGY: string;
   SINGLE_INSTANCE_LOCK_ENABLED?: boolean;
   SHUTDOWN_TIMEOUT_MS: number;
@@ -436,6 +453,20 @@ const schema = Joi.object<Environment>({
   // comma-separated list of loopback/linklocal/uniquelocal, IPs and CIDRs.
   TRUST_PROXY: Joi.string().trim().max(1024).default('false'),
   BACKEND_TOPOLOGY: Joi.string().trim().uppercase().default('SINGLE'),
+  METRICS_ENABLED: Joi.boolean(),
+  METRICS_BEARER_TOKEN: Joi.string().min(32).max(512).pattern(/^\S+$/),
+  METRICS_COLLECTION_INTERVAL_MS: count(1000, 300000, 15000),
+  LOG_FORMAT: Joi.string().valid('json', 'pretty'),
+  LOG_LEVEL: Joi.string()
+    .valid('error', 'warn', 'log', 'debug', 'verbose')
+    .default('log'),
+  // Bounded build labels (metrics app_info): never free text.
+  APP_VERSION: Joi.string()
+    .pattern(/^[\w.+-]{1,64}$/)
+    .default('unknown'),
+  GIT_SHA: Joi.string()
+    .pattern(/^([0-9a-f]{7,40}|unknown)$/)
+    .default('unknown'),
   SINGLE_INSTANCE_LOCK_ENABLED: Joi.boolean(),
   SHUTDOWN_TIMEOUT_MS: count(1000, 600000, 8000),
   DB_SSL_MODE: Joi.string().valid('disable', 'require', 'verify-full'),
@@ -542,6 +573,11 @@ export function validateEnvironment(
     throw new Error('Invalid environment variables: TRUST_PROXY');
   }
   const production = value.NODE_ENV === 'production';
+  // Metrics are off in production unless enabled, and then only behind a
+  // bearer token (no public scrape by accident).
+  const metricsEnabled = value.METRICS_ENABLED ?? !production;
+  if (production && metricsEnabled && !value.METRICS_BEARER_TOKEN)
+    throw new Error('Invalid environment variables: METRICS_BEARER_TOKEN');
   // Multi-instance coordination is Stage 12.5: refuse it explicitly.
   if (value.BACKEND_TOPOLOGY !== 'SINGLE')
     throw new Error(
@@ -671,6 +707,17 @@ export function validateEnvironment(
     },
     nodeEnv: value.NODE_ENV,
     port: value.PORT,
+    observability: {
+      metricsEnabled,
+      ...(value.METRICS_BEARER_TOKEN
+        ? { metricsToken: value.METRICS_BEARER_TOKEN }
+        : {}),
+      collectionIntervalMs: value.METRICS_COLLECTION_INTERVAL_MS,
+      logFormat: value.LOG_FORMAT ?? (production ? 'json' : 'pretty'),
+      logLevel: value.LOG_LEVEL,
+      version: value.APP_VERSION,
+      gitSha: value.GIT_SHA,
+    },
     deployment: {
       topology: 'SINGLE',
       singleInstanceLock: value.SINGLE_INSTANCE_LOCK_ENABLED ?? production,

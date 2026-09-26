@@ -1,6 +1,7 @@
 import { Logger } from '@nestjs/common';
 import type { INestApplication } from '@nestjs/common';
 import { LifecycleService } from './lifecycle.service.js';
+import { Metrics } from '../observability/metrics.js';
 
 // Graceful shutdown sequence (12.2):
 //  1. readiness turns false (GET /ready answers 503);
@@ -23,11 +24,19 @@ export function gracefulShutdown(
   onTimeout: () => void = () => process.exit(1),
 ): Promise<boolean> {
   const logger = new Logger('Shutdown');
+  let metrics: Metrics | undefined;
+  try {
+    metrics = app.get(Metrics);
+  } catch {
+    metrics = undefined;
+  }
+  metrics?.shutdown.inc({ phase: 'started' });
   logger.log(`Graceful shutdown started [reason=${reason}]`);
   app.get(LifecycleService).beginShutdown();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<boolean>((resolve) => {
     timer = setTimeout(() => {
+      metrics?.shutdown.inc({ phase: 'timed_out' });
       logger.error(`Graceful shutdown timed out [timeoutMs=${timeoutMs}]`);
       onTimeout();
       resolve(false);
@@ -36,10 +45,12 @@ export function gracefulShutdown(
   });
   const closing = app.close().then(
     () => {
+      metrics?.shutdown.inc({ phase: 'completed' });
       logger.log('Graceful shutdown complete');
       return true;
     },
     () => {
+      metrics?.shutdown.inc({ phase: 'failed' });
       logger.error('Graceful shutdown failed');
       return false;
     },

@@ -1,4 +1,5 @@
 import { RealtimeEventBus } from '../realtime-events/realtime-event-bus.js';
+import type { Metrics } from '../observability/metrics.js';
 import { SERVER_CONTROL_POLICY } from './server-control.contracts.js';
 import type {
   ServerControlErrorCode,
@@ -19,10 +20,20 @@ export interface ServerControlTerminal {
 // which), only to Staff holding the permission its GET requires for that
 // type. The fields of GET /server-control-operations/:id, never the Agent
 // payload, correlation, claim or Idempotency-Key.
+// Every terminal write also feeds the metrics (12.3): all three outcomes
+// stay distinct, and UNCERTAIN has its own counter for alerting.
 export function publishServerControl(
   events: RealtimeEventBus,
   operation: ServerControlTerminal,
+  metrics?: Metrics,
 ): void {
+  metrics?.controlTerminal.inc({
+    type: operation.type,
+    status: operation.status,
+    error_code: operation.errorCode ?? 'none',
+  });
+  if (operation.status === 'UNCERTAIN')
+    metrics?.controlUncertain.inc({ type: operation.type });
   events.publish(
     'STAFF_SERVER_CONTROL_UPDATED',
     {

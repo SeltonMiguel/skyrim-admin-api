@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
+import { Metrics, seconds } from '../observability/metrics.js';
 import { ConfigService } from '@nestjs/config';
 import { DataSource } from 'typeorm';
 import type { ApplicationConfig } from '../config/environment.js';
@@ -32,12 +33,26 @@ export class GameCommandDispatcher {
     private readonly gateway: GameGateway,
     private readonly clock: BridgeClock,
     config: ConfigService<{ application: ApplicationConfig }, true>,
+    @Optional() private readonly metrics?: Metrics,
   ) {
     this.policy = config.get('application', { infer: true }).gameBridge;
   }
   async dispatch(id: string): Promise<GameCommand> {
     const reserved = await this.reserve(id);
     if (!reserved.claim) return reserved.command;
+    // A committed reservation is one dispatch attempt.
+    const { type, dispatchAttempts, createdAt, lastDispatchAt } =
+      reserved.command;
+    this.metrics?.commandDispatches.inc({
+      command_type: type,
+      attempt: dispatchAttempts > 1 ? 'retry' : 'first',
+    });
+    const wait = seconds(createdAt, lastDispatchAt);
+    if (dispatchAttempts === 1 && wait !== null)
+      this.metrics?.commandCreateToDispatch.observe(
+        { command_type: type },
+        wait,
+      );
     // reserve() committed and released its connection/row locks before any I/O.
     const acceptance = await this.send(reserved.claim);
     return this.store.locked(id, async (manager, command) => {

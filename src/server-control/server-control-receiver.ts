@@ -1,4 +1,5 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, Optional } from '@nestjs/common';
+import { Metrics, seconds } from '../observability/metrics.js';
 import { DataSource } from 'typeorm';
 import { BridgeClock } from '../game-bridge/bridge-clock.js';
 import { GameConnectionService } from '../game-bridge/game-connection.service.js';
@@ -51,6 +52,7 @@ export class ServerControlReceiver {
     private readonly connections: GameConnectionService,
     private readonly clock: BridgeClock,
     private readonly events: RealtimeEventBus,
+    @Optional() private readonly metrics?: Metrics,
   ) {}
   async receive(
     input: ServerControlResultInput,
@@ -132,14 +134,24 @@ export class ServerControlReceiver {
     return received;
   }
   private terminal(operation: ServerControlOperation): void {
-    publishServerControl(this.events, {
-      operationId: operation.id,
-      gameServerId: operation.gameServerId,
-      type: operation.type,
-      status: operation.status,
-      errorCode: operation.errorCode,
-      completedAt: operation.completedAt!,
-    });
+    const lifetime = seconds(operation.createdAt, operation.completedAt);
+    if (lifetime !== null)
+      this.metrics?.controlDuration.observe(
+        { type: operation.type, status: operation.status },
+        lifetime,
+      );
+    publishServerControl(
+      this.events,
+      {
+        operationId: operation.id,
+        gameServerId: operation.gameServerId,
+        type: operation.type,
+        status: operation.status,
+        errorCode: operation.errorCode,
+        completedAt: operation.completedAt!,
+      },
+      this.metrics,
+    );
   }
   // Possibly delivered (claimed) and no result by the persistent deadline:
   // UNCERTAIN, never FAILED and never resent. One fenced UPDATE, so a
@@ -167,12 +179,16 @@ export class ServerControlReceiver {
       .execute();
     const operations = expired(result.raw);
     for (const op of operations)
-      publishServerControl(this.events, {
-        ...op,
-        status: S.UNCERTAIN,
-        errorCode: 'RESULT_TIMEOUT',
-        completedAt: now,
-      });
+      publishServerControl(
+        this.events,
+        {
+          ...op,
+          status: S.UNCERTAIN,
+          errorCode: 'RESULT_TIMEOUT',
+          completedAt: now,
+        },
+        this.metrics,
+      );
     return operations;
   }
 }

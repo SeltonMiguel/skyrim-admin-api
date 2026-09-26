@@ -1,4 +1,10 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  Optional,
+} from '@nestjs/common';
+import { Metrics } from '../observability/metrics.js';
 import { BridgeClock } from '../game-bridge/bridge-clock.js';
 import { GameConnectionService } from '../game-bridge/game-connection.service.js';
 import { ServerControlReceiver } from '../server-control/server-control-receiver.js';
@@ -29,6 +35,7 @@ export class AgentServerControlAdapter {
     private readonly connections: GameConnectionService,
     private readonly sessions: AgentSessionRegistry,
     private readonly clock: BridgeClock,
+    @Optional() private readonly metrics?: Metrics,
   ) {}
   async result(
     session: AgentSessionSnapshot,
@@ -91,6 +98,8 @@ export class AgentServerControlAdapter {
         ),
       };
     } catch (error) {
+      if (error instanceof ServerControlRejection)
+        this.metrics?.controlResultRejects.inc({ reason: error.code });
       if (error instanceof ServerControlRejection)
         switch (error.code) {
           case 'SERVER_MISMATCH':

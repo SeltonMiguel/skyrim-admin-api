@@ -7,13 +7,18 @@ import { setupApp } from './setup-app.js';
 import { AppExpressAdapter } from './common/http/app-express.adapter.js';
 import { installGracefulShutdown } from './lifecycle/graceful-shutdown.js';
 import { InstanceLockHeldError } from './lifecycle/instance-lock.js';
+import { AppLogger } from './observability/app-logger.js';
 
 async function bootstrap() {
   // The server never runs in test mode: that mode accepts ephemeral
   // per-process secrets meant for the test suites only.
   if (process.env.NODE_ENV === 'test')
     throw new Error('NODE_ENV=test is not a valid mode for the server');
-  const app = await NestFactory.create(AppModule, new AppExpressAdapter());
+  const app = await NestFactory.create(AppModule, new AppExpressAdapter(), {
+    bufferLogs: true,
+  });
+  // Structured, redacted logs (JSON in production) from the first line.
+  app.useLogger(app.get(AppLogger));
   setupApp(app);
   const config = app
     .get(ConfigService)

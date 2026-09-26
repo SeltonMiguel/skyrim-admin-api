@@ -4,7 +4,9 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
+import { Metrics } from '../observability/metrics.js';
 import { BridgeClock } from '../game-bridge/bridge-clock.js';
 import { BridgeRejection } from '../game-bridge/bridge-rejection.js';
 import {
@@ -48,6 +50,7 @@ export class AgentCommandAdapter {
   constructor(
     private readonly receiver: GameCommandReceiver,
     private readonly clock: BridgeClock,
+    @Optional() private readonly metrics?: Metrics,
   ) {}
   // ACK confirms one delivery attempt; it gets no reply.
   async acknowledge(
@@ -76,6 +79,7 @@ export class AgentCommandAdapter {
       return {};
     } catch (error) {
       if (error instanceof BridgeRejection && error.code === 'STALE_ATTEMPT') {
+        this.metrics?.commandResultRejects.inc({ reason: error.code });
         this.logger.warn(`Stale game command ACK ignored [${ids}]`);
         return {};
       }
@@ -139,6 +143,7 @@ export class AgentCommandAdapter {
     ids: string,
   ): RouteOutcome {
     if (error instanceof BridgeRejection) {
+      this.metrics?.commandResultRejects.inc({ reason: error.code });
       switch (error.code) {
         case 'SERVER_MISMATCH':
           this.logger.warn(`Game command of another server rejected [${ids}]`);

@@ -1,9 +1,11 @@
 import {
   Injectable,
+  Optional,
   Logger,
   OnApplicationBootstrap,
   OnModuleDestroy,
 } from '@nestjs/common';
+import { Metrics } from '../observability/metrics.js';
 import { TickDrain } from '../lifecycle/tick-drain.js';
 import { ConfigService } from '@nestjs/config';
 import type { ApplicationConfig } from '../config/environment.js';
@@ -30,7 +32,7 @@ export class AgentWorkNotifier
   private readonly intervalMs: number;
   private timer?: ReturnType<typeof setInterval>;
   private running = false;
-  private readonly drain = new TickDrain();
+  private readonly drain: TickDrain;
   private stopped = false;
   private readonly told = new Map<string, Set<string>>();
   constructor(
@@ -38,7 +40,9 @@ export class AgentWorkNotifier
     private readonly work: AgentWorkService,
     private readonly clock: BridgeClock,
     config: ConfigService<{ application: ApplicationConfig }, true>,
+    @Optional() metrics?: Metrics,
   ) {
+    this.drain = new TickDrain(metrics?.worker('agent_work_push'));
     this.intervalMs = config.get('application', {
       infer: true,
     }).agent.workPushIntervalMs;
@@ -54,6 +58,7 @@ export class AgentWorkNotifier
     await this.drain.wait();
   }
   async tick(): Promise<number> {
+    if (this.running) this.drain.skip();
     if (this.running || this.stopped) return 0;
     this.running = true;
     this.drain.begin();
@@ -92,6 +97,7 @@ export class AgentWorkNotifier
         );
       }
     } catch {
+      this.drain.fail();
       this.logger.error('Agent work push failed');
     } finally {
       this.running = false;
