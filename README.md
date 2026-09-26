@@ -733,3 +733,11 @@ instância**. Do not run more than one backend replica before Stage 12.5:
 
 Veja [Deployment](docs/deployment.md), [Backup and restore](docs/backup-restore.md),
 [Reverse proxy](docs/reverse-proxy.md) e [Configuration](docs/configuration.md).
+
+A Subetapa 12.3 adiciona observabilidade:
+- métricas Prometheus em `/api/v1/metrics` (prom-client, prefixo `skyrim_admin_`, desligadas em produção salvo com `METRICS_ENABLED` e bearer token);
+- backlogs de GameCommand, Server Control, Trade, Marketplace e VIP lidos do banco periodicamente;
+- workers, Agent e realtime instrumentados;
+- logs JSON estruturados com requestId e redaction central.
+
+O contrato de alertas e painéis está em [Observability](docs/observability.md).

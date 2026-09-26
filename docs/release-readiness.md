@@ -76,10 +76,16 @@ Para escalar:
 
 ## Observability
 
-- [ ] Endpoint de métricas expõe as séries mínimas de `docs/hardening-audit.md` §13; gauges de estado vêm do DB (P1-8)
-- [ ] Alertas configurados e disparados em teste para: Server Control UNCERTAIN novo, VIP delivery UNCERTAIN/FAILED, work de Trade/Marketplace/release mais antigo que o limiar, nenhum Agent conectado em servidor habilitado, taxa de 5xx, pool do DB saturado (P1-8)
-- [ ] Logs em JSON com `requestId`, `gameServerId`, `commandId`, `operationId`, `eventId`, `workId` quando aplicáveis (P3-2)
-- [ ] Teste de fronteira falha se um log contiver segredo, token, challenge, conteúdo de chat ou payload/result de comando
+- [x] Endpoint de métricas expõe as séries mínimas de `docs/hardening-audit.md` §13; gauges de estado vêm do DB (P1-8) — 12.3: `/api/v1/metrics`, catálogo em `docs/observability.md`, `test/observability.e2e-spec.ts`
+- [x] `/api/v1/metrics` desligado em produção por padrão; ligado exige bearer token (boot falha sem ele), com comparação em tempo constante — 12.3, `src/observability/observability.spec.ts`
+- [x] Nenhum id, IP ou username como label de métrica — 12.3: allowlist verificada no unitário; ids criados no e2e ausentes da saída
+- [ ] Scraper de produção configurado com o token e retenção das séries definida pelo operador
+- [ ] Dashboards dos painéis mínimos de `docs/observability.md` criados na ferramenta escolhida
+- [x] Contrato de alertas documentado (expressões e thresholds `THRESHOLD_TO_BE_CALIBRATED_12_6`) — 12.3, `docs/observability.md`
+- [ ] Alertas configurados e disparados em teste para: Server Control UNCERTAIN novo, VIP delivery UNCERTAIN/FAILED, work de Trade/Marketplace/release mais antigo que o limiar, nenhum Agent conectado em servidor habilitado, taxa de 5xx, pool do DB saturado (P1-8) — staging
+- [ ] Thresholds calibrados com a carga da 12.6 e entrega de alertas (canal on-call) configurada
+- [x] Logs em JSON com `requestId`, `gameServerId`, `commandId`, `operationId`, `eventId`, `workId` quando aplicáveis (P3-2) — 12.3, `AppLogger`, `test/observability.e2e-spec.ts`
+- [ ] Teste de fronteira falha se um log contiver segredo, token, challenge, conteúdo de chat ou payload/result de comando — 12.3 cobre segredo, token, JWT, bearer, PEM, challenge e senha (redaction central + e2e); conteúdo de chat e payload/result de comando continuam protegidos só por não serem logados
 
 ## Performance
 

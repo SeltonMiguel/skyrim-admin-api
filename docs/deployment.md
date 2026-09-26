@@ -87,7 +87,7 @@ Cada passo tem uma verificação. Pare no primeiro que falhar.
    - `GET /api/v1/game-servers`;
    - um Agent de staging reconecta (HELLO → AUTHENTICATED; os Agents reconectam sozinhos após o 1001 `SHUTDOWN`);
    - `GET /api/v1/game-servers/:id` mostra `health: ONLINE`.
-10. **Monitorar** os logs e a primeira hora de operação (métricas formais são da 12.3):
+10. **Monitorar** métricas (`/api/v1/metrics`, `docs/observability.md`) e os logs estruturados da primeira hora, em especial:
     - `Server control outcome UNCERTAIN`;
     - erros de worker (`tick failed`);
     - `Security` (throttling);

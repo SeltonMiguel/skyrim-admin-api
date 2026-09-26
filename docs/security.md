@@ -257,3 +257,11 @@ Não força CORS: um deploy sem browser em outra origem pode deixar vazio,
 desde que como decisão consciente. Produção exige `DB_SSL_MODE` explícito e o
 lock de instância única. O servidor recusa `NODE_ENV=test`, que aceita
 segredos efêmeros.
+
+## Métricas e logs (12.3)
+
+- `/api/v1/metrics` fica desligado em produção por padrão. Ligado, exige `METRICS_BEARER_TOKEN`, comparado em tempo constante; não usa Staff JWT.
+- Os labels nunca carregam id, IP nem username.
+- Logs em JSON passam por redaction central (chave e valor): JWT, bearer, PEM, senha em URL, chaves de segredo.
+
+Detalhes em `docs/observability.md`.

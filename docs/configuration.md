@@ -1,6 +1,6 @@
 # Configuration reference
 
-Todas as 83 variáveis de ambiente do backend (`src/config/environment.ts`), na
+Todas as 90 variáveis de ambiente do backend (`src/config/environment.ts`), na
 Etapa 12.2. A validação é feita no boot, por Joi mais as relações entre valores
 (`abortEarly: false`). Uma variável inválida impede o start. A mensagem cita
 só o **nome** da variável, nunca o valor. O migration runner e o preflight usam
@@ -88,6 +88,18 @@ strings `N{s,m,h,d}` (ex.: `15m`).
 | `GAME_COMMAND_ACK_TIMEOUT_MS` / `_EXECUTION_TIMEOUT_MS` / `_MAX_DISPATCH_ATTEMPTS` / `_PENDING_TIMEOUT_MS` / `_WORKER_INTERVAL_MS` | OPTIONAL_SAFE_DEFAULT | `5000` / `30000` / `3` / `60000` / `500` | |
 | `SERVER_CONTROL_PENDING_TIMEOUT_MS` / `_DELIVERY_WINDOW_MS` / `_RESULT_TIMEOUT_MS` / `_WORKER_INTERVAL_MS` | OPTIONAL_SAFE_DEFAULT | `30000` / `10000` / `300000` / `1000` | result > window |
 | `VIP_DELIVERY_WORKER_INTERVAL_MS` | OPTIONAL_SAFE_DEFAULT | `2000` | |
+
+## Observabilidade (12.3, `docs/observability.md`)
+
+| Variável | Classe | Default | Notas |
+| --- | --- | --- | --- |
+| `METRICS_ENABLED` | OPTIONAL_SAFE_DEFAULT | `false` em produção, `true` fora | desligado, `/api/v1/metrics` é 404 |
+| `METRICS_BEARER_TOKEN` | REQUIRED_PRODUCTION se métricas ligadas | — | ≥ 32 caracteres sem espaço; o boot falha sem ele em produção com métricas ligadas; nunca é logado |
+| `METRICS_COLLECTION_INTERVAL_MS` | OPTIONAL_SAFE_DEFAULT | `15000` | 1000–300000; intervalo das queries agregadas de backlog |
+| `LOG_FORMAT` | OPTIONAL_SAFE_DEFAULT | `json` em produção, `pretty` fora | `json` ou `pretty` |
+| `LOG_LEVEL` | OPTIONAL_SAFE_DEFAULT | `log` | error, warn, log, debug, verbose |
+| `APP_VERSION` | OPTIONAL | `unknown` | `[\w.+-]{1,64}`; label de `skyrim_admin_app_info` |
+| `GIT_SHA` | OPTIONAL | `unknown` | 7–40 hex; label de `skyrim_admin_app_info` |
 
 ## Operação pontual e testes
 

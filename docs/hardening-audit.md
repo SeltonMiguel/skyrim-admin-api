@@ -629,6 +629,15 @@ proxy em `docs/reverse-proxy.md`, variáveis em `docs/configuration.md`.
 | Flake `server-control-agent` "keeps one non-terminal operation…" | **registrado, não alterado** | 1 falha em 19 execuções na 12.2, sob forte contenção local (e2e completo mais `docker build` em paralelo); o teste pressupõe menos de 1 s entre o claim e a execução (janela de entrega de 1 s na suíte, pausa fixa de 400 ms); o HEAD original passou em todas as repetições feitas (4/4). Investigar e calibrar na 12.6 com carga controlada; não aumentar timeout sem medição |
 | Flake `game-command-agent` "retries with the same identity…" | **registrado, não alterado** | 1 falha num e2e completo da delta final da 12.2 (tentativa 3 em vez de 2: o ACK timeout de 600 ms da suíte venceu antes da asserção após `pause(200)`); 6/6 isolada logo depois. Mesma classe do anterior (premissa de tempo sob contenção); calibrar na 12.6 |
 
+## 25.3 Status após a 12.3
+
+| Finding | Status | Como |
+| --- | --- | --- |
+| P1-8 métricas e alertas | **métricas e contrato de alertas prontos**; scraper, dashboards e entrega de alertas pendentes (ambiente) | prom-client com registry próprio, `/api/v1/metrics` protegido, catálogo `skyrim_admin_*` (HTTP, banco, Agent, GameCommand, Server Control, domain events, backlog pelo banco, VIP, realtime, workers, instância); `docs/observability.md` |
+| P3-2 logs JSON | **resolvido** (tracing continua fora) | `AppLogger` JSON em produção, requestId e ids como campos, redaction central, request log por template, stack de 5xx no servidor |
+| Queries de backlog | **periódicas** | `BacklogCollector`, `METRICS_COLLECTION_INTERVAL_MS`; nenhuma query por scrape nem por request |
+| Duração de query do banco | não medida | exigiria interceptar o TypeORM de forma frágil; pool e erros cobrem saturação |
+
 ## 26. Roadmap final da Stage 12
 
 A ordem sugerida na abertura (multi-instância primeiro) foi **alterada**. Os P0
