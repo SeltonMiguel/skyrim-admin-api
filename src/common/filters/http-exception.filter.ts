@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { STATUS_CODES } from 'node:http';
 import type { Request, Response } from 'express';
+import { QueryFailedError } from 'typeorm';
 import { RequestContext } from '../request-context/request-context.service.js';
 
 @Catch()
@@ -24,9 +25,13 @@ export class HttpExceptionFilter implements ExceptionFilter {
     // Client errors raised by the body parser before Nest (oversized or
     // malformed body) keep their 4xx status with a generic message.
     const parser = known ? undefined : clientError(exception);
+    // A unique violation no domain mapped (F-DB7) is a conflict with the
+    // current state: generic 409, the transaction already rolled back.
+    const unique = known || parser ? undefined : uniqueViolation(exception);
     const statusCode = known
       ? exception.getStatus()
-      : (parser ?? HttpStatus.INTERNAL_SERVER_ERROR);
+      : (parser ??
+        (unique ? HttpStatus.CONFLICT : HttpStatus.INTERNAL_SERVER_ERROR));
     const body = known ? exception.getResponse() : undefined;
     const details = typeof body === 'object' && body !== null ? body : {};
     const error =
@@ -47,9 +52,20 @@ export class HttpExceptionFilter implements ExceptionFilter {
             ? exception.message
             : parser
               ? (STATUS_CODES[parser] ?? 'Bad request')
-              : 'Internal server error';
+              : unique
+                ? 'Conflict'
+                : 'Internal server error';
 
-    if (!known && !parser) {
+    if (unique)
+      // Server log only: the constraint name keeps an unmapped path visible;
+      // the client never sees SQL, constraint or table names.
+      this.logger.warn({
+        message: 'Unmapped unique violation',
+        event: 'http_unique_conflict',
+        requestId: this.context.requestId ?? 'unknown',
+        constraint: unique.constraint ?? 'unknown',
+      });
+    else if (!known && !parser) {
       // Server log only (redacted by the logger): class and stack, never
       // the request payload; the client gets the generic 500 below.
       this.logger.error(
@@ -101,5 +117,18 @@ function clientError(exception: unknown): number | undefined {
     status >= 400 &&
     status < 500
     ? status
+    : undefined;
+}
+
+function uniqueViolation(
+  exception: unknown,
+): { constraint?: string } | undefined {
+  if (!(exception instanceof QueryFailedError)) return undefined;
+  const driver = exception.driverError as {
+    code?: string;
+    constraint?: string;
+  };
+  return driver?.code === '23505'
+    ? { constraint: driver.constraint }
     : undefined;
 }

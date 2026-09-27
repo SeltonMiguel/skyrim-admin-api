@@ -580,7 +580,31 @@ describeDatabase(
       const settled = journal.fulfill(resumed, pending[0])!;
       const eventId = journal.eventIds.get(opened.tradeId)!;
       expect([...journal.effects.values()]).toEqual([1, 1]);
-      expect(await resumed.reply(settled)).toMatchObject(ack(settled));
+      // P2-8 (12.7B): concurrent deliveries of the same eventId. One socket
+      // is processed serially, so direct service calls (with the payload as the
+      // gateway normalizes it: SUCCEEDED -> SETTLED) race it for real in
+      // PostgreSQL: all ACK, exactly one applies, one receipt.
+      const racingTrade = await Promise.all([
+        resumed.reply(settled),
+        ...Array.from({ length: 3 }, () =>
+          app.get(AgentDomainEventService).handle(server.id, {
+            eventId,
+            kind: 'TRADE_SETTLEMENT',
+            data: { workId: opened.tradeId, outcome: 'SETTLED' },
+          } as never),
+        ),
+      ]);
+      expect(racingTrade[0]).toMatchObject(ack(settled));
+      expect(racingTrade.slice(1).every((o) => o.type === 'ACK')).toBe(true);
+      expect(
+        [
+          (racingTrade[0] as Frame).payload!.duplicate,
+          ...racingTrade
+            .slice(1)
+            .map((o) => (o as { duplicate: boolean }).duplicate),
+        ].filter((duplicate) => !duplicate),
+      ).toHaveLength(1);
+      expect(await receipts(eventId)).toHaveLength(1);
       expect(
         (
           await one('SELECT status FROM player_trades WHERE id = $1', [
@@ -777,7 +801,29 @@ describeDatabase(
         { workId: release.id, outcome: 'RELEASED' },
         eventId,
       );
-      expect(await back.reply(released)).toMatchObject(ack(released));
+      // P2-8 (12.7B): the same eventId racing through the socket and direct
+      // service calls: all ACK, exactly one applies, one receipt.
+      const racingRelease = await Promise.all([
+        back.reply(released),
+        ...Array.from({ length: 3 }, () =>
+          app.get(AgentDomainEventService).handle(server.id, {
+            eventId,
+            kind: 'MARKETPLACE_RELEASE',
+            data: { workId: release.id, outcome: 'RELEASED' },
+          } as never),
+        ),
+      ]);
+      expect(racingRelease[0]).toMatchObject(ack(released));
+      expect(racingRelease.slice(1).every((o) => o.type === 'ACK')).toBe(true);
+      expect(
+        [
+          (racingRelease[0] as Frame).payload!.duplicate,
+          ...racingRelease
+            .slice(1)
+            .map((o) => (o as { duplicate: boolean }).duplicate),
+        ].filter((duplicate) => !duplicate),
+      ).toHaveLength(1);
+      expect(await receipts(eventId)).toHaveLength(1);
       expect(
         await one(
           'SELECT status, release_event_id, error_code FROM player_marketplace_item_releases WHERE id = $1',
@@ -1238,6 +1284,53 @@ describeDatabase(
         status: 'FAILED',
         error_code: 'EXECUTION_FAILED',
       });
+
+      // P2-8 (12.7B): advance racing revoke, Agent ready. Both lock the
+      // entitlement row first, so each delivery ends either with exactly one
+      // command created before the revoke, or CANCELLED without any command.
+      for (let round = 0; round < 3; round++) {
+        const raced = await grant(product.id, `char:${randomUUID()}`);
+        const pending = (await deliveries(raced)).map(
+          (d: { id: string }) => d.id,
+        );
+        const [revoked] = await Promise.all([
+          entitlements.revoke({
+            entitlementId: raced,
+            actor: system,
+            idempotencyKey: randomUUID(),
+          }),
+          ...pending.flatMap((id: string) => [
+            worker.advance(id),
+            worker.advance(id),
+          ]),
+        ]);
+        expect(revoked.outcome).toBe('REVOKED');
+        for (const d of await deliveries(raced)) {
+          if (d.status === 'CANCELLED') {
+            expect(d.error_code).toBe('ENTITLEMENT_REVOKED');
+            expect(d.game_command_id).toBeNull();
+          } else {
+            expect(d.status).toBe('COMMAND_CREATED');
+            const [command] = await database.query(
+              'SELECT created_at FROM game_commands WHERE id = $1',
+              [d.game_command_id],
+            );
+            const [right] = await database.query(
+              'SELECT revoked_at FROM player_vip_entitlements WHERE id = $1',
+              [raced],
+            );
+            expect(command.created_at <= right.revoked_at).toBe(true);
+          }
+        }
+        expect(
+          (
+            await database.query(
+              'SELECT count(*)::int AS n FROM game_commands c JOIN vip_reward_deliveries d ON d.game_command_id = c.id WHERE d.entitlement_id = $1',
+              [raced],
+            )
+          )[0].n,
+        ).toBeLessThanOrEqual(pending.length);
+      }
     });
     it('migrates: refuses to forget open obligations, reverts, backfills custodied releases and reapplies', async () => {
       const tables = () =>

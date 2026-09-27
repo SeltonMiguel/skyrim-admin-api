@@ -752,6 +752,37 @@ describeDatabase('Player groups with real PostgreSQL', () => {
         )
       )[0].n,
     ).toBe(1);
+    // 12.7B (F-DB4): creating a group and accepting an invite for the same
+    // character take different lock paths (link only / group then link);
+    // one wins, the other is a 409, never a 500, one active membership.
+    for (let round = 0; round < 3; round++) {
+      const host = await party(0);
+      const mixed = await login();
+      const mixedLink = await character(mixed);
+      const mixedInvite = (
+        await invite(
+          host.leader,
+          host.group.id,
+          host.leaderLink,
+          mixedLink,
+        ).expect(201)
+      ).body;
+      const outcome = await Promise.all([
+        post(mixed, 'groups', { characterLinkId: mixedLink }),
+        accept(mixed, mixedInvite.inviteId),
+      ]);
+      expect(outcome.map((r) => r.status).sort()).toEqual(
+        outcome[0].status === 201 ? [201, 409] : [200, 409],
+      );
+      expect(
+        (
+          await database.query(
+            'SELECT count(*)::int AS n FROM player_group_members WHERE player_character_id = $1 AND left_at IS NULL',
+            [mixedLink],
+          )
+        )[0].n,
+      ).toBe(1);
+    }
     const race = await party(0);
     const joiner = await login();
     const joinerLink = await character(joiner);

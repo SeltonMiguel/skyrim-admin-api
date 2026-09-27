@@ -15,6 +15,7 @@ import { PasswordService } from '../src/auth/password.service.js';
 import { RoleName as R } from '../src/rbac/roles.js';
 import { GameServerService } from '../src/game-bridge/game-server.service.js';
 import { GameConnectionService } from '../src/game-bridge/game-connection.service.js';
+import { GameProcessState } from '../src/game-agent/agent-protocol.contracts.js';
 import type { GameServer } from '../src/game-bridge/entities/game-server.entity.js';
 import type { GameConnection } from '../src/game-bridge/entities/game-connection.entity.js';
 import { DiscordIdentityProvider } from '../src/player-auth/discord-identity.provider.js';
@@ -890,6 +891,37 @@ describeDatabase('Host Agent transport with real PostgreSQL', () => {
         );
         expect(live).toEqual([]);
       }
+    });
+    // P2-8 (12.7B): the gateway handles one socket's frames serially, so a
+    // HEARTBEAT and a SERVER_CONTROL_RESULT runtime update never race from
+    // the same session. The service calls are raced here anyway, in
+    // PostgreSQL: no error, no lost liveness, runtime from one of the reports.
+    it('keeps the session consistent when heartbeats race runtime updates', async () => {
+      const key = await credential();
+      const { socket, connectionId } = await authenticated(key);
+      const before = (await row(connectionId)).lastHeartbeatAt!;
+      const reports = [
+        { gameProcessState: GameProcessState.RUNNING, skseReady: true },
+        { gameProcessState: GameProcessState.STOPPED, skseReady: false },
+      ];
+      const outcomes = await Promise.all(
+        Array.from({ length: 10 }, (_, i) =>
+          i % 2
+            ? connections.updateRuntime(server.id, connectionId, reports[1])
+            : connections.heartbeat(server.id, connectionId, reports[0]),
+        ),
+      );
+      expect(outcomes.every(Boolean)).toBe(true);
+      const after = await row(connectionId);
+      expect(after.status).toBe('CONNECTED');
+      expect(after.lastHeartbeatAt!.getTime()).toBeGreaterThanOrEqual(
+        before.getTime(),
+      );
+      expect(reports).toContainEqual({
+        gameProcessState: after.gameProcessState,
+        skseReady: after.skseReady,
+      });
+      await socket.close();
     });
     it('closes cross-server frames and protocol violations after auth', async () => {
       const key = await credential();

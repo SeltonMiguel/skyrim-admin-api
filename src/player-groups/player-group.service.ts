@@ -8,7 +8,14 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { isUUID } from 'class-validator';
 import { randomUUID } from 'node:crypto';
-import { DataSource, EntityManager, In, IsNull, MoreThan } from 'typeorm';
+import {
+  DataSource,
+  EntityManager,
+  In,
+  IsNull,
+  MoreThan,
+  QueryFailedError,
+} from 'typeorm';
 import type { ApplicationConfig } from '../config/environment.js';
 import { AuditService } from '../audit/audit.service.js';
 import {
@@ -48,6 +55,11 @@ const groupNotFound = () => new NotFoundException('Group not found');
 const inviteNotFound = () => new NotFoundException('Group invite not found');
 const characterNotFound = () => new NotFoundException('Character not found');
 const unavailable = () => new ConflictException('Character unavailable');
+const UNIQUE_CONFLICTS: Record<string, string> = {
+  player_group_members_active_key: 'Character already in a group',
+  player_group_members_leader_key: 'Group leader conflict',
+  player_group_invites_pending_key: 'Group invite already pending',
+};
 
 // Lock order in every transaction: group row, then character links, then
 // memberships/invites. Partial unique indexes are the final authority.
@@ -65,14 +77,30 @@ export class PlayerGroupService {
       config.get('application', { infer: true }).playerGroups.inviteTtl * 1000;
   }
 
-  // Runs the mutation, then publishes its events only after commit.
+  // Runs the mutation, then publishes its events only after commit. The
+  // row locks serialize every insert path; a unique violation left over by a
+  // path the locks do not cover is still a conflict, never a 500 (F-DB4).
   private async mutate<T>(
     work: (manager: EntityManager, events: PendingEvent[]) => Promise<T>,
   ): Promise<T> {
     const events: PendingEvent[] = [];
-    const result = await this.database.transaction((manager) =>
-      work(manager, events),
-    );
+    let result: T;
+    try {
+      result = await this.database.transaction((manager) =>
+        work(manager, events),
+      );
+    } catch (error) {
+      const driver =
+        error instanceof QueryFailedError
+          ? (error.driverError as { code?: string; constraint?: string })
+          : undefined;
+      const message =
+        driver?.code === '23505' && driver.constraint
+          ? UNIQUE_CONFLICTS[driver.constraint]
+          : undefined;
+      if (message) throw new ConflictException(message);
+      throw error;
+    }
     for (const event of events)
       this.events.publish(event.type, event.data, {
         playerIds: event.playerIds,
