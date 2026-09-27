@@ -1,3 +1,4 @@
+import { jest } from '@jest/globals';
 import type { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { randomUUID } from 'node:crypto';
@@ -23,6 +24,7 @@ import { CharacterLinkService } from '../src/player-characters/character-link.se
 import { AgentSessionRegistry } from '../src/game-agent/agent-session.registry.js';
 import { SKILL_NAMES } from '../src/player-character-operations/character-profile.contracts.js';
 import { FakeDiscordProvider } from './support/fake-discord-provider.js';
+import { startPerfTrace } from './support/perf-trace.js';
 import { FakeAgent } from './support/fake-agent.js';
 
 const describeDatabase =
@@ -50,11 +52,11 @@ async function eventually<T>(
   check: () => Promise<T | undefined | false>,
   timeoutMs = 5000,
 ): Promise<T> {
-  const deadline = Date.now() + timeoutMs;
+  const deadline = performance.now() + timeoutMs;
   for (;;) {
     const value = await check();
     if (value) return value;
-    if (Date.now() > deadline) throw new Error('Timed out waiting for state');
+    if (performance.now() > deadline) throw new Error('Timed out waiting for state');
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
 }
@@ -68,6 +70,7 @@ describeDatabase(
     let bus: GameCommandBus, links: CharacterLinkService;
     let server: GameServer, url: string, staffToken: string;
     const agents: FakeAgent[] = [];
+    let stopPerfTrace = () => {};
     const discord = new FakeDiscordProvider();
     const schema = `game_command_agent_test_${randomUUID().replaceAll('-', '')}`;
     const http = () => request(app.getHttpServer());
@@ -186,12 +189,14 @@ describeDatabase(
       ).body.accessToken;
     }, 60000);
     beforeEach(async () => {
+      stopPerfTrace = startPerfTrace(app);
       app.get(PlayerAuthRateLimiter).reset();
       server = await servers.register({ code: randomUUID(), name: 'Commands' });
     });
     afterEach(async () => {
       for (const created of agents.splice(0)) await created.close();
       await eventually(async () => registry.count() === 0);
+      stopPerfTrace();
     });
     afterAll(async () => {
       for (const name of [
@@ -385,7 +390,19 @@ describeDatabase(
       });
       // A late ACK of attempt 1 confirms nothing about attempt 2.
       second.ack(attempt2, 1);
-      await pause(200);
+      const diagnosticStart = performance.now();
+      // Frames are processed serially on this socket. HEARTBEAT_ACK proves
+      // the stale ACK was handled before we inspect persisted command state.
+      await second.heartbeat('RUNNING', true);
+      if (process.env.PERF_FLAKE_TRACE)
+        console.error(
+          JSON.stringify({
+            flake: 'gamecommand',
+            waitMs: performance.now() - diagnosticStart,
+            ackWindowMs: 600,
+            state: await command(query),
+          }),
+        );
       expect(await command(query)).toMatchObject({
         status: 'DISPATCHED',
         dispatchAttempts: 2,
@@ -759,5 +776,97 @@ describeDatabase(
         reason: 'RATE_LIMITED',
       });
     });
+    // 12.6B: the window is elapsed time. A backward civil step used to
+    // freeze it, so a well-behaved Agent (30 frames per 2 s, limit 40)
+    // accumulated across windows and was closed as RATE_LIMITED.
+    const beat = { gameProcessState: 'RUNNING', skseReady: true };
+    const stepClock = (
+      target: { now(): number },
+      offsetMs: number,
+    ): (() => void) => {
+      const real = target.now.bind(target);
+      const spy = jest
+        .spyOn(target, 'now')
+        .mockImplementation(() => real() + offsetMs);
+      return () => spy.mockRestore();
+    };
+    // Three real windows of 30 frames each (limit 40 per 2 s).
+    const wellBehaved = async (host: FakeAgent) => {
+      for (let window = 0; window < 3; window++) {
+        for (let i = 0; i < 29; i++) host.send('HEARTBEAT', beat);
+        await host.heartbeat('RUNNING', true);
+        // Intentional elapsed window (not waiting for async work).
+        await pause(2100);
+      }
+    };
+    it('keeps the message window across windows without a clock step', async () => {
+      const host = await agent();
+      await host.heartbeat('RUNNING', true);
+      await wellBehaved(host);
+      expect((await host.heartbeat('RUNNING', true)).type).toBe(
+        'HEARTBEAT_ACK',
+      );
+    }, 20000);
+    it('keeps the message window across a backward civil clock step', async () => {
+      const host = await agent();
+      await host.heartbeat('RUNNING', true);
+      const restore = stepClock(Date, -60_000);
+      try {
+        await wellBehaved(host);
+        expect((await host.heartbeat('RUNNING', true)).type).toBe(
+          'HEARTBEAT_ACK',
+        );
+      } finally {
+        restore();
+      }
+    }, 20000);
+    it('keeps the message window across a forward civil clock step', async () => {
+      const host = await agent();
+      await host.heartbeat('RUNNING', true);
+      const restore = stepClock(Date, 60_000);
+      try {
+        await wellBehaved(host);
+        expect((await host.heartbeat('RUNNING', true)).type).toBe(
+          'HEARTBEAT_ACK',
+        );
+      } finally {
+        restore();
+      }
+    }, 20000);
+    // A forward civil step used to reset the window: 20 + 25 frames within one
+    // real window slipped under the limit. Elapsed time still counts 45.
+    it('does not reset the window on a forward civil clock step', async () => {
+      const host = await agent();
+      await host.heartbeat('RUNNING', true);
+      for (let i = 0; i < 19; i++) host.send('HEARTBEAT', beat);
+      await host.heartbeat('RUNNING', true);
+      const restore = stepClock(Date, 60_000);
+      try {
+        for (let i = 0; i < 25; i++) host.send('HEARTBEAT', beat);
+        expect(await host.client.closedWith()).toEqual({
+          code: 4012,
+          reason: 'RATE_LIMITED',
+        });
+      } finally {
+        restore();
+      }
+    });
+    // Control (12.6B evidence): the same backward step applied to the clock
+    // the window actually reads reproduces the false RATE_LIMITED. Before
+    // 12.6B that clock was Date.now, i.e. exactly the civil step above.
+    it('control: a step of the window clock itself closes a well-behaved Agent', async () => {
+      const host = await agent();
+      await host.heartbeat('RUNNING', true);
+      const restore = stepClock(performance, -60_000);
+      try {
+        await expect(wellBehaved(host)).rejects.toThrow();
+        expect(await host.client.closedWith()).toEqual({
+          code: 4012,
+          reason: 'RATE_LIMITED',
+        });
+      } finally {
+        restore();
+      }
+    }, 20000);
   },
 );

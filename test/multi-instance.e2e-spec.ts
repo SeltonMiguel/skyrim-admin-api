@@ -29,6 +29,7 @@ import { AgentSessionRegistry } from '../src/game-agent/agent-session.registry.j
 import { AgentWorkNotifier } from '../src/game-agent/agent-work.notifier.js';
 import { GameCommandBus } from '../src/game-bridge/game-command-bus.js';
 import { GameCommandDispatcher } from '../src/game-bridge/game-command-dispatcher.js';
+import { GameCommandWorker } from '../src/game-agent/game-command.worker.js';
 import { GameConnectionService } from '../src/game-bridge/game-connection.service.js';
 import { GameServerService } from '../src/game-bridge/game-server.service.js';
 import type { GameServer } from '../src/game-bridge/entities/game-server.entity.js';
@@ -39,6 +40,7 @@ import { CharacterLinkService } from '../src/player-characters/character-link.se
 import { RealtimeEventBus } from '../src/realtime-events/realtime-event-bus.js';
 import { Permission } from '../src/rbac/permissions.js';
 import { ServerControlDispatcher } from '../src/server-control/server-control-dispatcher.js';
+import { ServerControlWorker } from '../src/server-control/server-control.worker.js';
 import { VipDeliveryService } from '../src/vip-entitlements/vip-delivery.service.js';
 import { VipEntitlementService } from '../src/vip-entitlements/vip-entitlement.service.js';
 import { VipEntitlementScope } from '../src/vip-store/vip-offer.contracts.js';
@@ -526,6 +528,70 @@ describeDatabase('MULTI topology: replicas coordinated by PostgreSQL', () => {
     expect(await results(created.id)).toBe(1);
   });
 
+  it('wakes the owner for a GameCommand created on B; a lost hint falls back to polling', async () => {
+    const server = await register();
+    const host = await agent(A(), server, PING_CAPS);
+    const worker = get(A(), GameCommandWorker);
+    const wake = jest.spyOn(worker, 'wake');
+    // B has no Agent session: it never reserves, whatever it hears.
+    const onB = jest.spyOn(get(B(), GameCommandDispatcher), 'dispatchEligible');
+    const bus = get(B(), ClusterBus);
+    const publishOriginal = bus.publish.bind(bus);
+    let dropHints = false;
+    const publish = jest
+      .spyOn(bus, 'publish')
+      .mockImplementation(async (kind, payload) => {
+        if (!(dropHints && kind === 'GAME_COMMAND_WORK'))
+          await publishOriginal(kind, payload);
+      });
+    const complete = async (
+      created: { id: string; payload: unknown },
+      delivered = () => {},
+    ) => {
+      const frame = await host.command(created.id);
+      delivered();
+      // Duplicate hints while the command is in flight add no attempt.
+      for (let i = 0; i < 5; i++) worker.wake();
+      await worker.tick();
+      host.ack(frame);
+      await host.reply(
+        host.result(frame.payload!, {
+          outcome: 'SUCCEEDED',
+          result: { nonce: (created.payload as { nonce: string }).nonce },
+        }),
+      );
+      await eventually(
+        async () => (await command(created.id)).status === 'SUCCEEDED',
+      );
+    };
+    try {
+      const first = await ping(B(), server.id);
+      expect(publish).toHaveBeenCalledWith('GAME_COMMAND_WORK', {});
+      await eventually(async () => wake.mock.calls.length > 0);
+      await complete(first);
+      // The hint never reaches A: the worker's polling still delivers, once.
+      dropHints = true;
+      wake.mockClear();
+      const second = await ping(B(), server.id);
+      await complete(second, () => expect(wake).not.toHaveBeenCalled());
+      for (const created of [first, second]) {
+        expect(await command(created.id)).toMatchObject({
+          dispatch_attempts: 1,
+          dispatched_connection_id: host.connectionId,
+        });
+        expect(host.commands(created.id)).toHaveLength(1);
+        expect(await results(created.id)).toBe(1);
+      }
+      for (const [kind, payload] of publish.mock.calls)
+        if (kind === 'GAME_COMMAND_WORK') expect(payload).toEqual({});
+      expect(onB).not.toHaveBeenCalled();
+    } finally {
+      onB.mockRestore();
+      publish.mockRestore();
+      wake.mockRestore();
+    }
+  });
+
   it('never exceeds the in-flight budget under concurrent dispatch from both replicas', async () => {
     const server = await register();
     const host = await agent(A(), server, PING_CAPS);
@@ -761,6 +827,57 @@ describeDatabase('MULTI topology: replicas coordinated by PostgreSQL', () => {
     );
     expect(host.controls(operationId)).toHaveLength(1);
     expect(host.performed.get(operationId)).toBe(1);
+  });
+
+  it('wakes the owner for Server Control created on B; a lost hint falls back to polling', async () => {
+    const server = await register();
+    const host = await agent(A(), server, CONTROL_CAPS, STOPPED);
+    const wake = jest.spyOn(get(A(), ServerControlWorker), 'wake');
+    // B has no Agent session: it may only hold, never claim or send.
+    const onB = jest.spyOn(get(B(), ServerControlDispatcher), 'dispatchSafely');
+    const bus = get(B(), ClusterBus);
+    const publishOriginal = bus.publish.bind(bus);
+    let dropHints = false;
+    const publish = jest
+      .spyOn(bus, 'publish')
+      .mockImplementation(async (kind, payload) => {
+        if (!(dropHints && kind === 'SERVER_CONTROL_WORK'))
+          await publishOriginal(kind, payload);
+      });
+    try {
+      const first = (await control(B(), server.id)).body.operationId as string;
+      expect(publish).toHaveBeenCalledWith('SERVER_CONTROL_WORK', {});
+      await eventually(async () => wake.mock.calls.length > 0);
+      await host.reply(host.perform(await host.control(first))!);
+      await eventually(
+        async () => (await operation(first)).status === 'SUCCEEDED',
+      );
+      // The hint never reaches A: the worker's polling still delivers, once.
+      dropHints = true;
+      wake.mockClear();
+      const second = (await control(B(), server.id)).body.operationId as string;
+      await host.reply(host.perform(await host.control(second))!);
+      await eventually(
+        async () => (await operation(second)).status === 'SUCCEEDED',
+      );
+      expect(wake).not.toHaveBeenCalled();
+      for (const id of [first, second]) {
+        expect(host.controls(id)).toHaveLength(1);
+        expect(host.performed.get(id)).toBe(1);
+      }
+      // A hint only: no operation data travels on the bus.
+      for (const [kind, payload] of publish.mock.calls)
+        if (kind === 'SERVER_CONTROL_WORK') expect(payload).toEqual({});
+      const outcomes = await Promise.all(
+        onB.mock.results.map((r) => r.value as Promise<string>),
+      );
+      expect(outcomes.length).toBeGreaterThan(0);
+      expect(new Set(outcomes)).toEqual(new Set(['HELD']));
+    } finally {
+      onB.mockRestore();
+      publish.mockRestore();
+      wake.mockRestore();
+    }
   });
 
   it('never resends Server Control after A crossed the claim, whatever comes after', async () => {

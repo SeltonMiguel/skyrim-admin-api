@@ -159,6 +159,220 @@ describe('Worker draining on graceful shutdown (12.2)', () => {
   });
 });
 
+describe('ServerControl worker wake-up (12.6B)', () => {
+  const setup = () => {
+    let running = 0;
+    let peak = 0;
+    const gates: ReturnType<typeof deferred<never[]>>[] = [];
+    const dispatcher = {
+      expirePending: jest.fn(() => {
+        running += 1;
+        peak = Math.max(peak, running);
+        const gate = deferred<never[]>();
+        gates.push(gate);
+        return gate.promise.finally(() => {
+          running -= 1;
+        });
+      }),
+      pendingIds: jest.fn(async () => []),
+    };
+    const handlers: (() => void)[] = [];
+    const cluster = {
+      subscribe: jest.fn((kind: string, handler: () => void) => {
+        if (kind === 'SERVER_CONTROL_WORK') handlers.push(handler);
+      }),
+    };
+    const worker = new ServerControlWorker(
+      dispatcher as never,
+      { expireResults: jest.fn(async () => []) } as never,
+      config({ serverControl: { workerIntervalMs: 60000 } }),
+      undefined,
+      cluster as never,
+    );
+    const ticks = () => dispatcher.expirePending.mock.calls.length;
+    return { worker, handlers, gates, ticks, peak: () => peak };
+  };
+  it('coalesces hints into one tick and never overlaps ticks', async () => {
+    const { worker, handlers, gates, ticks, peak } = setup();
+    worker.onApplicationBootstrap();
+    expect(handlers).toHaveLength(1);
+    handlers[0]();
+    handlers[0]();
+    worker.wake();
+    await flush();
+    expect(ticks()).toBe(1);
+    // Hints during the running tick: exactly one follow-up, after it.
+    handlers[0]();
+    worker.wake();
+    await flush();
+    expect(ticks()).toBe(1);
+    gates[0].resolve([]);
+    await flush();
+    expect(ticks()).toBe(2);
+    gates[1].resolve([]);
+    await flush();
+    expect(ticks()).toBe(2);
+    expect(peak()).toBe(1);
+    await worker.onModuleDestroy();
+  });
+  it('ignores hints after shutdown started', async () => {
+    const { worker, handlers, ticks } = setup();
+    worker.onApplicationBootstrap();
+    await worker.onModuleDestroy();
+    handlers[0]();
+    await flush();
+    expect(ticks()).toBe(0);
+  });
+  it('drops a pending follow-up when shutdown starts during a tick', async () => {
+    const { worker, handlers, gates, ticks } = setup();
+    worker.onApplicationBootstrap();
+    handlers[0]();
+    await flush();
+    handlers[0]();
+    const destroying = worker.onModuleDestroy();
+    gates[0].resolve([]);
+    await destroying;
+    await flush();
+    expect(ticks()).toBe(1);
+  });
+  it('skips, never overlaps, a polling tick during a woken tick', async () => {
+    const { worker, handlers, gates, ticks, peak } = setup();
+    worker.onApplicationBootstrap();
+    handlers[0]();
+    await flush();
+    expect(await worker.tick()).toBe(0);
+    expect(ticks()).toBe(1);
+    gates[0].resolve([]);
+    await flush();
+    expect(peak()).toBe(1);
+    await worker.onModuleDestroy();
+  });
+  it('keeps polling on its interval without any hint', async () => {
+    const polled = jest.fn(async () => []);
+    const worker = new ServerControlWorker(
+      { expirePending: polled, pendingIds: jest.fn(async () => []) } as never,
+      { expireResults: jest.fn(async () => []) } as never,
+      config({ serverControl: { workerIntervalMs: 10 } }),
+      undefined,
+      { subscribe: jest.fn() } as never,
+    );
+    worker.onApplicationBootstrap();
+    // Intentional elapsed time: several polling intervals.
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    await worker.onModuleDestroy();
+    expect(polled.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe('GameCommand worker wake-up (12.6B)', () => {
+  const setup = (active = true) => {
+    let running = 0;
+    let peak = 0;
+    const gates: ReturnType<typeof deferred<void>>[] = [];
+    const receiver = {
+      expireCommands: jest.fn(() => {
+        running += 1;
+        peak = Math.max(peak, running);
+        const gate = deferred<void>();
+        gates.push(gate);
+        return gate.promise.finally(() => {
+          running -= 1;
+        });
+      }),
+      expirePending: jest.fn(async () => 0),
+    };
+    const local: (() => void)[] = [];
+    const remote: (() => void)[] = [];
+    const worker = new GameCommandWorker(
+      {
+        activeSessions: () => (active ? [{ gameServerId: 'a' }] : []),
+        getSession: () => undefined,
+      } as never,
+      {} as never,
+      receiver as never,
+      config({
+        gameBridge: { workerIntervalMs: 60000 },
+        agent: { maxInFlightCommands: 1 },
+      }),
+      undefined,
+      { onWork: (listener: () => void) => local.push(listener) } as never,
+      {
+        subscribe: jest.fn((kind: string, handler: () => void) => {
+          if (kind === 'GAME_COMMAND_WORK') remote.push(handler);
+        }),
+      } as never,
+    );
+    const ticks = () => receiver.expireCommands.mock.calls.length;
+    return { worker, local, remote, gates, ticks, peak: () => peak };
+  };
+  it('coalesces local and bus hints into one tick and never overlaps ticks', async () => {
+    const { worker, local, remote, gates, ticks, peak } = setup();
+    worker.onApplicationBootstrap();
+    expect([local.length, remote.length]).toEqual([1, 1]);
+    local[0]();
+    remote[0]();
+    worker.wake();
+    await flush();
+    expect(ticks()).toBe(1);
+    // Hints during the running tick: exactly one follow-up, after it.
+    local[0]();
+    remote[0]();
+    expect(await worker.tick()).toBe(0);
+    await flush();
+    expect(ticks()).toBe(1);
+    gates[0].resolve();
+    await flush();
+    expect(ticks()).toBe(2);
+    gates[1].resolve();
+    await flush();
+    expect(ticks()).toBe(2);
+    expect(peak()).toBe(1);
+    await worker.onModuleDestroy();
+  });
+  it('ignores hints without a local ACTIVE Agent session', async () => {
+    const { worker, local, remote, ticks } = setup(false);
+    worker.onApplicationBootstrap();
+    local[0]();
+    remote[0]();
+    await flush();
+    expect(ticks()).toBe(0);
+    await worker.onModuleDestroy();
+  });
+  it('ignores hints after shutdown and drops a pending follow-up', async () => {
+    const { worker, local, remote, gates, ticks } = setup();
+    worker.onApplicationBootstrap();
+    local[0]();
+    await flush();
+    remote[0]();
+    const destroying = worker.onModuleDestroy();
+    gates[0].resolve();
+    await destroying;
+    local[0]();
+    await flush();
+    expect(ticks()).toBe(1);
+  });
+  it('keeps polling on its interval without any hint', async () => {
+    const polled = jest.fn(async () => undefined);
+    const worker = new GameCommandWorker(
+      { activeSessions: () => [] } as never,
+      {} as never,
+      { expireCommands: polled, expirePending: jest.fn(async () => 0) } as never,
+      config({
+        gameBridge: { workerIntervalMs: 10 },
+        agent: { maxInFlightCommands: 1 },
+      }),
+      undefined,
+      { onWork: jest.fn() } as never,
+      { subscribe: jest.fn() } as never,
+    );
+    worker.onApplicationBootstrap();
+    // Intentional elapsed time: several polling intervals.
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    await worker.onModuleDestroy();
+    expect(polled.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
 describe('Production preflight findings (12.2)', () => {
   const env = {
     ...parse(readFileSync('.env.example')),

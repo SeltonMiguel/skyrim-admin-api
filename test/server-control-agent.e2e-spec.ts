@@ -16,10 +16,12 @@ import { GameServerService } from '../src/game-bridge/game-server.service.js';
 import type { GameServer } from '../src/game-bridge/entities/game-server.entity.js';
 import { DiscordIdentityProvider } from '../src/player-auth/discord-identity.provider.js';
 import { AgentSessionRegistry } from '../src/game-agent/agent-session.registry.js';
+import { ServerControlWorker } from '../src/server-control/server-control.worker.js';
 import { ServerControlReceiver } from '../src/server-control/server-control-receiver.js';
 import type { ServerControlOperation } from '../src/server-control/entities/server-control-operation.entity.js';
 import type { ServerControlType } from '../src/server-control/server-control.contracts.js';
 import { FakeDiscordProvider } from './support/fake-discord-provider.js';
+import { startPerfTrace } from './support/perf-trace.js';
 import { FakeAgent } from './support/fake-agent.js';
 
 const describeDatabase =
@@ -47,11 +49,11 @@ async function eventually<T>(
   check: () => Promise<T | undefined | false>,
   timeoutMs = 6000,
 ): Promise<T> {
-  const deadline = Date.now() + timeoutMs;
+  const deadline = performance.now() + timeoutMs;
   for (;;) {
     const value = await check();
     if (value) return value;
-    if (Date.now() > deadline) throw new Error('Timed out waiting for state');
+    if (performance.now() > deadline) throw new Error('Timed out waiting for state');
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
 }
@@ -68,6 +70,7 @@ describeDatabase(
       ADMIN: '',
     };
     const agents: FakeAgent[] = [];
+    let stopPerfTrace = () => {};
     const discord = new FakeDiscordProvider();
     const schema = `server_control_agent_test_${randomUUID().replaceAll('-', '')}`;
     const http = () => request(app.getHttpServer());
@@ -183,11 +186,13 @@ describeDatabase(
       }
     }, 60000);
     beforeEach(async () => {
+      stopPerfTrace = startPerfTrace(app);
       server = await servers.register({ code: randomUUID(), name: 'Control' });
     });
     afterEach(async () => {
       for (const created of agents.splice(0)) await created.close();
       await eventually(async () => registry.count() === 0);
+      stopPerfTrace();
     });
     afterAll(async () => {
       for (const name of Object.keys(ENV)) delete process.env[name];
@@ -592,8 +597,22 @@ describeDatabase(
       expect(accepted).toHaveLength(1);
       expect(responses.filter((r) => r.status === 409)).toHaveLength(11);
       const id = accepted[0].body.operationId as string;
-      await host.control(id);
-      await pause(400);
+      const delivered = await host.control(id);
+      const diagnosticStart = performance.now();
+      // Drive actual worker passes instead of assuming progress after 400 ms.
+      await eventually(async () => (await status(id)) === 'DISPATCHED');
+      for (let tick = 0; tick < 3; tick++)
+        await app.get(ServerControlWorker).tick();
+      await host.heartbeat('STOPPED', false);
+      if (process.env.PERF_FLAKE_TRACE)
+        console.error(
+          JSON.stringify({
+            flake: 'servercontrol',
+            waitMs: performance.now() - diagnosticStart,
+            remainingMs:
+              Date.parse(delivered.payload!.notAfter as string) - Date.now(),
+          }),
+        );
       expect(host.controls()).toHaveLength(1);
       // A result racing a new request: no deadlock, and the request is
       // refused only while the first one is still open.

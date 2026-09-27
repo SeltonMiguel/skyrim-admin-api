@@ -6,3 +6,6 @@ coverage/
 .env.*
 !.env.example
 *.log
+
+# Raw performance artifacts (summaries live in docs/performance.md)
+.perf-results/

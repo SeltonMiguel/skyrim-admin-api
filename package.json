@@ -26,7 +26,12 @@
     "migration:run:prod": "node dist/database/migrate.js",
     "preflight": "node dist/database/preflight.js",
     "staff:bootstrap": "npm run build && node dist/staff/bootstrap.js",
-    "pretest:e2e": "npm run build"
+    "pretest:e2e": "npm run build",
+    "perf:smoke": "node scripts/perf/run.mjs --profile=smoke",
+    "perf:baseline": "node scripts/perf/run.mjs --profile=baseline",
+    "perf:load": "node scripts/perf/run.mjs --profile=load",
+    "perf:saturation": "node scripts/perf/run.mjs --profile=saturation",
+    "perf:soak": "node scripts/perf/run.mjs --profile=soak"
   },
   "dependencies": {
     "@nestjs/common": "^12.0.1",

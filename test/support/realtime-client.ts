@@ -1,3 +1,5 @@
+import { perfFrame } from './perf-frame.js';
+
 // Minimal test client over Node's built-in WebSocket (no extra dependency).
 export class RealtimeTestClient {
   readonly messages: Record<string, unknown>[] = [];
@@ -12,7 +14,9 @@ export class RealtimeTestClient {
       this.wake();
     });
     this.socket.addEventListener('message', (event) => {
-      this.messages.push(JSON.parse(String(event.data)));
+      const frame = JSON.parse(String(event.data));
+      perfFrame('received', frame);
+      this.messages.push(frame);
       this.wake();
     });
     this.socket.addEventListener('close', (event) => {
@@ -30,11 +34,11 @@ export class RealtimeTestClient {
     check: () => T | undefined | false,
     timeoutMs = 3000,
   ): Promise<T> {
-    const deadline = Date.now() + timeoutMs;
+    const deadline = performance.now() + timeoutMs;
     for (;;) {
       const value = check();
       if (value) return value;
-      const remaining = deadline - Date.now();
+      const remaining = deadline - performance.now();
       if (remaining <= 0)
         throw new Error('Timed out waiting for realtime state');
       await new Promise<void>((resolve) => {
@@ -48,6 +52,7 @@ export class RealtimeTestClient {
     }
   }
   send(value: unknown) {
+    perfFrame('sent', value);
     this.socket.send(typeof value === 'string' ? value : JSON.stringify(value));
   }
   // Sends the text as a binary frame.
