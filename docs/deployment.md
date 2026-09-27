@@ -58,6 +58,7 @@ pará-las antes é responsabilidade do procedimento. Trocar de SINGLE para MULTI
 | Bootstrap do coordenador | `node dist/staff/bootstrap.js` |
 
 - Fora da imagem: `npm run start:prod`, `npm run preflight` e `npm run migration:run:prod` (sobre `dist/` já compilado). `npm run migration:run` segue para desenvolvimento (rebuild + CLI).
+- CI (12.7B, `.github/workflows/ci.yml`): constrói a imagem com a tag imutável `skyrim-admin-api:<commit SHA>` e faz smoke (migrate + `/api/v1/ready`). Não publica em registry nem implanta: a promoção da imagem é passo manual do operador. Nunca use `latest` como única identidade da imagem.
 
 ## Fronteira de schema
 
@@ -125,7 +126,9 @@ Produção é **forward-only**: não use `migration:revert` como rollback.
 - **Schema incompatível com a versão anterior**: **roll forward**, com uma correção na aplicação ou uma migration corretiva nova.
 - **Perda ou corrupção de dados**: restore do backup do passo 2 (`docs/backup-restore.md`), aceitando a perda do que ocorreu depois dele.
 
-Regras para migrations novas (as 25 históricas não mudam):
+Migrations já publicadas (hoje 1–27) são **imutáveis**: nunca são editadas, nem o `down`. Correção de schema é sempre uma migration nova.
+
+Regras para migrations novas:
 - expand/contract;
 - `ADD CONSTRAINT … NOT VALID` seguido de `VALIDATE` separado;
 - `CREATE INDEX CONCURRENTLY` em migration com `transaction = false`;

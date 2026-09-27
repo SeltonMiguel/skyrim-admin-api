@@ -8,6 +8,9 @@ marcado. Os IDs entre parênteses remetem aos findings de
 Estado na 12.0: nenhum item de P0/P1 está marcado. Os itens já atendidos pela
 Etapa 11 estão marcados com a evidência correspondente.
 
+Plano de aceitação externa, componentes disponíveis e bloqueios (12.7A):
+`docs/release-acceptance.md`.
+
 Regras:
 - A **primeira produção** (instância única) exige todos os itens P0 marcados.
 - O **release público** exige todos os P0 e P1.
@@ -21,8 +24,8 @@ Regras:
 - [x] GameCommand at-least-once com dedup por commandId provado e2e (`test/game-command-agent.e2e-spec.ts`, `test/stage11-integration.e2e-spec.ts`)
 - [x] Server Control at-most-once e UNCERTAIN provados e2e, inclusive após restart real do backend (`test/stage11-integration.e2e-spec.ts`)
 - [x] DOMAIN_EVENT com receipt atômico e retry idempotente provado e2e (`test/agent-domain-events.e2e-spec.ts`)
-- [ ] Testes de corrida faltantes adicionados: accept duplo de trade, accept contra updateOffer, heartbeat contra updateRuntime, VIP advance contra revoke, mesmo eventId de TRADE_SETTLEMENT/MARKETPLACE_RELEASE em paralelo (P2-8)
-- [ ] Nenhum 23505 conhecido mapeado para 500 (F-DB4, F-DB7)
+- [x] Testes de corrida faltantes adicionados: accept duplo de trade, accept contra updateOffer, heartbeat contra updateRuntime, VIP advance contra revoke, mesmo eventId de TRADE_SETTLEMENT/MARKETPLACE_RELEASE em paralelo (P2-8) — accept duplo e accept × edição: `test/player-trades.e2e-spec.ts`; 12.7B: heartbeat × updateRuntime (`test/game-agent.e2e-spec.ts`), advance × revoke e eventId concorrente via socket + serviço (`test/agent-domain-events.e2e-spec.ts`), criar grupo × aceitar convite (`test/player-groups.e2e-spec.ts`), todos com PostgreSQL real
+- [x] Nenhum 23505 conhecido mapeado para 500 (F-DB4, F-DB7) — 12.7B: grupos mapeiam os três índices únicos para 409 (`src/player-groups/player-groups.spec.ts`); o filtro global responde 409 genérico a um 23505 não mapeado, sem constraint/SQL na resposta e com log `http_unique_conflict` no servidor (`src/common/filters/http-exception.filter.spec.ts`)
 
 ## Security
 
@@ -40,21 +43,21 @@ Controles descritos em `docs/security.md` (12.1).
 - [x] `/docs` e `/docs-json` indisponíveis com `NODE_ENV=production`, com teste (P1-3) — 12.1: default desligado em produção (`src/config/environment.spec.ts`), 404 quando desligado (`test/security.e2e-spec.ts`)
 - [x] Limite de body HTTP explícito e documentado (P1-3) — 12.1: 100 kB, 413 testado (`test/security.e2e-spec.ts`), `docs/security.md`
 - [x] `PermissionGuard` nega por padrão handler Staff sem metadata; teste de fronteira lista toda rota Staff com a sua permissão (S13) — 12.1: fail-closed + validação no startup, `src/rbac/permission-metadata.spec.ts`
-- [ ] `npm audit --omit=dev` sem HIGH/CRITICAL alcançável; cada exceção justificada por escrito (P2-7) — multer (não alcançável) justificado em `docs/security.md`; upgrade proposto, não aplicado
+- [x] `npm audit --omit=dev` sem HIGH/CRITICAL alcançável; cada exceção justificada por escrito (P2-7) — 12.7B: `@nestjs/platform-express` 12.0.4 (multer 2.4.0); `npm audit` 0 vulnerabilidades; gate `npm audit --omit=dev --audit-level=high` no CI
 - [ ] CORS_ORIGINS e REALTIME_ALLOWED_ORIGINS de produção configurados com as origens reais do Admin Web/Electron
 - [x] Socket realtime Player é fechado quando o backend revoga a sessão (logout, reuso de refresh), só para aquela sessão (S6) — 12.1, `test/security.e2e-spec.ts`; instância única até a 12.5
-- [ ] Socket realtime Player é fechado em mudança de status da conta (S6) — sem mutation de backend hoje (só SQL); fica para a API de status da 12.4
-- [ ] Segredos de produção gerados com ≥ 32 bytes aleatórios e guardados fora do repositório e do backup do DB
+- [x] Socket realtime Player é fechado em mudança de status da conta (S6) — 12.4: `POST /api/v1/operations/players/:playerId/status` revoga as sessões e fecha os sockets (`4001 ACCOUNT_DISABLED`), também entre réplicas (12.5); `test/operational-recovery.e2e-spec.ts` "suspends and bans accounts…"
+- [ ] Segredos de produção gerados com ≥ 32 bytes aleatórios e guardados fora do repositório e do backup do DB — 12.7B: produção recusa segredo JWT com menos de 43 caracteres ou menos de 10 distintos (S12); geração e guarda continuam responsabilidade do operador
 
 ## Reliability
 
 - [x] Graceful shutdown aguarda o tick em andamento dos workers; teste de SIGTERM durante o dispatch mantém at-least-once/at-most-once sem erro de pool no log (P1-7) — 12.2: dreno dos 5 loops em `src/lifecycle/lifecycle.spec.ts` e `src/game-agent/game-agent.spec.ts`; shutdown com Agent, Server Control claimed e GameCommand PENDING em `test/deployment-lifecycle.e2e-spec.ts`; SIGTERM no container (exit 0)
 - [x] Readiness vira 503 ao iniciar o shutdown, antes de fechar HTTP e WebSocket (P1-6, P1-7) — 12.2, `test/deployment-readiness.e2e-spec.ts`, `test/deployment-lifecycle.e2e-spec.ts`
-- [ ] Staff API para listar e inspecionar trades e purchases AWAITING_GAME_CONFIRMATION, releases PENDING/FAILED, VIP deliveries FAILED/UNCERTAIN/PENDING e receipts REJECTED (P1-9)
-- [ ] Toda ação de operador é auditada e declara se pode duplicar efeito físico; ações que podem duplicar exigem confirmação explícita (P1-9)
-- [ ] Política de timeout operacional para work sem resposta do Agent decidida e implementada ou documentada como manual (P1-9)
-- [ ] Mudança de status de conta Player por API auditada, sem SQL manual (P1-9)
-- [ ] Procedimento de ajuste econômico compensatório documentado (ledger imutável)
+- [x] Staff API para listar e inspecionar trades e purchases AWAITING_GAME_CONFIRMATION, releases PENDING/FAILED, VIP deliveries FAILED/UNCERTAIN/PENDING e receipts REJECTED (P1-9) — 12.4: `/api/v1/operations/*` (`src/operations/operations.controller.ts`), `test/operational-recovery.e2e-spec.ts`
+- [x] Toda ação de operador é auditada e declara se pode duplicar efeito físico; ações que podem duplicar exigem confirmação explícita (P1-9) — 12.4: Audit SUCCESS/FAILURE + `operator_actions` na mesma transação; matriz de duplicação em `docs/operational-recovery.md` §1; nenhuma ação que possa duplicar efeito é oferecida (retry só `RETRY_SAFE` com prova pré-entrega)
+- [x] Política de timeout operacional para work sem resposta do Agent decidida e implementada ou documentada como manual (P1-9) — 12.4: decidido sem auto-fail; `OPERATIONS_STALE_AFTER_MS` só marca `stale`; resolução manual pelos runbooks
+- [x] Mudança de status de conta Player por API auditada, sem SQL manual (P1-9) — 12.4, `test/operational-recovery.e2e-spec.ts`
+- [x] Procedimento de ajuste econômico compensatório documentado (ledger imutável) — 12.4: `docs/operational-recovery.md` §5.12, `POST /api/v1/operations/economy/adjustments` balanceado, e2e
 
 ## Multi-instance
 
@@ -79,7 +82,7 @@ Topologia MULTI (12.5; evidência: `test/multi-instance.e2e-spec.ts`, réplicas 
 - [x] Workers de A e B sem efeito duplicado (Trade work, VIP delivery); stale de dono morto marcado uma vez, dono vivo nunca
 - [x] Shutdown de uma réplica encerra só os Agents e leases dela; as demais seguem ready
 - [x] Migration 27 forward-only: banco novo e 26 → 27 com dados preservados, `pending=0`, diff 0/0
-- [ ] Rolling deploy entre versões (expand/contract, compatibilidade Agent e binários) — 12.7
+- [ ] Rolling deploy entre versões (expand/contract, compatibilidade Agent e binários) — 12.7A: schema e protocolo do Agent inalterados desde a 27; bus ignora kinds desconhecidos com fallback por polling; sem teste de binários misturados, **não declarado seguro** (`docs/release-acceptance.md` §12)
 - [ ] PgBouncer/rede de produção validados para a conexão LISTEN (direta ou session pooling)
 - [ ] Orquestrador de produção com N réplicas, load balancer e alertas do bus configurados
 
@@ -121,7 +124,7 @@ Evidência local (MEASURED_LOCAL_BASELINE, NOT A PRODUCTION SLA): `docs/performa
 - [x] 26ª migration (`OperationalRecovery`, 12.4) forward-only: banco novo e upgrade 25 → 26 verificados, `pending=0`, diff 0/0; `down` recusa apagar evidência de operador — `test/operational-recovery.e2e-spec.ts`, `test/deployment-readiness.e2e-spec.ts`
 - [x] Policy de migration publicada (forward-only, expand/contract, lock/statement timeout, sem `migration:revert` em produção) (P1-10) — 12.2, `docs/deployment.md`
 - [x] CLI de migration roda sem o `query_timeout` de 5 s do pool da aplicação (P1-10) — 12.2: `createMigrationOptions` (`DB_MIGRATION_*`), `src/database/database.options.spec.ts`; runner compilado `node dist/database/migrate.js`
-- [ ] Down de AgentDomainEvents protegido contra down seguido de up com releases já concluídas (P1-10) — sem guarda em código; a policy da 12.2 proíbe `migration:revert` em produção
+- [ ] Down de AgentDomainEvents protegido contra down seguido de up com releases já concluídas (P1-10) — **ACCEPTED_LIMITATION, mitigado por política**: migrations publicadas são imutáveis (não se edita o `down` histórico) e produção é forward-only, sem `migration:revert` (`docs/deployment.md`); rollback de aplicação usa compatibilidade expand/contract, perda de dados usa restore
 - [x] Pré-requisito `uuid-ossp`: criado explicitamente só pelo migration runner, nunca pelo runtime (`installExtensions: false`); verificado por `/ready` e pelo preflight (P1-10) — 12.2, sem migration nova, `test/deployment-extensions.e2e-spec.ts`
 - [ ] Role de migration de produção com `CREATE` no banco, ou extensão criada por um administrador antes da primeira migration
 - [ ] Preflight executado contra o DB de produção antes da primeira migration
@@ -129,17 +132,17 @@ Evidência local (MEASURED_LOCAL_BASELINE, NOT A PRODUCTION SLA): `docs/performa
 
 ## Backups
 
-- [ ] Backup do PostgreSQL de produção configurado (PITR ou dump) com RPO aprovado pelo operador (P0-4) — RPO: TO BE DECIDED (`docs/backup-restore.md`); ferramenta: `scripts/db-backup.sh`
-- [ ] Política de retenção aprovada (P0-4) — TO BE DECIDED
+- [ ] Backup do PostgreSQL de produção configurado (PITR ou dump) com RPO aprovado pelo operador (P0-4) — RPO: PRODUCT/OPS DECISION REQUIRED (`docs/backup-restore.md`); ferramenta: `scripts/db-backup.sh`
+- [ ] Política de retenção aprovada (P0-4) — PRODUCT/OPS DECISION REQUIRED
 - [x] Restore test executado com sucesso em ambiente isolado, com smoke pós-restore (12.2, local: 26 tabelas críticas iguais à origem, triggers, preflight 0 pending, `/ready` 200 e login no banco restaurado; `docs/backup-restore.md`)
-- [ ] Restore test repetido com volume de produção e RTO medido registrado (P0-4) — RTO: TO BE DECIDED
+- [ ] Restore test repetido com volume de produção e RTO medido registrado (P0-4) — RTO: PRODUCT/OPS DECISION REQUIRED; 12.7B repetiu o restore real **local** sobre o schema 27 (verify com as tabelas das migrations 26/27, preflight, `/ready`, login), sem valor de RTO
 - [ ] Backup verificado imediatamente antes de cada `migration:run` em produção (P0-4, P1-10)
 - [x] Procedimento pós-restore para reconciliar efeitos físicos do Agent posteriores ao ponto de restore documentado — `docs/backup-restore.md`
 
 ## Deployment
 
 - [x] Imagem de produção reproduzível (multi-stage, `npm ci`, usuário não-root, sem devDependencies, Node 24.18.0 fixado) construída e testada localmente (P0-3) — 12.2, `Dockerfile`, smoke de container
-- [ ] Imagem construída no CI e publicada com tag imutável
+- [ ] Imagem construída no CI e publicada com tag imutável — **parcial** (12.7B): `.github/workflows/ci.yml` constrói `skyrim-admin-api:<commit SHA>` e faz smoke do container (migrate + `/ready`); publicação em registry pendente (sem registry/credenciais); workflow ainda não executado no GitHub
 - [x] Migration como passo de deploy separado do start, sem rebuild (P0-3) — 12.2: `node dist/database/migrate.js` com o lock de instância única; a app nunca migra no start
 - [x] `NODE_ENV=production` definido pela imagem e pelo runbook; o servidor recusa `test`; o preflight dá ERROR fora de `production`; produção exige `DB_SSL_MODE` explícito e o lock (P1-5) — 12.2
 - [x] SSL para o DB configurável (`DB_SSL_MODE` disable/require/verify-full, CA opcional); pool e timeouts da API e da migration configuráveis (P1-4) — 12.2, `docs/configuration.md`
@@ -167,13 +170,13 @@ Evidência local (MEASURED_LOCAL_BASELINE, NOT A PRODUCTION SLA): `docs/performa
 - [ ] Contrato de claim de alvo para entitlements PLAYER definido pelo produto (12.7)
 - [ ] Runbooks de `docs/operational-recovery.md` exercitados em staging com o Agent real
 - [ ] Rotação de credencial do Agent (criar B, trocar, revogar A) executada em staging
-- [ ] Rotação de segredos JWT documentada (efeito: invalida sessões)
+- [x] Rotação de segredos JWT documentada (efeito: invalida sessões) — 12.7B: `docs/security.md` (um segredo por tipo, sem overlap: manutenção recreate; access-only não força login, refresh força)
 - [ ] Bootstrap do coordenador documentado e variáveis `BOOTSTRAP_*` removidas do ambiente após o uso
 - [ ] Retenção de logs e do Audit definida conforme LGPD
 
 ## Test acceptance
 
-- [ ] Todas as suítes verdes em CI com PostgreSQL da mesma versão major da produção
+- [ ] Todas as suítes verdes em CI com PostgreSQL da mesma versão major da produção — workflow pronto (12.7B: quality, e2e com `postgres:16` e gate de zero skips, migrations em banco novo, Docker); falta a primeira execução verde no GitHub
 - [ ] Três execuções consecutivas da suíte e2e sem flake em CI
 - [ ] e2e de duas instâncias verde (quando houver escala)
 - [x] Relatório de carga/soak anexado — 12.6: `docs/performance.md` e tabelas de medição (local, não SLA)

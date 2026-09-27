@@ -65,8 +65,8 @@ A lease de Agent não tem variável própria: é o heartbeat
 
 | Variável | Classe | Default | Notas |
 | --- | --- | --- | --- |
-| `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET` | REQUIRED_PRODUCTION | — | ≥ 32 caracteres, distintos; use ≥ 32 bytes aleatórios |
-| `PLAYER_JWT_ACCESS_SECRET`, `PLAYER_JWT_REFRESH_SECRET` | REQUIRED_PRODUCTION | — | distintos entre si e dos de Staff |
+| `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET` | REQUIRED_PRODUCTION | — | distintos; ≥ 32 caracteres fora de produção; em produção ≥ 43 caracteres (32 bytes em base64url, 64 em hex) e ≥ 10 caracteres distintos (12.7B, **BREAKING_CONFIG**: segredos de 32–42 caracteres deixam de subir em produção). Geração e rotação: `docs/security.md` |
+| `PLAYER_JWT_ACCESS_SECRET`, `PLAYER_JWT_REFRESH_SECRET` | REQUIRED_PRODUCTION | — | distintos entre si e dos de Staff; mesmas regras de tamanho em produção |
 | `JWT_ACCESS_TTL` / `JWT_REFRESH_TTL` | OPTIONAL_SAFE_DEFAULT | `15m` / `7d` | access ≤ 1 h; refresh ≤ 90 d e maior que access |
 | `PLAYER_JWT_ACCESS_TTL` / `PLAYER_JWT_REFRESH_TTL` | OPTIONAL_SAFE_DEFAULT | `15m` / `30d` | |
 | `TRUST_PROXY` | REQUIRED_PRODUCTION (decisão) | `false` | `false`, número de hops, ou lista loopback/linklocal/uniquelocal/IP/CIDR; `true` é recusado. Atrás de proxy, configure o proxy real |

@@ -264,12 +264,69 @@ Só o reuso de refresh (revogação de sessão) é auditado.
 
 ## Dependência: multer
 
-`npm audit` segue com 2 HIGH em `multer` 2.2.0, trazido por
-`@nestjs/platform-express` 12.0.1. O backend não registra nenhum
-`FileInterceptor` nem multipart (grep vazio), então os advisories não são
-alcançáveis. Não foi aplicado `npm audit fix`. Proposta: subir `@nestjs/*` para
-12.1.x (platform-express 12.1.0 usa multer 2.4.0), num commit isolado com a
-suíte completa.
+12.7B: `@nestjs/platform-express` 12.0.1 → 12.0.4 (patch isolado), que traz
+`multer` 2.4.0, fora da faixa vulnerável (≤ 2.2.0). Só esse pacote mudou
+(express segue 5.2.1; 5 pacotes transitivos removidos); o projeto usa apenas
+`ExpressAdapter`. `npm audit`: 2 HIGH → 0. O backend continua sem
+`FileInterceptor` ou multipart. Não foi usado `npm audit fix` e o resto do
+Nest não foi atualizado.
+
+## Rotação de segredos JWT (12.7B)
+
+Staff e Player assinam com HS256 e **um segredo por tipo de token**
+(`JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`, `PLAYER_JWT_ACCESS_SECRET`,
+`PLAYER_JWT_REFRESH_SECRET`). Não há `kid` nem janela com duas chaves: a troca
+**não é zero-downtime** e invalida na hora os tokens assinados com o segredo
+antigo. A rotação do refresh token por uso (seção acima) é outra coisa.
+
+| O que trocar | Efeito |
+| --- | --- |
+| Só o segredo de access | access tokens antigos → 401; o cliente usa o refresh e segue, sem novo login. Sockets Staff são revalidados por evento e fecham com 4001; reconectam com o token novo |
+| Segredo de refresh | todo refresh antigo falha: novo login obrigatório (equivale a encerrar todas as sessões daquela superfície) |
+| Só os de Staff ou só os de Player | afeta apenas aquela superfície; Agents não usam JWT (credencial própria) |
+
+Procedimento (manutenção, deploy recreate):
+
+1. Gere segredos novos com ≥ 32 bytes aleatórios (`openssl rand -base64 32`
+   ou `-hex 32`), distintos entre si; guarde no cofre, fora do repo e do backup.
+2. Pare **todas** as réplicas. Em MULTI, réplicas com segredos diferentes
+   recusariam os tokens umas das outras (401 aleatório); não faça rolling.
+3. Atualize os segredos no ambiente de todas as réplicas e suba a nova geração
+   (`/api/v1/ready` 200).
+4. Comunique o novo login se o segredo de refresh mudou. As linhas de
+   `staff_sessions`/`player_sessions` antigas ficam inúteis e expiram sozinhas.
+
+Em suspeita de vazamento, troque access e refresh da superfície afetada.
+
+### S12 — BREAKING_CONFIG
+
+Produção recusa segredos JWT fracos (S12): menos de 43 caracteres (32 bytes
+em base64url; hex ocupa 64) ou menos de 10 caracteres distintos. O erro de
+boot nomeia a variável, nunca o valor. É um piso heurístico, não uma medida
+de entropia.
+
+**BREAKING_CONFIG** para a primeira release que contém a regra: um ambiente
+de produção com segredo de 32 a 42 caracteres (válido antes) **não sobe** até
+trocar o segredo. Antes do deploy, confira o tamanho de cada um dos quatro
+segredos sem exibi-los e gere os que faltarem.
+
+Gere com um CSPRNG, direto para o cofre/arquivo do ambiente, sem imprimir nem
+deixar no histórico do shell, por exemplo:
+
+```sh
+umask 077
+printf 'JWT_ACCESS_SECRET=%s\n' "$(openssl rand -base64 32)" >> /caminho/seguro/app.env
+```
+
+(`openssl rand -hex 32` também serve; um valor por variável, todos
+distintos.) Trocar segredo invalida tokens: siga a rotação acima.
+
+## Metadata do Audit (S11, 12.7B)
+
+Além das chaves de segredo, o sanitizer descarta `message`, `content` e
+`result` (nome exato, para manter `messageId` ou `resultCount`) e qualquer
+chave com `payload` ou `challenge`. Os chamadores continuam montando metadata
+explícita só com ids e enums; o sanitizer é a segunda linha.
 
 ## Produção (12.2)
 

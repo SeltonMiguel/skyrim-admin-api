@@ -708,6 +708,25 @@ Desvio do critério do roadmap: o soak foi de 15 min (não 24 h) e os thresholds
 de alerta e SLAs não foram fixados; a 12.6 entrega a baseline local para essa
 calibração em staging.
 
+## 25.7 Status após a 12.7B (fechamento interno)
+
+| Finding | Classe | Status | Como |
+| --- | --- | --- | --- |
+| P2-7 / S15 multer | FIXABLE_INTERNAL | **resolvido** | `@nestjs/platform-express` 12.0.1 → 12.0.4 (multer 2.4.0); `npm audit` 2 HIGH → 0; resto do Nest intocado |
+| F-DB4 23505 em grupos | FIXABLE_INTERNAL | **resolvido** | as locks de linha já serializam os INSERTs (o 23505 era residual); mapeamento dos três índices únicos para 409, como em guilds; e2e da corrida criar × aceitar |
+| F-DB7 23505 genérico | FIXABLE_INTERNAL | **resolvido** | filtro global: 23505 não mapeado → 409 `Conflict` genérico (transação já desfeita, sem SQL/constraint na resposta), log `http_unique_conflict` com a constraint no servidor; sem retry |
+| P2-8 corridas (domínio e Agent) | FIXABLE_INTERNAL | **resolvido** | heartbeat × updateRuntime, VIP advance × revoke, eventId concorrente de TRADE_SETTLEMENT e MARKETPLACE_RELEASE (socket + serviço, porque um socket é serial), criar grupo × aceitar; PostgreSQL real |
+| S11 metadata do Audit | FIXABLE_INTERNAL | **resolvido** | sanitizer descarta `message`, `content`, `result` (nome exato) e chaves com `payload`/`challenge` |
+| S12 entropia de segredo JWT | FIXABLE_INTERNAL | **resolvido (piso heurístico), BREAKING_CONFIG** | produção recusa < 43 caracteres ou < 10 distintos; erro nomeia a variável, nunca o valor; fora de produção a regra de 32 caracteres continua; segredos de 32–42 caracteres precisam ser trocados antes da primeira release com a regra (`docs/security.md`) |
+| P1-10 / M4 down de AgentDomainEvents | ACCEPTED_LIMITATION | **mitigado por política** | editar o `down` histórico foi rejeitado na revisão da 12.7B: migrations publicadas são imutáveis; produção é forward-only e `migration:revert` não é procedimento de produção (§17 item 5, `docs/deployment.md`); nenhuma migration 28 |
+| P1-10 demais (role de migration, preflight e smoke em produção) | EXTERNAL | aberto | exigem o banco de staging/produção |
+| Restore verify | FIXABLE_INTERNAL | **resolvido** | + `operator_actions`, `vip_reward_delivery_attempts`, `agent_work_rejections`; tabelas da 27 verificadas só como schema; restore real local sobre a 27 com preflight, `/ready` e login |
+| CI | FIXABLE_INTERNAL | **pronto, não executado** | `.github/workflows/ci.yml`: quality, e2e com `postgres:16` (zero skips), banco novo pelo runner de produção, imagem `skyrim-admin-api:<SHA>` com smoke; sem deploy nem registry |
+| Rotação de segredos JWT | FIXABLE_INTERNAL (doc) | **documentado** | `docs/security.md`: sem overlap de chaves, rotação em manutenção recreate |
+| RPO / RTO / retenção | PRODUCT_DECISION | aberto | PRODUCT/OPS DECISION REQUIRED |
+| Entitlements PLAYER sem claim | PRODUCT_DECISION | aberto | nenhuma rota de claim existe; o grant PLAYER cria o direito sem entregas e nunca escolhe personagem; não é rota insegura, é contrato de produto ausente |
+| P1-2 / R2 reautorização Staff por evento | ACCEPTED_LIMITATION | mantido | custo, não correctness; a 12.6 não mostrou gargalo; cache trocaria a autoridade do banco sem necessidade |
+
 ## 26. Roadmap final da Stage 12
 
 A ordem sugerida na abertura (multi-instância primeiro) foi **alterada**. Os P0

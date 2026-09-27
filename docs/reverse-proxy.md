@@ -4,8 +4,9 @@ Requisitos para qualquer proxy ou load balancer à frente do backend.
 Independe de fornecedor. O backend escuta HTTP puro em `PORT`, e TLS termina
 no proxy.
 
-**Uma instância só:** o proxy aponta para exatamente um backend. Sticky
-sessions e balanceamento entre réplicas ficam para a Etapa 12.5.
+**SINGLE:** o proxy aponta para exatamente um backend. **MULTI (12.5):** o
+load balancer distribui entre as réplicas sem sticky session (qualquer réplica
+atende HTTP e WebSocket; ver `docs/multi-instance.md`).
 
 ## TLS
 
