@@ -1,0 +1,166 @@
+# Release validation (12.7B): quality, PostgreSQL 16 e2e, fresh-schema
+# migration and a Docker image tagged by commit SHA. Validation and build
+# only: no deploy, no registry push, no release, no production secret.
+name: ci
+
+on:
+  push:
+    branches: [main, develop, 'feature/**']
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Same Node as the production image (Dockerfile ARG NODE_VERSION).
+  NODE_VERSION: 24.18.0
+
+jobs:
+  quality:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm # npm download cache only, never node_modules
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build
+      - run: npm test
+      - run: npx tsc --noEmit --incremental false
+      # Whitespace errors in every tracked file (diff against the empty tree).
+      - run: git diff --check 4b825dc642cb6eb9a060e54bf8d69288fbee4904 HEAD
+      - run: npm audit --omit=dev --audit-level=high
+
+  e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: skyrim
+          POSTGRES_PASSWORD: skyrim_ci_only
+          POSTGRES_DB: skyrim_ci_e2e
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U skyrim -d skyrim_ci_e2e"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      # Test-only coordinates; the suites apply migrations into their own
+      # schemas (synchronize=false, schema diff asserted by the suites).
+      TEST_DATABASE_INTEGRATION: 'true'
+      DB_HOST: 127.0.0.1
+      DB_PORT: '5432'
+      DB_USERNAME: skyrim
+      DB_PASSWORD: skyrim_ci_only
+      DB_DATABASE: skyrim_ci_e2e
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - name: e2e (zero skips)
+        run: |
+          set -o pipefail
+          npm run test:e2e 2>&1 | tee e2e.log
+          summary="$(sed 's/\x1b\[[0-9;]*m//g' e2e.log | grep -E '^Tests:')"
+          echo "$summary"
+          if echo "$summary" | grep -qE 'skipped|todo'; then
+            echo "::error::e2e reported skipped or todo tests"; exit 1
+          fi
+
+  migrations:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: skyrim
+          POSTGRES_PASSWORD: skyrim_ci_only
+          POSTGRES_DB: skyrim_ci_fresh
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U skyrim -d skyrim_ci_fresh"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: fresh database -> production migration runner -> preflight
+        env:
+          NODE_ENV: production
+          DB_HOST: 127.0.0.1
+          DB_PORT: '5432'
+          DB_USERNAME: skyrim
+          DB_PASSWORD: skyrim_ci_only
+          DB_DATABASE: skyrim_ci_fresh
+          DB_SSL_MODE: disable
+          TRUST_PROXY: 'false'
+        run: |
+          # Throwaway per-run values: this database is discarded with the job.
+          for name in JWT_ACCESS_SECRET JWT_REFRESH_SECRET PLAYER_JWT_ACCESS_SECRET PLAYER_JWT_REFRESH_SECRET; do
+            export "$name=$(openssl rand -hex 32)"
+          done
+          node dist/database/migrate.js
+          node dist/database/preflight.js --require-current | tee preflight.log
+          grep -q 'migrations: 27 applied, 27 known, 0 pending' preflight.log
+
+  docker:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: skyrim
+          POSTGRES_PASSWORD: skyrim_ci_only
+          POSTGRES_DB: skyrim_ci_image
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U skyrim -d skyrim_ci_image"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      IMAGE: skyrim-admin-api:${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: build image (immutable tag = commit SHA)
+        run: docker build --tag "$IMAGE" .
+      - name: container smoke (migrate, then /api/v1/ready)
+        run: |
+          cat > smoke.env <<EOF
+          DB_HOST=127.0.0.1
+          DB_PORT=5432
+          DB_USERNAME=skyrim
+          DB_PASSWORD=skyrim_ci_only
+          DB_DATABASE=skyrim_ci_image
+          DB_SSL_MODE=disable
+          TRUST_PROXY=false
+          JWT_ACCESS_SECRET=$(openssl rand -hex 32)
+          JWT_REFRESH_SECRET=$(openssl rand -hex 32)
+          PLAYER_JWT_ACCESS_SECRET=$(openssl rand -hex 32)
+          PLAYER_JWT_REFRESH_SECRET=$(openssl rand -hex 32)
+          EOF
+          docker run --rm --network host --env-file smoke.env "$IMAGE" node dist/database/migrate.js
+          docker run -d --name smoke --network host --env-file smoke.env "$IMAGE"
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:3000/api/v1/ready; then echo; break; fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:3000/api/v1/ready
+          docker stop --time 30 smoke
+          docker logs smoke 2>&1 | tail -20
+          rm -f smoke.env

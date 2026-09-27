@@ -32,7 +32,8 @@ critical=(migrations staff_users staff_sessions roles permissions role_permissio
   player_characters economy_accounts economy_transactions economy_entries
   player_trades player_marketplace_listings player_marketplace_item_releases
   vip_offers player_vip_entitlements vip_reward_deliveries
-  agent_domain_event_receipts)
+  agent_domain_event_receipts
+  operator_actions vip_reward_delivery_attempts agent_work_rejections)
 for table in "${critical[@]}"; do
   if [ "$(q "$target" "SELECT to_regclass('public.$table') IS NOT NULL")" != t ]; then
     echo "FAIL  missing table $table"; status=1; continue
@@ -43,6 +44,25 @@ for table in "${critical[@]}"; do
     if [ "$source" = "$restored" ]; then echo "OK    $table rows=$restored"
     else echo "FAIL  $table rows=$restored source=$source"; status=1; fi
   else echo "OK    $table rows=$restored"; fi
+done
+# Migration 27 (multi-instance): coordination state is ephemeral and
+# reconstructible (bus envelopes, rate-limit windows, realtime leases expire
+# on their own), so only its schema is verified, never its row counts.
+for table in distributed_bus_events rate_limit_buckets rate_limit_slots realtime_connection_leases; do
+  [ "$(q "$target" "SELECT to_regclass('public.$table') IS NOT NULL")" = t ] \
+    && echo "OK    ephemeral table $table (rows not compared)" || { echo "FAIL  missing table $table"; status=1; }
+done
+[ "$(q "$target" "SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'game_connections' AND column_name = 'owner_instance_id'")" = 1 ] \
+  && echo "OK    column game_connections.owner_instance_id" || { echo "FAIL  column game_connections.owner_instance_id missing"; status=1; }
+for index in game_connections_owner_idx distributed_bus_events_expiry_idx rate_limit_buckets_expiry_idx \
+  rate_limit_slots_expiry_idx realtime_connection_leases_expiry_idx operator_actions_resource_idx; do
+  [ "$(q "$target" "SELECT count(*) FROM pg_indexes WHERE schemaname = 'public' AND indexname = '$index'")" = 1 ] \
+    && echo "OK    index $index" || { echo "FAIL  index $index missing"; status=1; }
+done
+for constraint in distributed_bus_events_check rate_limit_buckets_pkey rate_limit_slots_pkey \
+  realtime_connection_leases_check operator_actions_idempotency_key vip_reward_delivery_attempts_attempt_key; do
+  [ "$(q "$target" "SELECT count(*) FROM pg_constraint WHERE conname = '$constraint'")" -ge 1 ] \
+    && echo "OK    constraint $constraint" || { echo "FAIL  constraint $constraint missing"; status=1; }
 done
 for trigger in audit_logs_immutable economy_entries_immutable economy_entries_balanced economy_transactions_immutable; do
   [ "$(q "$target" "SELECT count(*) FROM pg_trigger WHERE tgname = '$trigger' AND tgrelid::regclass::text NOT LIKE '%.%'")" -ge 1 ] \
