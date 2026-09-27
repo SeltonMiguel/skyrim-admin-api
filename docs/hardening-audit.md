@@ -682,6 +682,32 @@ Topologia em `docs/multi-instance.md`; migration `1790060000000-MultiInstance`
 | Rolling deploy | aberto (12.7) | recreate continua obrigatório entre versões |
 | Flakes da 12.2 | inalterados; `server-control-agent` "keeps one non-terminal…" reproduziu 1× em 3 lotes das suítes críticas e 1× numa rodada focada da 12.5A; 8/8 e 4/4 isolado | mesma premissa de tempo da 12.2 (`pause(400)` + janela de entrega de 1 s: sob contenção o Agent recebe após `notAfter`); o claim da 12.5 só acrescenta um `EXISTS` no mesmo UPDATE. Timeout não alterado; medição e calibragem na 12.6 |
 
+## 25.6 Status após a 12.6
+
+Medições em `docs/performance.md` (decisões) e nas tabelas
+`docs/performance-12.6a-measurements.md` / `docs/performance-12.6b-measurements.md`.
+Tudo **MEASURED_LOCAL_BASELINE — NOT A PRODUCTION SLA** (um host local
+compartilhado).
+
+| Finding / tema | Status | Como |
+| --- | --- | --- |
+| P2-6 carga e soak | **parcial** | §23 executada (baseline, ramp, SINGLE × MULTI, overload), soak misto de 15 min com cooldown, churn realtime de 37.450 ciclos, crash do owner; soak de 24 h e SLA de produção ficam para staging/produção |
+| Primeiro limitante | medido | CPU da réplica (thread JS ~1,4 núcleo) com a fila do pool como sintoma; PostgreSQL com folga (~1,7 de 16 núcleos) |
+| F-DB6 linhas quentes | medido, sem ação | nenhuma query surgiu como gargalo; EXPLAIN dos hot paths em 0,016–0,071 ms; **nenhum índice novo**, 27 migrations |
+| `DB_POOL_MAX` | **mantido em 10** | 10 → 12 ≈ 4–5%; waiting em 1/895 amostras do soak |
+| Leases, heartbeat, TTL/cleanup do bus, intervalos de worker | **mantidos** | margens amplas (lag ≤ 17,8 ms, stalls ≤ 0,8 s contra 30 s/60 s); bus e limiter convergem a 0 em ≤ 116 s |
+| Latência de polling non-owner | **resolvido** | hints sem payload `SERVER_CONTROL_WORK` e `GAME_COMMAND_WORK` depois do commit; worker coalescido, nunca sobreposto; polling mantido como fallback; bus nunca é autoridade |
+| Janela local do Agent sob step de relógio | **resolvido** | janela de mensagens e cadência do sweep em relógio monotônico; step civil não fecha Agent legítimo nem reseta a janela |
+| P1-2 / R2 reautorização Staff por evento | aberto (sem evidência para mudar) | custo observado no fanout curto, sem knee; mantida a revalidação por entrega |
+| Rate limits de segurança | **não relaxados** | nenhum limite alterado |
+| Restrição conhecida do Agent | registrada | 200 frames/10 s por sessão, ~2 frames por GameCommand ⇒ ~9–10 GameCommands/s por servidor (MEASURED_LOCAL_CAPACITY_CONSTRAINT); validar com o Agent/SKSE real na 12.7 |
+| Relógio | requisito documentado | monotônico local, civil persistido; NTP/chrony obrigatório; 13 casos de step/skew sem falha de correctness; timestamps entre réplicas não ordenam causalidade (`docs/multi-instance.md` §13) |
+| Flakes da 12.2 | **resolvidos** | causa: pausas fixas no teste somadas a saltos do relógio civil do host, não timeout de produção; correção por barreira de heartbeat e passes reais do worker; timeouts inalterados; 18/18 focados e 3 × 56/56 nas suítes críticas |
+
+Desvio do critério do roadmap: o soak foi de 15 min (não 24 h) e os thresholds
+de alerta e SLAs não foram fixados; a 12.6 entrega a baseline local para essa
+calibração em staging.
+
 ## 26. Roadmap final da Stage 12
 
 A ordem sugerida na abertura (multi-instância primeiro) foi **alterada**. Os P0

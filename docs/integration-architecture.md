@@ -687,7 +687,10 @@ Agent: grava resultado ─── COMMAND_RESULT ─► Router ──► GameComm
 ```
 
 O **worker** da 11.2 (§8.3) é o chamador de produção do lifecycle: não há dispatch
-síncrono no request; o próximo tick (padrão 500 ms) despacha o command.
+síncrono no request; o próximo tick (padrão 500 ms) despacha o command. Desde a
+12.6B o commit do command antecipa esse tick (wake-up local e hint
+`GAME_COMMAND_WORK` sem payload para o dono do socket); o polling continua como
+fallback.
 
 ### 8.1 ACK vs RESULT (decidido; **implementado na 11.2**)
 

@@ -11,6 +11,9 @@ exit 1. Se a conexão do lock cair (banco reiniciado, rede), a instância se
 encerra (`LOCK_LOST`, exit 1) em vez de seguir sem lock; configure restart
 automático (ex.: `restart: unless-stopped`). **Estratégia de deploy:
 recreate.**
+Mesmo em SINGLE, o backend e os hosts dos Agents precisam de relógio
+sincronizado: o Agent confere o `notAfter` do Server Control com o próprio
+relógio (`docs/multi-instance.md` §13).
 
 **MULTI (12.5): N réplicas simultâneas** atrás de um load balancer, sem sticky
 session e sem forwarding interno. Nenhuma réplica toma o lock global; a
@@ -20,6 +23,10 @@ rate limits) e por LISTEN/NOTIFY. Requisitos:
 - a conexão LISTEN de cada réplica precisa de conexão direta ao PostgreSQL ou
   PgBouncer em *session pooling*; **transaction pooling não serve** para ela;
 - por réplica: `DB_POOL_MAX` + 1 conexões;
+- **relógios sincronizados** (NTP/chrony ou equivalente) em todas as réplicas,
+  nos hosts dos Agents e no PostgreSQL: deadlines persistidos são gravados pelo
+  relógio de uma máquina e comparados pelo de outra (contrato em
+  `docs/multi-instance.md` §13);
 - a perda de uma réplica não exige ação: os Agents dela reconectam em outra,
   as leases expiram e o sweep marca as sessões órfãs como STALE.
 

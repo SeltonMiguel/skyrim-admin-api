@@ -40,7 +40,9 @@ starting/stopping [instanceId=…]`, logs de Agent); nunca é label de métrica.
   SUPERSEDED.
 - **Lease = frescor do heartbeat**: `last_heartbeat_at + GAME_BRIDGE_HEARTBEAT_TIMEOUT_MS`.
   Só o dono renova (o heartbeat exige `owner_instance_id` = instância local).
-  Não há segundo relógio a divergir.
+  `last_heartbeat_at` é gravado com o relógio civil do dono, e o sweep de
+  qualquer réplica compara com o próprio relógio: sob skew grande entre
+  réplicas a lease é vista vencida cedo ou tarde demais (§13).
 - **Autoridade**: uma instância só age por uma sessão que o banco diz ser a
   CONNECTED do servidor, dela, com lease válida e credencial ACTIVE:
   - envio de COMMAND: o reserve verifica o dono sob o lock do servidor, antes
@@ -86,9 +88,19 @@ no primeiro frame (provado com NOTIFY suprimido).
   - depois da entrega: a nova sessão recebe a próxima tentativa com o mesmo
     `commandId`/`correlationId`/payload, e o journal do Agent responde sem
     reexecutar; um RESULT de qualquer sessão ativa e dona é aceito.
+  Depois do commit de um command novo (HTTP/ator ou entrega VIP), a instância
+  acorda o próprio worker e publica `GAME_COMMAND_WORK` **sem payload**; o
+  worker só age se tiver sessão ACTIVE local (coalescido, nunca sobreposto) e
+  relê a fila no banco. Hint perdido cai no polling de
+  `GAME_COMMAND_WORKER_INTERVAL_MS` (12.6B).
 - **Server Control**: só o dono cruza o claim (fronteira de entrega). Depois
   do claim ninguém reenvia: um RESULT tardio por outra instância é aceito; sem
   RESULT, a operação termina UNCERTAIN no deadline. Failover nunca vira retry.
+  Criada numa instância sem o socket do Agent (dispatch local `HELD`), a
+  operação publica `SERVER_CONTROL_WORK` **sem payload** depois do commit; o
+  worker do dono antecipa o tick (coalescido, nunca sobreposto) e relê a fila
+  no banco. A fila e o claim owner-aware continuam a autoridade; hint perdido
+  cai no polling de `SERVER_CONTROL_WORKER_INTERVAL_MS` (12.6B).
 
 ## 5. Bus distribuído (LISTEN/NOTIFY)
 
@@ -103,7 +115,8 @@ no primeiro frame (provado com NOTIFY suprimido).
 - Limpeza limitada (1000 linhas por vez) a cada `CLUSTER_CLEANUP_INTERVAL_MS`,
   por qualquer réplica, sem eleição de líder.
 - Tipos: `REALTIME`, `PLAYER_SESSION_REVOKED`, `PLAYER_ACCOUNT_REVOKED`,
-  `AGENT_SESSION_CLOSED`, `AGENT_CREDENTIAL_REVOKED`.
+  `AGENT_SESSION_CLOSED`, `AGENT_CREDENTIAL_REVOKED`, `SERVER_CONTROL_WORK`,
+  `GAME_COMMAND_WORK`.
 
 **PgBouncer**: a conexão LISTEN exige conexão direta ou *session pooling*.
 Transaction pooling não serve para o listener (LISTEN é estado de sessão). O
@@ -189,3 +202,26 @@ sessão legada preservada, `pending=0`, `synchronize=false`, diff 0/0.
   binários antigo/novo. Fica para a 12.7. Troca de topologia (SINGLE → MULTI)
   é feita com todas as réplicas paradas.
 - Conexões por réplica: `DB_POOL_MAX` + 1 (LISTEN, só MULTI) (+ 1 lock, só SINGLE).
+
+## 13. Contrato de relógio (12.6)
+
+- **Durações locais usam relógio monotônico**: janela de rate limit de
+  mensagens do Agent, cadência do sweep de sessões e métricas de duração de
+  tick. Esses valores nunca são persistidos nem comparados entre processos.
+- **Timestamps persistidos e deadlines distribuídos usam relógio civil**:
+  deadlines de ACK/execução/pending do GameCommand, `notAfter` e result
+  deadline do Server Control, `last_heartbeat_at`, `created_at`/`completed_at`.
+  O relógio de uma réplica grava e o de outra (ou o do Agent) compara. Leases
+  realtime, bus e rate limits usam `NOW()` do PostgreSQL.
+- **Produção MULTI exige sincronização de relógio** (NTP/chrony ou equivalente)
+  entre réplicas, hosts dos Agents e PostgreSQL.
+- Sob skew ou step grande (medido na 12.6 com ±8 s, ±12 s e ±35 s, ver
+  `docs/performance.md`): timeouts são percebidos cedo ou tarde (retry de ACK
+  antecipado ou atrasado, UNCERTAIN antecipado, sessão fechada como vencida ou
+  STALE, Agent adiantado recusando uma operação ainda válida). Nenhum caso
+  duplicou efeito, reenviou Server Control ou devolveu autoridade a um Agent
+  fechado.
+- **Timestamps de réplicas diferentes não ordenam causalidade**: com hosts
+  dessincronizados, `completed_at` pode aparecer antes de `created_at` na mesma
+  operação (observado com +35 s). Use o estado e as transições, não a ordem dos
+  timestamps, para raciocinar sobre o que aconteceu.

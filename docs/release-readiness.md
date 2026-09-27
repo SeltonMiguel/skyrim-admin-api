@@ -92,16 +92,28 @@ Topologia MULTI (12.5; evidência: `test/multi-instance.e2e-spec.ts`, réplicas 
 - [ ] Dashboards dos painéis mínimos de `docs/observability.md` criados na ferramenta escolhida
 - [x] Contrato de alertas documentado (expressões e thresholds `THRESHOLD_TO_BE_CALIBRATED_12_6`) — 12.3, `docs/observability.md`
 - [ ] Alertas configurados e disparados em teste para: Server Control UNCERTAIN novo, VIP delivery UNCERTAIN/FAILED, work de Trade/Marketplace/release mais antigo que o limiar, nenhum Agent conectado em servidor habilitado, taxa de 5xx, pool do DB saturado (P1-8) — staging
-- [ ] Thresholds calibrados com a carga da 12.6 e entrega de alertas (canal on-call) configurada
+- [ ] Thresholds calibrados com a carga da 12.6 e entrega de alertas (canal on-call) configurada — baseline local disponível na 12.6 para calibrar; calibração com carga real e entrega on-call ficam para staging
 - [x] Logs em JSON com `requestId`, `gameServerId`, `commandId`, `operationId`, `eventId`, `workId` quando aplicáveis (P3-2) — 12.3, `AppLogger`, `test/observability.e2e-spec.ts`
 - [ ] Teste de fronteira falha se um log contiver segredo, token, challenge, conteúdo de chat ou payload/result de comando — 12.3 cobre segredo, token, JWT, bearer, PEM, challenge e senha (redaction central + e2e); conteúdo de chat e payload/result de comando continuam protegidos só por não serem logados
 
 ## Performance
 
-- [ ] Cenários de `docs/hardening-audit.md` §23 executados com relatório de p50/p95/p99, throughput e erros (P2-6)
-- [ ] Soak de 24 h sem crescimento de memória nem de conexões (P2-6)
-- [ ] Limiares de rate limit e tetos de socket definidos a partir das medições e registrados (P2-6)
-- [ ] SLAs aprovados pelo produto com base nos números medidos (P2-6)
+Evidência local (MEASURED_LOCAL_BASELINE, NOT A PRODUCTION SLA): `docs/performance.md`,
+`docs/performance-12.6a-measurements.md`, `docs/performance-12.6b-measurements.md`.
+
+- [x] Cenários de `docs/hardening-audit.md` §23 executados com relatório de p50/p95/p99, throughput e erros (P2-6) — 12.6: baseline e ramp HTTP C=4…32, SINGLE × MULTI, auth, GameCommand, Server Control, DOMAIN_EVENT/WORK_SYNC, economia, realtime, limiter, bus, collector com backlog, overload C=32/128
+- [x] Soak misto MULTI com cooldown, sem violação de correctness e sem crescimento ilimitado observado — 12.6B.2: 906 s de workload + 297 s de cooldown; 32 checagens periódicas e final; bus/limiter/leases convergem a 0; heap pós-GC com deriva sublinear
+- [ ] Soak de 24 h sem crescimento de memória nem de conexões (P2-6) — **parcial**: 15 min + 37.450 ciclos de churn realtime localmente; horizonte longo fica para staging/produção
+- [x] Realtime churn sem retenção: registry, leases (memória e banco) e handles voltam ao baseline — 12.6B.2
+- [x] Pool calibrado com evidência: `DB_POOL_MAX=10` mantido (10 → 12 ≈ 4–5%; waiting 1/895 no soak) — 12.6A/12.6B.2
+- [x] Margem de leases validada: pior lag de event-loop 17,8 ms (soak) e stalls ≤ 0,8 s contra heartbeat 30 s e lease realtime 60 s; recuperação após crash do owner medida (STALE em 30,5 s) — 12.6B.2
+- [x] Cleanup do bus e do limiter validado: zero em ≤ 116 s após a carga, TTL/intervalos inalterados — 12.6B.2
+- [x] Latência de polling do Server Control non-owner resolvida por hint (`SERVER_CONTROL_WORK`), polling como fallback — 12.6B.1: commit → owner p99 954 → 11,5 ms
+- [x] Latência de polling do GameCommand resolvida por hint (`GAME_COMMAND_WORK`), polling como fallback — 12.6B.2: created → reserved p99 344 → 22 ms
+- [x] Flakes históricos de tempo (`server-control-agent` "keeps one non-terminal…", `game-command-agent` "retries with the same identity…") diagnosticados e corrigidos por barreira/estado, sem mudar timeouts — 12.6A; 18/18 + 3 × 56/56 nas repetições
+- [x] Contrato de relógio documentado (monotônico local, civil persistido, NTP obrigatório) e 13 casos de step/skew sem falha de correctness — 12.6B.2, `docs/multi-instance.md` §13
+- [ ] Limiares de rate limit e tetos de socket definidos a partir das medições e registrados (P2-6) — **parcial**: limites atuais exercitados sem relaxamento; restrição conhecida registrada (Agent 200 frames/10 s ⇒ ~9–10 GameCommands/s por servidor, MEASURED_LOCAL_CAPACITY_CONSTRAINT); validar com o workload real do Agent/SKSE na 12.7
+- [ ] SLAs aprovados pelo produto com base nos números medidos (P2-6) — números locais disponíveis; capacidade de produção não medida
 
 ## Migrations
 
@@ -137,11 +149,13 @@ Topologia MULTI (12.5; evidência: `test/multi-instance.e2e-spec.ts`, réplicas 
 - [ ] Reverse proxy com TLS, upgrade WebSocket em `/api/v1/realtime` e `/api/v1/agent`, timeout de inatividade acima do heartbeat do Agent (P1-11) — contrato em `docs/reverse-proxy.md`; configuração real pendente
 - [x] Runbook de deploy, rollback/roll-forward e restore escrito (P0-3) — `docs/deployment.md`, `docs/backup-restore.md`
 - [ ] Runbook executado de ponta a ponta em staging
+- [ ] Sincronização de relógio (NTP/chrony) verificada em réplicas, hosts dos Agents e PostgreSQL de produção — requisito da 12.6, `docs/multi-instance.md` §13
 
 ## External integrations
 
 - [ ] Host Agent real + SKSE em staging: HELLO, heartbeat, GameCommand query e mutation com dedup, Server Control START/PAUSE/RESTART, DOMAIN_EVENT e WORK_SYNC com journal durável, reconexão e restart do Agent (P0-6)
 - [ ] Capabilities anunciadas pelo Agent real conferidas contra as executáveis; tempos reais de ACK/RESULT dentro dos timeouts configurados (P0-6)
+- [ ] Workload real do Agent/SKSE medido contra o limite de 200 frames/10 s por sessão (~9–10 GameCommands/s por servidor medidos localmente na 12.6)
 - [ ] Discord OAuth real em staging com as redirect URIs de produção (P1-11)
 - [ ] Electron real contra staging: login, discovery, link, operação, reconnect e cold start (P1-11)
 - [ ] Contrato IPC Electron ↔ Launcher validado no repositório externo (P1-11)
@@ -162,6 +176,6 @@ Topologia MULTI (12.5; evidência: `test/multi-instance.e2e-spec.ts`, réplicas 
 - [ ] Todas as suítes verdes em CI com PostgreSQL da mesma versão major da produção
 - [ ] Três execuções consecutivas da suíte e2e sem flake em CI
 - [ ] e2e de duas instâncias verde (quando houver escala)
-- [ ] Relatório de carga/soak anexado
+- [x] Relatório de carga/soak anexado — 12.6: `docs/performance.md` e tabelas de medição (local, não SLA)
 - [ ] Smoke de staging com integrações reais anexado
 - [ ] Este checklist sem itens P0/P1 abertos, com evidência para cada item marcado

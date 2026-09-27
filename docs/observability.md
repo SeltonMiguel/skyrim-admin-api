@@ -169,7 +169,7 @@ o gauge `vip_deliveries{status}` continua o estado bruto das linhas.
 | `skyrim_admin_cluster_bus_connected` | gauge (1/0; ausente em SINGLE) | — |
 | `skyrim_admin_cluster_bus_reconnects_total` | counter | — |
 | `skyrim_admin_cluster_bus_errors_total` | counter | — |
-| `skyrim_admin_cluster_bus_messages_total` | counter | `kind` = REALTIME, PLAYER_SESSION_REVOKED, PLAYER_ACCOUNT_REVOKED, AGENT_SESSION_CLOSED, AGENT_CREDENTIAL_REVOKED (ou `unknown`); `outcome` = published, publish_failed, received, expired, read_failed |
+| `skyrim_admin_cluster_bus_messages_total` | counter | `kind` = REALTIME, PLAYER_SESSION_REVOKED, PLAYER_ACCOUNT_REVOKED, AGENT_SESSION_CLOSED, AGENT_CREDENTIAL_REVOKED, SERVER_CONTROL_WORK, GAME_COMMAND_WORK (ou `unknown`); `outcome` = published, publish_failed, received, expired, read_failed |
 | `skyrim_admin_cluster_cleanup_rows_total` | counter | `kind` = bus_events, rate_limits, rate_limit_slots, realtime_leases |
 | `skyrim_admin_rate_limit_backend_errors_total` | counter | — (store compartilhado falhou; tentativa recusada) |
 | `skyrim_admin_realtime_connection_leases` | gauge | — (leases desta réplica) |
