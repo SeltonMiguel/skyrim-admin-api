@@ -6,6 +6,7 @@ import { GameCommandBus } from './game-command-bus.js';
 import { GameCommandDispatcher } from './game-command-dispatcher.js';
 import { GameCommandReceiver } from './game-command-receiver.js';
 import { GameCommandStore } from './game-command-store.js';
+import { GameCommandWork } from './game-command-work.js';
 import { GameConnectionService } from './game-connection.service.js';
 import { GameGateway } from './game-gateway.js';
 import { AgentGameGateway } from '../game-agent/agent-game.gateway.js';
@@ -24,6 +25,7 @@ import { GameServerStatusNotifier } from './game-server-status.notifier.js';
     GameCommandStore,
     GameCommandDispatcher,
     GameCommandReceiver,
+    GameCommandWork,
     // Real Host Agent transport (11.2). DisconnectedGameGateway remains
     // available for tests and as an explicit fallback.
     { provide: GameGateway, useClass: AgentGameGateway },
@@ -36,6 +38,7 @@ import { GameServerStatusNotifier } from './game-server-status.notifier.js';
     GameCommandBus,
     GameCommandDispatcher,
     GameCommandReceiver,
+    GameCommandWork,
   ],
 })
 export class GameBridgeModule {}

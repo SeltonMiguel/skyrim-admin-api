@@ -5,6 +5,7 @@ import {
   OnApplicationBootstrap,
   OnModuleDestroy,
 } from '@nestjs/common';
+import { ClusterBus } from '../cluster/cluster-bus.js';
 import { Metrics } from '../observability/metrics.js';
 import { TickDrain } from '../lifecycle/tick-drain.js';
 import { ConfigService } from '@nestjs/config';
@@ -32,6 +33,10 @@ export class ServerControlWorker
   private readonly intervalMs: number;
   private timer?: ReturnType<typeof setInterval>;
   private running = false;
+  // Wake-up coalescing (12.6B): at most one scheduled tick, and one
+  // follow-up when a hint arrives during a running tick.
+  private scheduled = false;
+  private rerun = false;
   private readonly drain: TickDrain;
   private stopped = false;
   // Log each held operation once.
@@ -43,6 +48,7 @@ export class ServerControlWorker
     private readonly receiver: ServerControlReceiver,
     config: ConfigService<{ application: ApplicationConfig }, true>,
     @Optional() metrics?: Metrics,
+    @Optional() private readonly cluster?: ClusterBus,
   ) {
     this.drain = new TickDrain(metrics?.worker('server_control'));
     this.intervalMs = config.get('application', {
@@ -52,6 +58,23 @@ export class ServerControlWorker
   onApplicationBootstrap(): void {
     this.timer = setInterval(() => void this.tick(), this.intervalMs);
     this.timer.unref();
+    this.cluster?.subscribe('SERVER_CONTROL_WORK', () => this.wake());
+  }
+  // Hint that unclaimed work may exist (bus or local). Never overlaps a
+  // tick and never adds a claim path: the tick re-reads the database queue.
+  // Polling remains the fallback when a hint is lost.
+  wake(): void {
+    if (this.stopped) return;
+    if (this.running) {
+      this.rerun = true;
+      return;
+    }
+    if (this.scheduled) return;
+    this.scheduled = true;
+    setImmediate(() => {
+      this.scheduled = false;
+      void this.tick();
+    });
   }
   // Graceful shutdown: stop scheduling, then await the running tick.
   async onModuleDestroy(): Promise<void> {
@@ -100,6 +123,10 @@ export class ServerControlWorker
     } finally {
       this.running = false;
       this.drain.end();
+      if (this.rerun) {
+        this.rerun = false;
+        this.wake();
+      }
     }
   }
   // UNCERTAIN outcomes materialized by this instance since boot.

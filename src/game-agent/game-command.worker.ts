@@ -5,10 +5,12 @@ import {
   OnApplicationBootstrap,
   OnModuleDestroy,
 } from '@nestjs/common';
+import { ClusterBus } from '../cluster/cluster-bus.js';
 import { Metrics } from '../observability/metrics.js';
 import { TickDrain } from '../lifecycle/tick-drain.js';
 import { ConfigService } from '@nestjs/config';
 import type { ApplicationConfig } from '../config/environment.js';
+import { GameCommandWork } from '../game-bridge/game-command-work.js';
 import { GameCommandDispatcher } from '../game-bridge/game-command-dispatcher.js';
 import { GameCommandReceiver } from '../game-bridge/game-command-receiver.js';
 import { supportedCommandTypes } from './agent-capabilities.js';
@@ -36,6 +38,10 @@ export class GameCommandWorker
   private readonly maxInFlight: number;
   private timer?: ReturnType<typeof setInterval>;
   private running = false;
+  // Wake-up coalescing (12.6B): at most one scheduled tick, and one
+  // follow-up when a hint arrives during a running tick.
+  private scheduled = false;
+  private rerun = false;
   private readonly drain: TickDrain;
   private stopped = false;
   // Log each blocked command and each not-ready state once.
@@ -47,6 +53,8 @@ export class GameCommandWorker
     private readonly receiver: GameCommandReceiver,
     config: ConfigService<{ application: ApplicationConfig }, true>,
     @Optional() metrics?: Metrics,
+    @Optional() private readonly work?: GameCommandWork,
+    @Optional() private readonly cluster?: ClusterBus,
   ) {
     this.drain = new TickDrain(metrics?.worker('game_command'));
     const application = config.get('application', { infer: true });
@@ -56,6 +64,25 @@ export class GameCommandWorker
   onApplicationBootstrap(): void {
     this.timer = setInterval(() => void this.tick(), this.intervalMs);
     this.timer.unref();
+    this.work?.onWork(() => this.wake());
+    this.cluster?.subscribe('GAME_COMMAND_WORK', () => this.wake());
+  }
+  // Hint that new PENDING work may exist (local commit or bus). Ignored
+  // without a local ACTIVE session: only the socket owner can dispatch.
+  // Never overlaps a tick and never adds a reservation path: the tick
+  // re-reads the database queue. Polling remains the fallback.
+  wake(): void {
+    if (this.stopped || !this.sessions.activeSessions().length) return;
+    if (this.running) {
+      this.rerun = true;
+      return;
+    }
+    if (this.scheduled) return;
+    this.scheduled = true;
+    setImmediate(() => {
+      this.scheduled = false;
+      void this.tick();
+    });
   }
   // Graceful shutdown: stop scheduling, then await the running tick.
   async onModuleDestroy(): Promise<void> {
@@ -87,6 +114,10 @@ export class GameCommandWorker
     } finally {
       this.running = false;
       this.drain.end();
+      if (this.rerun) {
+        this.rerun = false;
+        this.wake();
+      }
     }
   }
   private async serve(gameServerId: string): Promise<number> {

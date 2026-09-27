@@ -184,6 +184,7 @@ export class VipDeliveryService
       return 'COMMAND_CREATED' as const;
     });
     this.held.delete(id);
+    if (outcome === 'COMMAND_CREATED') this.bus.announce();
     const log = `[deliveryId=${id} entitlementId=${found.entitlementId} gameServerId=${found.gameServerId}]`;
     if (outcome === 'COMMAND_CREATED')
       this.logger.log(`VIP delivery command created ${log}`);

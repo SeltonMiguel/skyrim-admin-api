@@ -51,6 +51,11 @@ import { InstanceIdentity } from '../cluster/instance-identity.js';
 
 type SocketState = 'AWAITING_HELLO' | 'AUTHENTICATING' | 'AUTHENTICATED';
 const DB_SWEEP_INTERVAL_MS = 5000;
+// Local elapsed-time windows use the monotonic clock (12.6B): a civil clock
+// step must not stretch them (a backward step froze the message window and
+// closed a well-behaved Agent as RATE_LIMITED). Persisted deadlines and
+// heartbeat freshness stay on the civil clock, as before.
+const elapsedMs = () => performance.now();
 
 // Host Agent WebSocket transport (11.1): its own path, credential and
 // protocol, never the Player/Staff realtime socket. A socket must send HELLO
@@ -79,7 +84,7 @@ export class AgentGateway
   // transaction (server row lock) orders promotions (12.5).
   private readonly promotions = new Map<string, Promise<void>>();
   private readonly topology: ApplicationConfig['deployment']['topology'];
-  private lastDbSweep = 0;
+  private lastDbSweep = Number.NEGATIVE_INFINITY;
   constructor(
     private readonly upgrades: WebSocketUpgradeRouter,
     private readonly auth: AgentAuthService,
@@ -188,9 +193,9 @@ export class AgentGateway
       // publishes it, and a live owner renewing its lease is never touched.
       if (
         this.topology === 'MULTI' &&
-        Date.now() - this.lastDbSweep >= DB_SWEEP_INTERVAL_MS
+        elapsedMs() - this.lastDbSweep >= DB_SWEEP_INTERVAL_MS
       ) {
-        this.lastDbSweep = Date.now();
+        this.lastDbSweep = elapsedMs();
         const stale = await this.connections.markStaleConnections();
         if (stale)
           this.logger.warn(
@@ -304,7 +309,7 @@ export class AgentGateway
     let session: AgentSessionSnapshot | undefined;
     let queue = Promise.resolve();
     // Authenticated frames per window (in memory, per session).
-    let windowStart = 0;
+    let windowStart = Number.NEGATIVE_INFINITY;
     let windowCount = 0;
     const close = (reason: AgentCloseReason) => {
       if (ws.readyState !== WebSocket.OPEN) return;
@@ -462,7 +467,7 @@ export class AgentGateway
         return close('PROTOCOL_ERROR');
       }
       if (state === 'AUTHENTICATED') {
-        const now = Date.now();
+        const now = elapsedMs();
         if (now - windowStart >= this.config.messageRateLimitWindowMs) {
           windowStart = now;
           windowCount = 0;

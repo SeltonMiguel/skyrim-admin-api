@@ -54,7 +54,7 @@ export class ActorCommandService {
       idempotencyKey: idempotencyKey(input.idempotencyKey),
       actor,
     } as SubmitCommand;
-    return this.database.transaction(async (manager) => {
+    const outcome = await this.database.transaction(async (manager) => {
       const server = await this.servers.get(
         submission.gameServerId,
         manager,
@@ -76,5 +76,8 @@ export class ActorCommandService {
         );
       return result;
     });
+    // After commit; HTTP replays announce nothing.
+    if (outcome.created) this.bus.announce();
+    return outcome;
   }
 }

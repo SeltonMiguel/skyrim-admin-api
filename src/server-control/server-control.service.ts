@@ -5,6 +5,7 @@ import {
   NotFoundException,
   Optional,
 } from '@nestjs/common';
+import { ClusterBus } from '../cluster/cluster-bus.js';
 import { Metrics } from '../observability/metrics.js';
 import { randomUUID } from 'node:crypto';
 import { DataSource, In } from 'typeorm';
@@ -46,6 +47,7 @@ export class ServerControlService {
     private readonly context: RequestContext,
     private readonly clock: BridgeClock,
     @Optional() private readonly metrics?: Metrics,
+    @Optional() private readonly cluster?: ClusterBus,
   ) {}
   private repository() {
     return this.database.getRepository<ServerControlOperation>(
@@ -137,7 +139,10 @@ export class ServerControlService {
     // After commit, with no transaction open; HTTP replays never re-dispatch.
     if (!created) return serverControlReference(operation);
     this.metrics?.controlCreated.inc({ type: operation.type });
-    await this.dispatcher.dispatchSafely(operation.id);
+    // MULTI (12.6B): the Agent socket lives on another instance; wake its
+    // worker instead of waiting for the next poll. Best effort, no payload.
+    if ((await this.dispatcher.dispatchSafely(operation.id)) === 'HELD')
+      void this.cluster?.publish('SERVER_CONTROL_WORK', {});
     return serverControlReference(
       (await this.repository().findOneBy({ id: operation.id })) ?? operation,
     );

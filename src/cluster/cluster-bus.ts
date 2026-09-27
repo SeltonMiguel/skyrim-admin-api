@@ -27,6 +27,13 @@ export const CLUSTER_KINDS = [
   // socket; every state-changing frame is fenced by the database anyway.
   'AGENT_SESSION_CLOSED',
   'AGENT_CREDENTIAL_REVOKED',
+  // Payload-free hint (12.6B): a ServerControl operation was committed on
+  // an instance without the Agent socket. The owner anticipates its worker
+  // tick; the database queue and the owner-aware claim stay the authority
+  // and a lost hint only falls back to the worker's polling interval.
+  'SERVER_CONTROL_WORK',
+  // Same payload-free hint for a committed GameCommand (12.6B).
+  'GAME_COMMAND_WORK',
 ] as const;
 export type ClusterKind = (typeof CLUSTER_KINDS)[number];
 export type ClusterPayload = Record<string, unknown>;

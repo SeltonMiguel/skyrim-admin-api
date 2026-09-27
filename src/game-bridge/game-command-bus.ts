@@ -13,6 +13,7 @@ import {
 import type { SubmitCommand } from './command-contract.js';
 import { CommandStatus } from './command-state.js';
 import { GameServerService } from './game-server.service.js';
+import { GameCommandWork } from './game-command-work.js';
 import { GameCommand } from './entities/game-command.entity.js';
 import {
   actor as validActor,
@@ -56,6 +57,7 @@ export class GameCommandBus {
     private readonly context: RequestContext,
     private readonly clock: BridgeClock,
     @Optional() private readonly metrics?: Metrics,
+    @Optional() private readonly work?: GameCommandWork,
   ) {}
   async submit(input: SubmitCommand): Promise<GameCommand> {
     // Snapshot before transaction acquisition; never retain caller-owned payload.
@@ -63,10 +65,15 @@ export class GameCommandBus {
       ...input,
       payload: commandPayload(input.type, input.payload),
     } as SubmitCommand;
-    return this.database.transaction(
-      async (manager) =>
-        (await this.submitInTransaction(snapshot, manager)).command,
+    const result = await this.database.transaction((manager) =>
+      this.submitInTransaction(snapshot, manager),
     );
+    if (result.created) this.announce();
+    return result.command;
+  }
+  // After commit only (12.6B): see GameCommandWork.
+  announce(): void {
+    this.work?.announce();
   }
   // Caller owns the short transaction. Never dispatch or perform external I/O here.
   async submitInTransaction(
