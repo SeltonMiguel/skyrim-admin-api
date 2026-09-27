@@ -81,4 +81,28 @@ describe('Audit metadata sanitizer', () => {
       }),
     ).toEqual({ a: { b: { c: { d: { e: { f: { g: null } } } } } } });
   });
+  // S11 (12.7B): free text and Agent data are dropped even if a caller
+  // passes them; identifiers named after them are kept.
+  it('drops message, content, payload, result and challenge fields', () => {
+    expect(
+      sanitizeMetadata({
+        message: 'chat text',
+        content: 'chat text',
+        result: { items: [] },
+        payload: { itemId: 'x' },
+        commandPayload: { itemId: 'x' },
+        challenge: 'ABC123',
+        linkChallenge: 'ABC123',
+        nested: { message: 'chat text', messageId: 'm1' },
+        messageId: 'm1',
+        resultCount: 2,
+        reason: 'operator reason',
+      }),
+    ).toEqual({
+      nested: { messageId: 'm1' },
+      messageId: 'm1',
+      resultCount: 2,
+      reason: 'operator reason',
+    });
+  });
 });

@@ -269,6 +269,12 @@ interface Environment {
   PLAYER_MARKET_MUTATION_RATE_LIMIT_PER_MINUTE: number;
 }
 
+const JWT_SECRET_NAMES = [
+  'JWT_ACCESS_SECRET',
+  'JWT_REFRESH_SECRET',
+  'PLAYER_JWT_ACCESS_SECRET',
+  'PLAYER_JWT_REFRESH_SECRET',
+] as const;
 // Ephemeral per-process secrets are allowed only by the test schema.
 const testAccessSecret = randomBytes(48).toString('base64url');
 const testRefreshSecret = randomBytes(48).toString('base64url');
@@ -640,6 +646,17 @@ export function validateEnvironment(
   // Production must choose its database TLS mode explicitly.
   if (production && value.DB_SSL_MODE === undefined)
     throw new Error('Invalid environment variables: DB_SSL_MODE');
+  // S12 (12.7B): production signing secrets must carry at least 32 random
+  // bytes once encoded (43 base64url or 64 hex characters) and must not be a
+  // trivially repeated pattern. A heuristic floor, not an entropy measure.
+  if (production) {
+    const weak = JWT_SECRET_NAMES.filter((name) => {
+      const secret = value[name] ?? '';
+      return secret.length < 43 || new Set(secret).size < 10;
+    });
+    if (weak.length)
+      throw new Error(`Invalid environment variables: ${weak.join(', ')}`);
+  }
   const sslMode = value.DB_SSL_MODE ?? 'disable';
   let ca: string | undefined;
   if (value.DB_SSL_CA_FILE) {

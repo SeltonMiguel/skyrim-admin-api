@@ -7,6 +7,11 @@ const sensitiveKey =
 const databaseKey =
   /^(?:db|database)(?:host|port|user|username|name|database|url)?$/;
 const unsafeKeys = new Set(['body', 'constructor', 'prototype', '__proto__']);
+// S11 (12.7B): free text and Agent data never belong in Audit metadata, even
+// if a caller passes them. Exact names for generic words (messageId and
+// resultCount stay allowed); any key naming a payload or a challenge.
+const contentKeys = new Set(['message', 'content', 'result']);
+const contentKey = /payload|challenge/;
 export type Json =
   null | boolean | number | string | Json[] | { [key: string]: Json };
 
@@ -38,6 +43,8 @@ export function sanitizeMetadata(
         key.length > 100 ||
         unsafeKeys.has(key.toLowerCase()) ||
         sensitiveKey.test(normalized) ||
+        contentKeys.has(normalized) ||
+        contentKey.test(normalized) ||
         databaseKey.test(normalized) ||
         !('value' in descriptor)
       )

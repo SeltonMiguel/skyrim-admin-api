@@ -14,6 +14,32 @@ const example: Record<string, string> = {
 };
 
 describe('Environment validation', () => {
+  // S12 (12.7B): production refuses short or trivially patterned JWT
+  // secrets, naming the variable but never echoing its value.
+  it('refuses weak JWT secrets in production only', () => {
+    const production = { ...example, NODE_ENV: 'production' };
+    expect(() => validateEnvironment(production)).not.toThrow();
+    for (const weak of [
+      'x'.repeat(64),
+      'abcabcabcabcabcabcabcabcabcabcabcabcabcabcabc',
+      randomBytes(16).toString('hex'),
+    ])
+      for (const name of [
+        'JWT_ACCESS_SECRET',
+        'JWT_REFRESH_SECRET',
+        'PLAYER_JWT_ACCESS_SECRET',
+        'PLAYER_JWT_REFRESH_SECRET',
+      ]) {
+        const attempt = () =>
+          validateEnvironment({ ...production, [name]: weak });
+        expect(attempt).toThrow(name);
+        expect(attempt).not.toThrow(weak);
+        // Outside production the historical 32-character rule still applies.
+        expect(() =>
+          validateEnvironment({ ...example, [name]: weak }),
+        ).not.toThrow();
+      }
+  });
   it('accepts documented settings and converts types', () => {
     const config = validateEnvironment(example);
     expect(config.port).toBe(3000);
@@ -109,8 +135,12 @@ describe('JWT environment validation', () => {
             }),
           ).toThrow(field);
         }
-        const secret = randomBytes(24).toString('base64url');
-        expect(secret).toHaveLength(32);
+        // S12 (12.7B): production needs 32 random bytes (43 base64url chars);
+        // elsewhere the 32-character minimum still applies.
+        const secret = randomBytes(nodeEnv === 'production' ? 32 : 24).toString(
+          'base64url',
+        );
+        expect(secret).toHaveLength(nodeEnv === 'production' ? 43 : 32);
         const config = validateEnvironment({
           ...example,
           NODE_ENV: nodeEnv,
