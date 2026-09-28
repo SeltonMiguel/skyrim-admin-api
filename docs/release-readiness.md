@@ -11,6 +11,21 @@ Etapa 11 estão marcados com a evidência correspondente.
 Plano de aceitação externa, componentes disponíveis e bloqueios (12.7A):
 `docs/release-acceptance.md`.
 
+> Backend internal acceptance complete.
+> External release acceptance pending.
+
+Registro de aceitação interna da 12.7, com base no estado comprovado informado
+pelo responsável: fix do flake de ServerControl aplicado; três execuções
+consecutivas do CI no GitHub passaram após o fix, com `quality`, `e2e`,
+`migrations` e `docker` GREEN, zero skips e nenhuma nova regressão.
+Links/IDs das execuções não foram fornecidos neste registro.
+
+A aceitação interna está DONE; a 12.7C aguarda ambiente externo. Stage 12 e
+release inteira permanecem pendentes. Continuam **OPEN/EXTERNAL**: Agent/SKSE
+real, Electron/Launcher, Discord real, proxy/TLS/CORS/Origins, staging, clock
+sync nos hosts reais, monitoring/alert delivery, orchestrator, RPO/RTO/retention,
+soak longo, production capacity/SLA e registry (sem destino informado).
+
 Regras:
 - A **primeira produção** (instância única) exige todos os itens P0 marcados.
 - O **release público** exige todos os P0 e P1.
@@ -142,7 +157,8 @@ Evidência local (MEASURED_LOCAL_BASELINE, NOT A PRODUCTION SLA): `docs/performa
 ## Deployment
 
 - [x] Imagem de produção reproduzível (multi-stage, `npm ci`, usuário não-root, sem devDependencies, Node 24.18.0 fixado) construída e testada localmente (P0-3) — 12.2, `Dockerfile`, smoke de container
-- [ ] Imagem construída no CI e publicada com tag imutável — **parcial** (12.7B): `.github/workflows/ci.yml` constrói `skyrim-admin-api:<commit SHA>` e faz smoke do container (migrate + `/ready`); publicação em registry pendente (sem registry/credenciais); workflow ainda não executado no GitHub
+- [x] Imagem construída no CI com tag imutável e smoke do container — **DONE**: job `docker` GREEN nas três execuções consecutivas após o fix; `.github/workflows/ci.yml` constrói `skyrim-admin-api:<commit SHA>` e valida migrate + `/ready` (confirmação do responsável)
+- [ ] Publicação da imagem em registry com tag imutável — **OPEN/EXTERNAL**: destino e credenciais de publicação não informados
 - [x] Migration como passo de deploy separado do start, sem rebuild (P0-3) — 12.2: `node dist/database/migrate.js` com o lock de instância única; a app nunca migra no start
 - [x] `NODE_ENV=production` definido pela imagem e pelo runbook; o servidor recusa `test`; o preflight dá ERROR fora de `production`; produção exige `DB_SSL_MODE` explícito e o lock (P1-5) — 12.2
 - [x] SSL para o DB configurável (`DB_SSL_MODE` disable/require/verify-full, CA opcional); pool e timeouts da API e da migration configuráveis (P1-4) — 12.2, `docs/configuration.md`
@@ -176,8 +192,10 @@ Evidência local (MEASURED_LOCAL_BASELINE, NOT A PRODUCTION SLA): `docs/performa
 
 ## Test acceptance
 
-- [ ] Todas as suítes verdes em CI com PostgreSQL da mesma versão major da produção — workflow pronto (12.7B: quality, e2e com `postgres:16` e gate de zero skips, migrations em banco novo, Docker); falta a primeira execução verde no GitHub
-- [ ] Três execuções consecutivas da suíte e2e sem flake em CI
+- [x] Primeira execução real do CI no GitHub — **DONE**, verde após o fix do flake de ServerControl (confirmação do responsável)
+- [x] Três execuções consecutivas da suíte e2e sem flake em CI — **DONE**, GREEN após o fix, zero skips e nenhuma nova regressão
+- [x] Validation/build pipeline — **DONE**: `quality`, `e2e` com `postgres:16`, `migrations` e `docker` GREEN nas três execuções consecutivas confirmadas
+- [ ] Versão major do PostgreSQL de produção conferida com a usada no CI (16) — **EXTERNAL**, validação no ambiente real
 - [ ] e2e de duas instâncias verde (quando houver escala)
 - [x] Relatório de carga/soak anexado — 12.6: `docs/performance.md` e tabelas de medição (local, não SLA)
 - [ ] Smoke de staging com integrações reais anexado

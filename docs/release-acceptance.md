@@ -1,10 +1,22 @@
-# Release acceptance — plano de aceitação externa (12.7A)
+# Release acceptance — aceitação interna da 12.7 e pendências externas
 
 Levantamento de 27/09/2026 na branch `feature/skyrim-12-hardening-release`
 (HEAD `bdadb6f`, 12.6 commitada). Atualizado na 12.7B (fechamento interno, sem commit): §3
 separado em aceitação interna e externa; §10, §11 e §15 revistos. Separa o que este repositório já
 prova do que depende de componentes e ambientes que **não estão disponíveis
 aqui**. Nada neste documento declara integração validada sem evidência.
+
+Registro de aceitação interna da 12.7, com base no estado comprovado informado
+pelo responsável: fix do flake de ServerControl aplicado; três execuções
+consecutivas do CI no GitHub passaram após o fix, com `quality`, `e2e`,
+`migrations` e `docker` GREEN, zero skips e nenhuma nova regressão.
+Links/IDs das execuções não foram fornecidos neste registro.
+
+> Backend internal acceptance complete.
+> External release acceptance pending.
+
+A 12.7C aguarda ambiente externo. Este fechamento interno não conclui a
+Stage 12 nem a release inteira.
 
 Estados: **DONE** (provado por teste/execução com evidência), **PARTIAL**,
 **OPEN** (ação no backend/docs ou decisão pendente), **EXTERNAL** (depende de
@@ -26,11 +38,11 @@ listados; nenhum nome foi presumido.
 | Reverse proxy / TLS | nenhuma config deste projeto (os `Caddyfile` em `/home/stooons/www/ec2-demo*` são de outro projeto) | **não** | — | não | domínio + certificado | release pública |
 | PgBouncer | nenhuma config | **não** | uso não decidido | — | — | só se for adotado (§6) |
 | Monitoring (Prometheus, dashboards, alertas) | nenhuma config | **não** | — | não | canal on-call | operação em produção |
-| Deploy / orquestrador | `Dockerfile` (imagem de produção), `docker-compose.yml` (só PostgreSQL de dev) | parcial | imagens locais `skyrim-admin-api:12.2`/`12.3`; sem CI (`.github` ausente), sem registry | imagem sim | ambiente de staging/produção | release (P0-3: imagem no CI) |
+| Deploy / orquestrador | `Dockerfile` (imagem de produção), `docker-compose.yml` (só PostgreSQL de dev) | parcial | imagem com tag SHA construída e smoke validado no CI; registry OPEN/EXTERNAL | imagem sim | ambiente de staging/produção | publicação e deploy externos |
 | Skyrim / SkyMP / Steam | não instalados neste host | **não** | — | — | — | smoke real |
 
 Consequência: nenhum smoke com Agent, SKSE, Electron, proxy ou monitoramento
-reais pode ser executado neste ambiente. A 12.7B depende de alguém fornecer
+reais pode ser executado neste ambiente. A 12.7C depende de alguém fornecer
 esses componentes (repos, binários ou um host de staging). O FakeAgent do
 repositório já cobre o contrato; não será usado como substituto do Agent real.
 
@@ -38,7 +50,7 @@ repositório já cobre o contrato; não será usado como substituto do Agent rea
 
 Contrato do backend = o que o código impõe hoje (fonte). Implementação
 externa = nenhuma disponível, portanto **NOT AVAILABLE** em toda a coluna.
-A compatibilidade real é verificada na 12.7B, com o componente em mãos.
+A compatibilidade real será verificada na 12.7C, com o componente em mãos.
 
 ### Host Agent (WebSocket `/api/v1/agent`, protocolo `1`)
 
@@ -79,10 +91,10 @@ backend além de `skseReady` e da semântica de COMMAND/RESULT/UNCERTAIN.
 
 ## 3. Matriz de aceitação
 
-### 3.1 Aceitação INTERNA (provável neste repositório)
+### 3.1 Aceitação INTERNA — DONE
 
-Após a 12.7B, tudo o que este repositório consegue provar está DONE ou OPEN
-com motivo.
+Aceitação interna concluída após o fix do flake e três execuções consecutivas
+verdes do CI no GitHub. A publicação em registry pertence à aceitação externa.
 
 | Teste | Auto/manual | Status | Evidência |
 | --- | --- | --- | --- |
@@ -98,14 +110,15 @@ com motivo.
 | Produção recusa segredo JWT fraco (S12) | auto | DONE | `environment.spec.ts` |
 | Restore real sobre schema 27 (backup → banco novo → verify → preflight → `/ready` → login) | manual (script) | DONE (local) | `docs/backup-restore.md` §Restore test 12.7B |
 | Imagem Docker com tag do SHA + smoke do container | auto | DONE (local) | `docker build` + migrate + `/ready` + shutdown gracioso |
-| Workflow de CI (quality, e2e PG16, migrations, Docker) | auto | OPEN: escrito e validado estaticamente, **nunca executado no GitHub** | `.github/workflows/ci.yml` |
-| 3 execuções consecutivas do e2e **em CI** | auto | OPEN | depende da primeira execução do workflow |
-| Publicação da imagem em registry com tag imutável | auto | OPEN | não há registry nem credenciais |
+| Primeira execução real do CI no GitHub | auto | DONE | execução verde confirmada pelo responsável após o fix do flake |
+| 3 execuções consecutivas do e2e **em CI** | auto | DONE | três execuções consecutivas GREEN após o fix, zero skips e nenhuma nova regressão |
+| Validation/build pipeline (quality, e2e PG16, migrations, Docker) | auto | DONE | `.github/workflows/ci.yml`: todos os jobs GREEN nas três execuções consecutivas confirmadas; sem publicação/deploy |
 
 ### 3.2 Aceitação EXTERNA (depende de componente, ambiente ou decisão)
 
 | Teste | Ambiente | Pré-requisitos | Status | Bloqueia? |
 | --- | --- | --- | --- | --- |
+| Publicação da imagem em registry com tag imutável | registry | destino e credenciais não informados | OPEN/EXTERNAL | publicação |
 | Smoke do Host Agent real (§4) | staging Windows | Agent + SKSE + Skyrim/SkyMP, credencial | EXTERNAL (não disponível) | integração (P0-6) |
 | Capacidade real do Agent vs 200 frames/10 s (§8) | staging Windows | Agent real + carga esperada | EXTERNAL | integração |
 | Smoke Electron (login, discovery, link, operação, reconnect, cold start) | staging | build Electron + Discord OAuth real | EXTERNAL | integração Player (P1-11) |
@@ -121,7 +134,7 @@ com motivo.
 | PgBouncer (só se adotado) | staging | decisão de uso | EXTERNAL/condicional | só se adotado |
 | Runbooks de operação e rotação de credencial com Agent real | staging | Agent real | EXTERNAL | operação |
 | Deploy/rollback do runbook de ponta a ponta | staging | ambiente | EXTERNAL | release |
-| Soak de horizonte longo / SLA de produção | staging/produção | carga real | EXTERNAL + PRODUCT | não para merge |
+| Soak de horizonte longo / capacidade e SLA de produção | staging/produção | carga real | EXTERNAL + PRODUCT | não para merge |
 
 ## 4. Smoke mínimo do Host Agent real (quando disponível)
 
@@ -280,14 +293,14 @@ produção da 12.6 são internas (hints e janela monotônica).
 
 ## 15. Bloqueios
 
-### A. Bloqueios do backend (antes de merge/release)
+### A. Aceitação interna do backend — DONE
 
-Nenhum bloqueio funcional conhecido. Pendências internas restantes, todas de
-processo:
-
-1. Primeira execução verde do workflow de CI no GitHub (e três e2e
-   consecutivos lá).
-2. Registry para publicar a imagem com tag imutável (hoje só build e smoke).
+Primeira execução real do CI, três e2e consecutivos no CI e validation/build
+pipeline: **DONE**. Nenhum bloqueio interno de aceitação conhecido. Os jobs
+quality, e2e, migrations e docker estão GREEN após o fix do flake de
+ServerControl, com zero skips e nenhuma nova regressão, conforme confirmação
+do responsável. Isso não autoriza merge, tag/release ou deploy e não conclui
+a Stage 12/release inteira.
 
 ### B. Bloqueios de aceitação externa (backend pode estar pronto; release integrada não)
 
@@ -305,6 +318,10 @@ processo:
    menos de 10 distintos; trocar antes da primeira release com a regra
    (`docs/security.md`).
 9. Orquestrador de produção configurado para a topologia escolhida.
+10. Registry: **OPEN/EXTERNAL**, destino de publicação e credenciais não
+    informados; build/smoke GREEN não equivalem à publicação.
+11. Soak longo e capacidade/SLA de produção: **OPEN/EXTERNAL**, dependem de
+    staging/produção e aprovação de produto/operações.
 
 ### C. Limitações conhecidas / follow-up (não bloqueiam se aceitas)
 

@@ -708,7 +708,19 @@ Desvio do critério do roadmap: o soak foi de 15 min (não 24 h) e os thresholds
 de alerta e SLAs não foram fixados; a 12.6 entrega a baseline local para essa
 calibração em staging.
 
-## 25.7 Status após a 12.7B (fechamento interno)
+## 25.7 Status após a 12.7B e aceitação interna da 12.7
+
+> Backend internal acceptance complete.
+> External release acceptance pending.
+
+Registro de aceitação interna da 12.7, com base no estado comprovado informado
+pelo responsável: fix do flake de ServerControl aplicado; três execuções
+consecutivas do CI no GitHub passaram após o fix, com `quality`, `e2e`,
+`migrations` e `docker` GREEN, zero skips e nenhuma nova regressão.
+Links/IDs das execuções não foram fornecidos neste registro.
+
+A 12.7C aguarda ambiente externo; a Stage 12 e a release inteira não estão
+concluídas. As seções anteriores preservam o histórico da auditoria.
 
 | Finding | Classe | Status | Como |
 | --- | --- | --- | --- |
@@ -721,11 +733,22 @@ calibração em staging.
 | P1-10 / M4 down de AgentDomainEvents | ACCEPTED_LIMITATION | **mitigado por política** | editar o `down` histórico foi rejeitado na revisão da 12.7B: migrations publicadas são imutáveis; produção é forward-only e `migration:revert` não é procedimento de produção (§17 item 5, `docs/deployment.md`); nenhuma migration 28 |
 | P1-10 demais (role de migration, preflight e smoke em produção) | EXTERNAL | aberto | exigem o banco de staging/produção |
 | Restore verify | FIXABLE_INTERNAL | **resolvido** | + `operator_actions`, `vip_reward_delivery_attempts`, `agent_work_rejections`; tabelas da 27 verificadas só como schema; restore real local sobre a 27 com preflight, `/ready` e login |
-| CI | FIXABLE_INTERNAL | **pronto, não executado** | `.github/workflows/ci.yml`: quality, e2e com `postgres:16` (zero skips), banco novo pelo runner de produção, imagem `skyrim-admin-api:<SHA>` com smoke; sem deploy nem registry |
+| Primeira execução real do CI no GitHub | FIXABLE_INTERNAL | **DONE** | execução verde confirmada pelo responsável após o fix do flake de ServerControl |
+| Três execuções consecutivas do e2e no CI | FIXABLE_INTERNAL | **DONE** | GREEN após o fix, zero skips e nenhuma nova regressão (confirmação do responsável) |
+| Validation/build pipeline | FIXABLE_INTERNAL | **DONE** | `.github/workflows/ci.yml`: quality, e2e com `postgres:16`, migrations e docker GREEN nas três execuções consecutivas; build/smoke sem publicação ou deploy |
+| Flake de CI do ServerControl após a 12.7B | FIXABLE_INTERNAL | **resolvido** | espera de três expirações reais no teste substituída por avanço do timestamp da operação e passe do worker; sem aumento de timeouts ou mudança de semântica de produção; três CI consecutivos verdes após o fix |
+| Registry | EXTERNAL | **OPEN/EXTERNAL** | destino de publicação e credenciais não informados; pipeline de build concluído não implica publicação |
 | Rotação de segredos JWT | FIXABLE_INTERNAL (doc) | **documentado** | `docs/security.md`: sem overlap de chaves, rotação em manutenção recreate |
 | RPO / RTO / retenção | PRODUCT_DECISION | aberto | PRODUCT/OPS DECISION REQUIRED |
 | Entitlements PLAYER sem claim | PRODUCT_DECISION | aberto | nenhuma rota de claim existe; o grant PLAYER cria o direito sem entregas e nunca escolhe personagem; não é rota insegura, é contrato de produto ausente |
 | P1-2 / R2 reautorização Staff por evento | ACCEPTED_LIMITATION | mantido | custo, não correctness; a 12.6 não mostrou gargalo; cache trocaria a autoridade do banco sem necessidade |
+
+Permanecem **OPEN/EXTERNAL** para a 12.7C: Agent/SKSE real, Electron/Launcher,
+Discord real, proxy/TLS/CORS/Origins, staging, clock sync nos hosts reais,
+monitoring/alert delivery, orchestrator, RPO/RTO/retention, soak longo e
+production capacity/SLA, além do registry sem destino informado. As decisões
+de produto e limitações aceitas acima permanecem registradas. Detalhes em
+`docs/release-acceptance.md` §3.2 e §15 e `docs/release-readiness.md`.
 
 ## 26. Roadmap final da Stage 12
 
