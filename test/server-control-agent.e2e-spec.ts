@@ -16,6 +16,7 @@ import { GameServerService } from '../src/game-bridge/game-server.service.js';
 import type { GameServer } from '../src/game-bridge/entities/game-server.entity.js';
 import { DiscordIdentityProvider } from '../src/player-auth/discord-identity.provider.js';
 import { AgentSessionRegistry } from '../src/game-agent/agent-session.registry.js';
+import { ServerControlDispatcher } from '../src/server-control/server-control-dispatcher.js';
 import { ServerControlWorker } from '../src/server-control/server-control.worker.js';
 import { ServerControlReceiver } from '../src/server-control/server-control-receiver.js';
 import type { ServerControlOperation } from '../src/server-control/entities/server-control-operation.entity.js';
@@ -423,12 +424,40 @@ describeDatabase(
       });
     });
     it('fails safely before any delivery when no eligible Agent appears: offline or missing capability', async () => {
+      const expireHeld = async (id: string) => {
+        expect(await app.get(ServerControlDispatcher).dispatchSafely(id)).toBe(
+          'HELD',
+        );
+        expect(await row(id)).toMatchObject({
+          status: 'PENDING',
+          dispatchClaimedAt: null,
+          dispatchConnectionId: null,
+          notAfter: null,
+          resultDeadlineAt: null,
+        });
+        // Three real pending deadlines consume 4500 ms of Jest's 5000 ms.
+        // Move only this row to the expiry boundary, then drive the worker.
+        await database
+          .getRepository<ServerControlOperation>('ServerControlOperation')
+          .update(id, {
+            createdAt: new Date(
+              Date.now() - Number(ENV.SERVER_CONTROL_PENDING_TIMEOUT_MS),
+            ),
+          });
+        await eventually(async () => {
+          // A periodic tick may already be running; retry until it settles.
+          await app.get(ServerControlWorker).tick();
+          return (await status(id)) === 'FAILED';
+        });
+        expect((await row(id)).dispatchClaimedAt).toBeNull();
+        expect(frames(id)).toBe(0);
+      };
       // Offline.
       const offline = await start('SERVER_START');
       expect((await row(offline)).status).toBe('PENDING');
       // In flight: nothing else for this server meanwhile.
       await control('SERVER_RESTART').expect(409);
-      await eventually(async () => (await status(offline)) === 'FAILED');
+      await expireHeld(offline);
       expect(await detail(offline)).toMatchObject({
         status: 'FAILED',
         errorCode: 'DISPATCH_EXPIRED',
@@ -443,7 +472,7 @@ describeDatabase(
       ]) {
         const host = await agent(caps);
         const held = await start('SERVER_RESTART');
-        await eventually(async () => (await status(held)) === 'FAILED');
+        await expireHeld(held);
         expect(await detail(held)).toMatchObject({
           errorCode: 'DISPATCH_EXPIRED',
         });
